@@ -46,82 +46,35 @@ enum MarkdownInvalidationPlanner {
     }
 
     static func expandedBlockRange(around range: NSRange, in source: String) -> UTF16Range {
-        let map = MarkdownSource(source)
-        guard !map.lines.isEmpty else { return UTF16Range(location: 0, length: 0) }
+        let text = source as NSString
+        guard text.length > 0 else { return UTF16Range(location: 0, length: 0) }
+        let lowerProbe = min(range.location, text.length - 1)
+        let upperProbe = min(max(lowerProbe, NSMaxRange(range) - 1), text.length - 1)
+        var lowerLine = text.lineRange(for: NSRange(location: lowerProbe, length: 0))
+        var upperLine = text.lineRange(for: NSRange(location: upperProbe, length: 0))
 
-        let lowerOffset = min(range.location, map.length)
-        let upperOffset = min(max(lowerOffset, NSMaxRange(range)), map.length)
-        var lower = map.lineIndex(containing: lowerOffset)
-        var upper = map.lineIndex(containing: max(lowerOffset, upperOffset - 1))
-
-        while lower > 0,
-              !map.lines[lower].isBlank,
-              !map.lines[lower - 1].isBlank {
-            lower -= 1
+        while lowerLine.location > 0 {
+            let previous = text.lineRange(for: NSRange(location: lowerLine.location - 1, length: 0))
+            guard !isBlank(previous, in: text) else { break }
+            lowerLine = previous
         }
-        while upper + 1 < map.lines.count,
-              !map.lines[upper].isBlank,
-              !map.lines[upper + 1].isBlank {
-            upper += 1
+        while NSMaxRange(upperLine) < text.length {
+            let next = text.lineRange(for: NSRange(location: NSMaxRange(upperLine), length: 0))
+            guard !isBlank(next, in: text) else { break }
+            upperLine = next
         }
-
-        // Adjacent lines can change list, setext-heading, table, and delimiter
-        // interpretation. Include one context line, but never walk through a
-        // blank separator into a second unrelated block.
-        lower = max(0, lower - 1)
-        upper = min(map.lines.count - 1, upper + 1)
-
-        // A fence or front-matter delimiter can affect every following line.
-        var openFence: (marker: MarkdownFence, line: Int)?
-        var index = 0
-        while index < lower {
-            if let fence = map.lines[index].fence {
-                if let active = openFence,
-                   active.marker.character == fence.character,
-                   fence.count >= active.marker.count,
-                   fence.infoRange == nil {
-                    openFence = nil
-                } else if openFence == nil {
-                    openFence = (fence, index)
-                }
-            }
-            index += 1
-        }
-        if let active = openFence { lower = active.line }
-        if map.lines.first?.trimmed == "---" {
-            let frontMatterClosing = frontMatterEnd(in: map)
-            if lower <= frontMatterClosing {
-                lower = 0
-                upper = max(upper, frontMatterClosing)
-            }
-        }
-        if let fence = openFence?.marker ?? map.lines[lower].fence {
-            var cursor = max(lower + 1, index)
-            while cursor < map.lines.count {
-                if let candidate = map.lines[cursor].fence,
-                   candidate.character == fence.character,
-                   candidate.count >= fence.count,
-                   candidate.infoRange == nil {
-                    upper = max(upper, cursor)
-                    break
-                }
-                cursor += 1
-            }
-            if cursor == map.lines.count { upper = map.lines.count - 1 }
-        }
-
-        let start = map.lines[lower].fullRange.location
-        let end = NSMaxRange(map.lines[upper].fullRange)
-        return UTF16Range(location: start, length: max(0, end - start))
+        let end = NSMaxRange(upperLine)
+        return UTF16Range(location: lowerLine.location, length: end - lowerLine.location)
     }
 
-    private static func frontMatterEnd(in source: MarkdownSource) -> Int {
-        guard source.lines.count > 1 else { return 0 }
-        for index in 1..<source.lines.count
-        where source.lines[index].trimmed == "---" || source.lines[index].trimmed == "..." {
-            return index
+    private static func isBlank(_ range: NSRange, in text: NSString) -> Bool {
+        for offset in range.location..<NSMaxRange(range) {
+            let scalar = text.character(at: offset)
+            if scalar != 0x20, scalar != 0x09, scalar != 0x0A, scalar != 0x0D {
+                return false
+            }
         }
-        return source.lines.count - 1
+        return true
     }
 }
 

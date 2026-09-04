@@ -21,6 +21,14 @@ settings:
     CLANG_ENABLE_MODULES: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
+packages:
+  Markdown:
+    url: https://github.com/swiftlang/swift-markdown.git
+    revision: 3c6f9523da3a1ec2fd829673e472d95b8097a3b8
+  CMark:
+    url: https://github.com/swiftlang/swift-cmark.git
+    revision: 924936d0427cb25a61169739a7660230bffa6ea6
+
 targets:
   Clio:
     type: application
@@ -32,7 +40,11 @@ targets:
           - Support/Info.plist
           - Support/Clio.entitlements
           - Resources/Fonts
+          - Resources/ThirdPartyNotices
       - path: Clio/Resources/Fonts
+        type: folder
+        buildPhase: resources
+      - path: Clio/Resources/ThirdPartyNotices
         type: folder
         buildPhase: resources
     settings:
@@ -53,6 +65,8 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
+    dependencies:
+      - package: Markdown
 
   ClioTests:
     type: bundle.unit-test
