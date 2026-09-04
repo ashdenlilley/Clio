@@ -65,7 +65,8 @@ final class ExportPresentationTests: XCTestCase {
             let presentation = DocumentExportPresentation(
                 coordinator: DocumentExportCoordinator(),
                 printSettingsStore: PDFPrintSettingsStore(defaults: defaults),
-                panelPresenter: panel
+                panelPresenter: panel,
+                recoveryCatalog: FakeExportRecoveryCatalog()
             )
             var source = "# Before panel"
             var snapshotCallCount = 0
@@ -139,7 +140,8 @@ final class ExportPresentationTests: XCTestCase {
         let presentation = DocumentExportPresentation(
             coordinator: DocumentExportCoordinator(),
             printSettingsStore: store,
-            panelPresenter: panel
+            panelPresenter: panel,
+            recoveryCatalog: FakeExportRecoveryCatalog()
         )
         let window = NSWindow()
         presentation.attach(
@@ -193,6 +195,15 @@ private final class FakeExportPanelPresenter: ExportPanelPresenting {
     }
 }
 
+private final class FakeExportRecoveryCatalog: ExportRecoveryCataloging,
+    @unchecked Sendable {
+    private(set) var directories: [URL] = []
+
+    func remember(destinationDirectory: URL) throws {
+        directories.append(destinationDirectory.standardizedFileURL)
+    }
+}
+
 @MainActor
 private extension ExportPresentationTests {
     func makePresentation(
@@ -204,7 +215,8 @@ private extension ExportPresentationTests {
         return DocumentExportPresentation(
             coordinator: DocumentExportCoordinator(),
             printSettingsStore: PDFPrintSettingsStore(defaults: defaults),
-            panelPresenter: panel
+            panelPresenter: panel,
+            recoveryCatalog: FakeExportRecoveryCatalog()
         )
     }
 

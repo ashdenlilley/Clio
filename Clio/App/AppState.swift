@@ -198,6 +198,7 @@ final class AppState {
 
         Task { try? await activeRecoveryStore.pruneExpired() }
         scheduleCrashRecoveryMigration()
+        scheduleExportTransactionRecovery()
     }
 
     var isWorkspaceReady: Bool {
@@ -478,6 +479,28 @@ private extension AppState {
                 await self.recoverPendingCrashBuffers()
             } while self.crashRecoveryRescanRequested
             self.crashRecoveryTask = nil
+        }
+    }
+
+    func scheduleExportTransactionRecovery() {
+        let journal = crashRecoveryJournal
+        Task { @MainActor [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                Result {
+                    try ExportRecoveryCatalog.shared.recoverInterruptedExports(
+                        journal: journal
+                    )
+                }
+            }.value
+            guard let self else { return }
+            switch result {
+            case .success(let recoveredCount):
+                if recoveredCount > 0 {
+                    scheduleCrashRecoveryMigration()
+                }
+            case .failure(let error):
+                crashRecoveryMessage = "Clio could not inspect a prior export transaction (\(error.localizedDescription)). The destination was not modified during this check."
+            }
         }
     }
 
