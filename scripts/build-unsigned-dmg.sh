@@ -73,6 +73,8 @@ chmod 755 "${WORK_ROOT}" "${PUBLISH_DIR}" "${STAGING_DIR}"
 
 DMG_NAME="${ARTIFACT_BASENAME}.dmg"
 BUILD_LOG_NAME="${ARTIFACT_BASENAME}-build.log"
+TEST_LOG_NAME="${ARTIFACT_BASENAME}-tests.log"
+TEST_RESULTS_NAME="${ARTIFACT_BASENAME}-tests.xcresult.zip"
 VERIFICATION_LOG_NAME="${ARTIFACT_BASENAME}-verification.log"
 SMOKE_LOG_NAME="${ARTIFACT_BASENAME}-launch-smoke.log"
 MANIFEST_NAME="${ARTIFACT_BASENAME}-manifest.json"
@@ -155,8 +157,13 @@ PACKAGE_RESOLVED_SHA256="$(clio_sha256 "${PACKAGE_RESOLVED}")"
 ditto "${PACKAGE_RESOLVED}" "${PACKAGE_RESOLVED_COPY_PATH}"
 
 CLIO_DERIVED_DATA_PATH="${DERIVED_DATA_PATH}" \
+CLIO_TEST_RESULT_PATH="${WORK_ROOT}/Clio-tests.xcresult" \
 CLIO_SKIP_RELEASE_BUILD=1 \
-    "${SCRIPT_DIR}/test.sh"
+    "${SCRIPT_DIR}/test.sh" 2>&1 | tee "${PUBLISH_DIR}/${TEST_LOG_NAME}"
+[[ -d "${WORK_ROOT}/Clio-tests.xcresult" ]] \
+    || clio_die "the test gate did not produce its result bundle"
+ditto -c -k --keepParent "${WORK_ROOT}/Clio-tests.xcresult" \
+    "${PUBLISH_DIR}/${TEST_RESULTS_NAME}"
 
 {
     echo "Clio unsigned-internal Release build"
@@ -235,6 +242,8 @@ plutil -insert schemaVersion -integer 1 "${MANIFEST_PATH}"
 plutil -insert artifact -string "${DMG_NAME}" "${MANIFEST_PATH}"
 plutil -insert checksumFile -string "${CHECKSUM_NAME}" "${MANIFEST_PATH}"
 plutil -insert buildLog -string "${BUILD_LOG_NAME}" "${MANIFEST_PATH}"
+plutil -insert testLog -string "${TEST_LOG_NAME}" "${MANIFEST_PATH}"
+plutil -insert testResults -string "${TEST_RESULTS_NAME}" "${MANIFEST_PATH}"
 plutil -insert verificationLog -string "${VERIFICATION_LOG_NAME}" "${MANIFEST_PATH}"
 plutil -insert launchSmokeLog -string "${SMOKE_LOG_NAME}" "${MANIFEST_PATH}"
 plutil -insert debugSymbols -string "${DSYM_NAME}" "${MANIFEST_PATH}"
@@ -270,6 +279,8 @@ plutil -convert json -r "${MANIFEST_PATH}"
     shasum -a 256 \
         "${DMG_NAME}" \
         "${BUILD_LOG_NAME}" \
+        "${TEST_LOG_NAME}" \
+        "${TEST_RESULTS_NAME}" \
         "${VERIFICATION_LOG_NAME}" \
         "${SMOKE_LOG_NAME}" \
         "${DSYM_NAME}" \
