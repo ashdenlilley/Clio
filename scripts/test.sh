@@ -86,8 +86,8 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         CODE_SIGN_IDENTITY=- \
         test
 
-    # Keep the unit-host lifecycle separate from UI automation: combining the
-    # targets can leave the unit host running in the background during UI launch.
+    # Keep the native unit-host lifecycle and diagnostics separate from UI
+    # automation, while reusing the same signed build products.
     set --
     if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
         set -- -resultBundlePath "${NATIVE_RESULT_PATH}"
