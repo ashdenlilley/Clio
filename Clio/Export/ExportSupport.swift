@@ -1,7 +1,9 @@
 import Foundation
 
 enum DocumentExportError: LocalizedError, Equatable {
-    case destinationExists(URL)
+    case destinationExists(ExportCollision)
+    case destinationChanged(URL, current: ExportCollision?, retainedURL: URL?)
+    case invalidCollisionResolution
     case invalidPrintSettings
     case staleParse
     case emptyPDFPage
@@ -10,8 +12,16 @@ enum DocumentExportError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .destinationExists(let url):
-            "A file named \(url.lastPathComponent) already exists."
+        case .destinationExists(let collision):
+            "A file named \(collision.destinationURL.lastPathComponent) already exists."
+        case .destinationChanged(let url, _, let retainedURL):
+            if retainedURL != nil {
+                "\(url.lastPathComponent) changed while Clio was exporting. The unexpected bytes were retained for recovery; choose again."
+            } else {
+                "\(url.lastPathComponent) changed while Clio was exporting. Choose again."
+            }
+        case .invalidCollisionResolution:
+            "That collision choice belongs to a different export. Choose again."
         case .invalidPrintSettings:
             "The selected paper size and margins leave no printable area."
         case .staleParse:
@@ -21,68 +31,164 @@ enum DocumentExportError: LocalizedError, Equatable {
         case .couldNotCreatePDF(let url):
             "Clio could not create a PDF at \(url.path)."
         case .unsupportedDestination(let url):
-            "Clio cannot export to \(url.path)."
+            "Clio cannot export to \(url.path). Choose a regular file destination."
         }
     }
+
+    var retryCollision: ExportCollision? {
+        switch self {
+        case .destinationExists(let collision): return collision
+        case .destinationChanged(_, let current, _): return current
+        default: return nil
+        }
+    }
+
+    var retainedRecoveryURL: URL? {
+        guard case .destinationChanged(_, _, let retainedURL) = self else { return nil }
+        return retainedURL
+    }
+}
+
+enum ExportDestinationCommit: Sendable, Equatable {
+    case create
+    case replace(expectedRevision: DiskRevision)
+}
+
+struct ExportDestinationReservation: Sendable, Equatable {
+    let url: URL
+    let commit: ExportDestinationCommit
 }
 
 enum ExportDestination {
     static func resolve(
         requestedURL: URL,
-        choice: CollisionChoice?,
+        resolution: ExportCollisionResolution?,
         fileManager: FileManager = .default
-    ) throws -> URL {
+    ) throws -> ExportDestinationReservation {
         let url = requestedURL.standardizedFileURL
-        guard fileManager.fileExists(atPath: url.path) else { return url }
-
-        switch choice {
+        let current = try collision(at: url, fileManager: fileManager)
+        guard let resolution else {
+            if let current { throw DocumentExportError.destinationExists(current) }
+            return ExportDestinationReservation(url: url, commit: .create)
+        }
+        guard resolution.collision.destinationURL.standardizedFileURL == url else {
+            throw DocumentExportError.invalidCollisionResolution
+        }
+        switch resolution.choice {
         case .cancel:
             throw CancellationError()
         case .replace:
-            return url
+            guard current?.revision == resolution.collision.revision else {
+                throw DocumentExportError.destinationChanged(
+                    url,
+                    current: current,
+                    retainedURL: nil
+                )
+            }
+            return ExportDestinationReservation(
+                url: url,
+                commit: .replace(expectedRevision: resolution.collision.revision)
+            )
         case .keepBoth:
-            return try firstAvailableVariant(of: url, fileManager: fileManager)
-        case nil:
-            throw DocumentExportError.destinationExists(url)
+            return ExportDestinationReservation(
+                url: try firstAvailableVariant(of: url, fileManager: fileManager),
+                commit: .create
+            )
         }
     }
 
-    static func install(
-        temporaryURL: URL,
-        at destinationURL: URL,
-        replacing: Bool,
+    static func collision(
+        at url: URL,
         fileManager: FileManager = .default
-    ) throws {
-        try Task.checkCancellation()
-        if replacing, fileManager.fileExists(atPath: destinationURL.path) {
-            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
-        } else {
-            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+    ) throws -> ExportCollision? {
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw DocumentExportError.unsupportedDestination(url)
+            }
+            return ExportCollision(
+                destinationURL: url,
+                revision: try DocumentRevisionReader.revision(at: url)
+            )
+        } catch let error as DocumentExportError {
+            throw error
+        } catch let error as NSError
+        where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return nil
         }
     }
 }
 
-/// A completely rendered export that has not yet crossed the destination
-/// commit boundary. Rendering actors may be cancelled freely while producing
-/// this value; installation is deliberately kept as one synchronous operation
-/// on the coordinator so success can never be reported as cancellation after
-/// the destination has changed.
+enum ExportContentPolicy {
+    static func safeLink(_ value: String) -> String? {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.unicodeScalars.contains(where: {
+                  $0.value <= 0x20 || (0x7f...0x9f).contains($0.value)
+              }),
+              let components = URLComponents(string: value) else {
+            return nil
+        }
+        guard let scheme = components.scheme?.lowercased() else {
+            return value.hasPrefix("/") || value.hasPrefix("\\") ? nil : value
+        }
+        return ["http", "https", "mailto"].contains(scheme) ? value : nil
+    }
+}
+
+/// A complete export that has not crossed the atomic destination boundary.
 struct StagedDocumentExport: Sendable {
     let format: ExportFormat
     let temporaryURL: URL
-    let destinationURL: URL
+    let reservation: ExportDestinationReservation
     let byteCount: Int64
     let generation: BufferGeneration
     let sourceFingerprint: String
-    let replacing: Bool
 
-    func install(fileManager: FileManager = .default) throws -> ExportReceipt {
-        try ExportDestination.install(
-            temporaryURL: temporaryURL,
-            at: destinationURL,
-            replacing: replacing,
-            fileManager: fileManager
-        )
+    var destinationURL: URL { reservation.url }
+
+    func install(
+        fileManager: FileManager = .default,
+        writer: any AtomicFileWriting = AtomicFileWriter()
+    ) throws -> ExportReceipt {
+        try Task.checkCancellation()
+        let data = try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
+        try Task.checkCancellation()
+        switch reservation.commit {
+        case .create:
+            guard try writer.create(contents: data, at: destinationURL) else {
+                let collision = try ExportDestination.collision(
+                    at: destinationURL,
+                    fileManager: fileManager
+                )
+                guard let collision else {
+                    throw DocumentExportError.destinationChanged(
+                        destinationURL,
+                        current: nil,
+                        retainedURL: nil
+                    )
+                }
+                throw DocumentExportError.destinationExists(collision)
+            }
+        case .replace(let expectedRevision):
+            let outcome = try writer.replace(
+                contents: data,
+                at: destinationURL,
+                onlyIf: expectedRevision
+            )
+            if case .revisionMismatch(let retainedURL) = outcome {
+                let current = try? ExportDestination.collision(
+                    at: destinationURL,
+                    fileManager: fileManager
+                )
+                throw DocumentExportError.destinationChanged(
+                    destinationURL,
+                    current: current ?? nil,
+                    retainedURL: retainedURL
+                )
+            }
+        }
+        try? fileManager.removeItem(at: temporaryURL)
         return ExportReceipt(
             format: format,
             destinationURL: destinationURL,
@@ -108,13 +214,12 @@ private extension ExportDestination {
         let extensionName = url.pathExtension
         let stem = url.deletingPathExtension().lastPathComponent
         let parent = url.deletingLastPathComponent()
-
         for number in 2...maximumCollisionAttempts {
             let filename = extensionName.isEmpty
                 ? "\(stem) (\(number))"
                 : "\(stem) (\(number)).\(extensionName)"
             let candidate = parent.appendingPathComponent(filename)
-            if !fileManager.fileExists(atPath: candidate.path) {
+            if try collision(at: candidate, fileManager: fileManager) == nil {
                 return candidate
             }
         }

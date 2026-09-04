@@ -10,7 +10,7 @@ actor HTMLDocumentExporter {
     func prepare(
         parsed: ParsedMarkdown,
         request: ExportRequest,
-        collisionChoice: CollisionChoice?
+        collisionResolution: ExportCollisionResolution?
     ) throws -> StagedDocumentExport {
         try Task.checkCancellation()
         guard request.format == .html else {
@@ -20,9 +20,9 @@ actor HTMLDocumentExporter {
             throw DocumentExportError.staleParse
         }
 
-        let destination = try ExportDestination.resolve(
+        let reservation = try ExportDestination.resolve(
             requestedURL: request.destinationURL,
-            choice: collisionChoice,
+            resolution: collisionResolution,
             fileManager: fileManager
         )
         let html = try HTMLDocumentRenderer.render(
@@ -30,7 +30,7 @@ actor HTMLDocumentExporter {
             title: request.snapshot.filename
         )
         try Task.checkCancellation()
-        let temporaryURL = destination.clioTemporarySibling()
+        let temporaryURL = reservation.url.clioTemporarySibling()
         do {
             try Data(html.utf8).write(to: temporaryURL, options: .atomic)
             try Task.checkCancellation()
@@ -39,11 +39,10 @@ actor HTMLDocumentExporter {
             return StagedDocumentExport(
                 format: .html,
                 temporaryURL: temporaryURL,
-                destinationURL: destination,
+                reservation: reservation,
                 byteCount: size,
                 generation: request.snapshot.generation,
-                sourceFingerprint: request.snapshot.sourceFingerprint,
-                replacing: collisionChoice == .replace
+                sourceFingerprint: request.snapshot.sourceFingerprint
             )
         } catch {
             try? fileManager.removeItem(at: temporaryURL)
@@ -75,7 +74,7 @@ enum HTMLDocumentRenderer {
         <html lang="\(language)">
         <head>
           <meta charset="utf-8">
-          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title>\(safeTitle)</title>
           <style>
@@ -264,7 +263,7 @@ private extension HTMLDocumentRenderer {
         case .strikethrough(let content, _): return "<del>\(try render(inlines: content))</del>"
         case .code(let value, _): return "<code>\(try escape(value))</code>"
         case .link(let destination, let title, let content, _):
-            guard let safe = safeLink(destination) else { return try render(inlines: content) }
+            guard let safe = ExportContentPolicy.safeLink(destination) else { return try render(inlines: content) }
             let titleAttribute: String
             if let title {
                 titleAttribute = " title=\"\(try escapeAttribute(title))\""
@@ -272,14 +271,13 @@ private extension HTMLDocumentRenderer {
                 titleAttribute = ""
             }
             return "<a href=\"\(try escapeAttribute(safe))\"\(titleAttribute)>\(try render(inlines: content))</a>"
-        case .image(let source, _, let alt, _):
+        case .image(_, _, let alt, _):
             let alternative = try plainText(alt)
-            guard let safe = safeEmbeddedImage(source) else {
-                return "<span role=\"img\" aria-label=\"\(try escapeAttribute(alternative))\">\(try escape(alternative))</span>"
-            }
-            return "<img src=\"\(try escapeAttribute(safe))\" alt=\"\(try escapeAttribute(alternative))\">"
+            // Exports never initiate filesystem or network reads. Images use
+            // the same safe alt-only projection as PDF, including data URLs.
+            return "<span role=\"img\" aria-label=\"\(try escapeAttribute(alternative))\">\(try escape(alternative))</span>"
         case .autolink(let text, let destination, _):
-            guard let safe = safeLink(destination) else { return try escape(text) }
+            guard let safe = ExportContentPolicy.safeLink(destination) else { return try escape(text) }
             return "<a href=\"\(try escapeAttribute(safe))\">\(try escape(text))</a>"
         case .footnoteReference(let label, _):
             return "<sup><a href=\"#\(try safeFootnoteID(label))\" aria-label=\"Footnote \(try escapeAttribute(label))\">\(try escape(label))</a></sup>"
@@ -305,31 +303,6 @@ private extension HTMLDocumentRenderer {
             }
         }
         return result
-    }
-
-    static func safeLink(_ value: String) -> String? {
-        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.unicodeScalars.contains(where: {
-                  $0.value <= 0x20 || (0x7f...0x9f).contains($0.value)
-              }) else {
-            return nil
-        }
-        guard let components = URLComponents(string: value) else { return nil }
-        guard let scheme = components.scheme?.lowercased() else {
-            return value.hasPrefix("//") || value.hasPrefix("\\\\") ? nil : value
-        }
-        return ["http", "https", "mailto"].contains(scheme) ? value : nil
-    }
-
-    static func safeEmbeddedImage(_ value: String) -> String? {
-        let normalized = String(value.prefix(64)).lowercased()
-        return [
-            "data:image/png;base64,",
-            "data:image/jpeg;base64,",
-            "data:image/gif;base64,",
-            "data:image/webp;base64,",
-            "data:image/avif;base64,",
-        ].contains(where: normalized.hasPrefix) ? value : nil
     }
 
     static func safeFootnoteID(_ label: String) throws -> String {
