@@ -60,6 +60,7 @@ final class ExportTests: XCTestCase {
             XCTAssertFalse(html.contains("<link "))
             XCTAssertFalse(html.contains("<script src="))
             XCTAssertEqual(coordinator.phase, .completed(receipt))
+            XCTAssertEqual(coordinator.progress, 1)
         }
     }
 
@@ -155,18 +156,25 @@ final class ExportTests: XCTestCase {
             let destination = directory.appendingPathComponent("Notes.html")
             try Data("original".utf8).write(to: destination)
 
+            let collision: ExportCollision
             do {
                 _ = try await coordinator.export(
                     makeRequest(.html, snapshot: snapshot, destination: destination)
                 )
                 XCTFail("An existing destination must require a collision choice")
+                return
+            } catch DocumentExportError.destinationExists(let found) {
+                collision = found
             } catch let error as DocumentExportError {
-                XCTAssertEqual(error, .destinationExists(destination))
+                throw error
             }
 
             let receipt = try await coordinator.export(
                 makeRequest(.html, snapshot: snapshot, destination: destination),
-                collisionChoice: .keepBoth
+                collisionResolution: ExportCollisionResolution(
+                    collision: collision,
+                    choice: .keepBoth
+                )
             )
             XCTAssertEqual(receipt.destinationURL.lastPathComponent, "Notes (2).html")
             XCTAssertEqual(try String(contentsOf: destination), "original")
@@ -187,7 +195,7 @@ final class ExportTests: XCTestCase {
             let staged = try await HTMLDocumentExporter().prepare(
                 parsed: parsed,
                 request: makeRequest(.html, snapshot: snapshot, destination: destination),
-                collisionChoice: nil
+                collisionResolution: nil
             )
             defer { staged.discard() }
 
@@ -216,13 +224,18 @@ final class ExportTests: XCTestCase {
             let staged = try await HTMLDocumentExporter().prepare(
                 parsed: parsed,
                 request: makeRequest(.html, snapshot: snapshot, destination: destination),
-                collisionChoice: nil
+                collisionResolution: nil
             )
             defer { staged.discard() }
 
             try Data("arrived later".utf8).write(to: destination)
 
-            XCTAssertThrowsError(try staged.install())
+            XCTAssertThrowsError(try staged.install()) { error in
+                guard case DocumentExportError.destinationExists(let collision) = error else {
+                    return XCTFail("Expected destinationExists, got \(error)")
+                }
+                XCTAssertEqual(collision.destinationURL, destination)
+            }
             XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "arrived later")
             XCTAssertTrue(FileManager.default.fileExists(atPath: staged.temporaryURL.path))
         }
@@ -334,7 +347,7 @@ final class ExportTests: XCTestCase {
                 range: .init(location: 0, length: 16)
             ),
         ])
-        let breaks = try PDFAttributedDocumentBuilder.build(breakModel, fallbackSource: "")
+        let breaks = try PDFAttributedDocumentBuilder.build(breakModel)
         XCTAssertEqual(breaks.string, "alpha beta\ngamma\n")
 
         let nestedModel = MarkdownDocumentModel(blocks: [
@@ -363,7 +376,7 @@ final class ExportTests: XCTestCase {
                 )
             ),
         ])
-        let nested = try PDFAttributedDocumentBuilder.build(nestedModel, fallbackSource: "")
+        let nested = try PDFAttributedDocumentBuilder.build(nestedModel)
         let secondLocation = (nested.string as NSString).range(of: "second").location
         let paragraph = try XCTUnwrap(
             nested.attribute(.paragraphStyle, at: secondLocation, effectiveRange: nil)
@@ -465,6 +478,7 @@ final class ExportTests: XCTestCase {
                 )
             }
             await Task.yield()
+            XCTAssertNil(coordinator.progress)
             coordinator.cancel()
 
             do {
@@ -495,11 +509,15 @@ final class ExportTests: XCTestCase {
             let coordinator = DocumentExportCoordinator(parser: FixtureParser(model: model))
             let destination = directory.appendingPathComponent("cancel-render.html")
             try Data("original".utf8).write(to: destination)
+            let collision = try XCTUnwrap(ExportDestination.collision(at: destination))
 
             let operation = Task {
                 try await coordinator.export(
                     makeRequest(.html, snapshot: snapshot, destination: destination),
-                    collisionChoice: .replace
+                    collisionResolution: ExportCollisionResolution(
+                        collision: collision,
+                        choice: .replace
+                    )
                 )
             }
             for _ in 0..<2_000 where coordinator.phase != .rendering(.html) {
@@ -591,6 +609,9 @@ final class ExportTests: XCTestCase {
         )
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClioExportVisualFixture.pdf")
+        let resolution = try ExportDestination.collision(at: destination).map {
+            ExportCollisionResolution(collision: $0, choice: .replace)
+        }
         _ = try await coordinator.export(
             makeRequest(
                 .pdf,
@@ -598,7 +619,7 @@ final class ExportTests: XCTestCase {
                 destination: destination,
                 settings: PDFPrintSettingsStore.regionalDefault()
             ),
-            collisionChoice: .replace
+            collisionResolution: resolution
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
     }

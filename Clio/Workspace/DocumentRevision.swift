@@ -137,12 +137,10 @@ struct AtomicFileWriter: AtomicFileWriting {
         }
 
         // A third writer touched the destination after our swap. Leave its
-        // bytes in place and retain any unexpected displaced revision.
-        if !Workspace.sameContent(displaced, revision) {
-            return .revisionMismatch(retainedURL: temporaryURL)
-        }
-        shouldRemoveTemporary = true
-        return .revisionMismatch(retainedURL: nil)
+        // bytes in place and retain the displaced inode regardless of whether
+        // it matched the approved revision: restoring it would overwrite the
+        // newest occupant, while deleting it would discard external bytes.
+        return .revisionMismatch(retainedURL: temporaryURL)
     }
 
     func create(contents data: Data, at destinationURL: URL) throws -> Bool {

@@ -271,8 +271,7 @@ struct SwiftMarkdownSemanticParser {
     ) -> [MarkdownInline] {
         let nodeRange = range(of: text)
         let literal = substring(nodeRange)
-        guard literal == text.string,
-              literal.contains("[^")
+        guard literal.contains("[^")
                 || literal.contains("http://")
                 || literal.contains("https://")
                 || literal.contains("www.")
@@ -288,7 +287,7 @@ struct SwiftMarkdownSemanticParser {
             if match.range.location > cursor {
                 let prefix = NSRange(location: cursor, length: match.range.location - cursor)
                 result.append(.text(
-                    value: value.substring(with: prefix),
+                    value: decodedLiteralText(value.substring(with: prefix)),
                     range: prefix.offset(by: nodeRange.location).utf16
                 ))
             }
@@ -320,11 +319,21 @@ struct SwiftMarkdownSemanticParser {
         if cursor < value.length {
             let suffix = NSRange(location: cursor, length: value.length - cursor)
             result.append(.text(
-                value: value.substring(with: suffix),
+                value: decodedLiteralText(value.substring(with: suffix)),
                 range: suffix.offset(by: nodeRange.location).utf16
             ))
         }
         return result
+    }
+
+    /// cmark decodes character references before exposing `Text.string`, while
+    /// its source range still covers the original entity spelling. Reparse only
+    /// split literal fragments so an adjacent `[^label]` cannot disappear.
+    private func decodedLiteralText(_ literal: String) -> String {
+        let document = Markdown.Document(parsing: literal, options: [.disableSmartOpts])
+        let paragraphs = document.children.compactMap { $0 as? Markdown.Paragraph }
+        guard !paragraphs.isEmpty else { return literal }
+        return paragraphs.map(\.plainText).joined(separator: "\n")
     }
 
     private enum TextExtensionKind {
