@@ -14,9 +14,14 @@ actor WorkspaceScanner {
     }
 
     private let fileManager: FileManager
+    private let identityStore: DocumentIdentityStore
 
-    init(fileManager: FileManager = .default) {
+    init(
+        fileManager: FileManager = .default,
+        identityStore: DocumentIdentityStore = .shared
+    ) {
         self.fileManager = fileManager
+        self.identityStore = identityStore
     }
 
     func scan(
@@ -31,7 +36,7 @@ actor WorkspaceScanner {
             throw ScannerError.rootUnavailable(rootURL)
         }
 
-        var files: [WorkspaceFile] = []
+        var pendingFiles: [PendingFile] = []
         var directories: [(
             url: URL,
             relativePath: String,
@@ -119,10 +124,10 @@ actor WorkspaceScanner {
                     workspaceID: workspace.id,
                     relativePath: relativePath
                 )
-                files.append(
-                    WorkspaceFile(
-                        documentID: DocumentID(),
+                pendingFiles.append(
+                    PendingFile(
                         locator: locator,
+                        url: childURL,
                         relativePath: relativePath,
                         modificationDate: values.contentModificationDate ?? .distantPast,
                         byteCount: Int64(values.fileSize ?? 0),
@@ -130,6 +135,24 @@ actor WorkspaceScanner {
                     )
                 )
             }
+        }
+
+        let ids = try identityStore.resolve(pendingFiles.map {
+            DocumentIdentityCandidate(
+                locator: $0.locator,
+                physicalIdentity: .authorizedFile(at: $0.url),
+                canonicalPath: $0.url.standardizedFileURL.resolvingSymlinksInPath().path
+            )
+        })
+        var files = zip(pendingFiles, ids).map { pending, id in
+            WorkspaceFile(
+                documentID: id,
+                locator: pending.locator,
+                relativePath: pending.relativePath,
+                modificationDate: pending.modificationDate,
+                byteCount: pending.byteCount,
+                exclusionReason: pending.exclusionReason
+            )
         }
 
         files.sort {
@@ -221,8 +244,15 @@ actor WorkspaceScanner {
                 workspaceID: workspace.id,
                 relativePath: childRelativePath
             )
+            let documentID = try identityStore.resolve(
+                DocumentIdentityCandidate(
+                    locator: locator,
+                    physicalIdentity: .authorizedFile(at: childURL),
+                    canonicalPath: childURL.standardizedFileURL.resolvingSymlinksInPath().path
+                )
+            )
             return WorkspaceFile(
-                documentID: DocumentID(),
+                documentID: documentID,
                 locator: locator,
                 relativePath: childRelativePath,
                 modificationDate: values.contentModificationDate ?? .distantPast,
@@ -235,6 +265,15 @@ actor WorkspaceScanner {
 }
 
 private extension WorkspaceScanner {
+    struct PendingFile {
+        let locator: DocumentLocator
+        let url: URL
+        let relativePath: String
+        let modificationDate: Date
+        let byteCount: Int64
+        let exclusionReason: ExclusionReason?
+    }
+
     static func relativePath(for fileURL: URL, rootURL: URL) -> String {
         let rootPath = rootURL.standardizedFileURL.path
         let filePath = fileURL.standardizedFileURL.path
