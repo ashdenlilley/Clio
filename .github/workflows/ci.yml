@@ -10,24 +10,54 @@ concurrency:
   group: clio-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   test-and-build:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - name: Select Xcode 16.4
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Verify generated project
+      - name: Preflight pinned Xcode and release scripts
         run: |
+          test -d "$DEVELOPER_DIR"
+          test "$(xcodebuild -version | sed -n '1p')" = "Xcode 16.4"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version 16F6"
+          test "$(sw_vers -productVersion | cut -d. -f1)" = "15"
+          test "$(uname -m)" = "arm64"
+          xcodebuild -version
+          sw_vers
+          uname -m
+          bash -n scripts/*.sh
+
+      - name: Install pinned XcodeGen 2.46.0
+        env:
+          XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+        run: |
+          archive="$RUNNER_TEMP/xcodegen-2.46.0.zip"
+          destination="$RUNNER_TEMP/xcodegen-2.46.0"
+          curl --fail --location --silent --show-error \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            --output "$archive"
+          echo "$XCODEGEN_SHA256  $archive" | shasum -a 256 -c -
+          ditto -x -k "$archive" "$destination"
+          test -x "$destination/xcodegen/bin/xcodegen"
+          echo "$destination/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Verify generated project and locked dependencies
+        run: |
+          test "$(xcodegen --version)" = "Version: 2.46.0"
           xcodegen generate
-          git diff --exit-code -- Clio.xcodeproj
+          git diff --exit-code -- Clio.xcodeproj project.yml
+          source scripts/release-common.sh
+          resolved=Clio.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          clio_require_exact_package_lock "$resolved"
 
       - name: Test and build unsigned universal app
         run: scripts/test.sh
@@ -38,15 +68,17 @@ jobs:
             -project Clio.xcodeproj \
             -scheme Clio \
             -configuration Debug \
+            -destination 'platform=macOS' \
             -derivedDataPath .build/DerivedData \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO \
             analyze
 
       - name: Upload test diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: clio-test-diagnostics
           path: .build/DerivedData/Logs/Test
           if-no-files-found: ignore
-
