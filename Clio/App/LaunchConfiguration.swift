@@ -58,11 +58,12 @@ private extension ClioLaunchConfiguration {
                     isStale: false
                 )
             },
-            workspaceFactory: { id, url in
+            workspaceFactory: { id, url, journal in
                 try Workspace(
                     id: id,
                     rootURL: url,
-                    accessSecurityScopedResource: false
+                    accessSecurityScopedResource: false,
+                    crashRecoveryJournal: journal
                 )
             }
         )

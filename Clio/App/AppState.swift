@@ -510,7 +510,10 @@ final class AppState: ClioCommandDispatching {
         discoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await self.workspaceIndexCoordinator.synchronize(policy: policy)
+                try await self.workspaceIndexCoordinator.synchronize(
+                    policy: policy,
+                    includesIgnored: self.discoverySettings.temporarilyShowsIgnored
+                )
                 try Task.checkCancellation()
                 self.isRefreshingWorkspaces = false
             } catch is CancellationError {
@@ -747,15 +750,27 @@ final class AppState: ClioCommandDispatching {
                         to: destinationWorkspace,
                         parentRelativePath: parentRelativePath,
                         collisionChoice: choice,
+                        approvedCollision: collision,
                         registry: self.documentRegistry
                     )
                 }
-                if case let .completed(destination) = outcome {
+                let committedDestination: DocumentLocator?
+                switch outcome {
+                case .completed(let destination):
+                    committedDestination = destination
+                case .completedWithRecovery(let destination, let notice):
+                    committedDestination = destination
+                    let retainedPath = notice.retainedURL?.path ?? notice.sourceURL.path
+                    self.crashRecoveryMessage = "The document moved, and Clio retained the prior source bytes at \(retainedPath)."
+                case .cancelled, .collision:
+                    committedDestination = nil
+                }
+                if let committedDestination {
                     do {
                         try await self.workspaceIndexCoordinator.recordCommittedMove(
                             documentID: document.id,
                             from: payload.locator,
-                            to: destination
+                            to: committedDestination
                         )
                     } catch {
                         self.presentError(
@@ -911,6 +926,20 @@ final class AppState: ClioCommandDispatching {
                 underlying: error
             )
         }
+    }
+
+    func resolvePendingFileCollision(
+        _ choice: CollisionChoice,
+        for tab: EditorSession
+    ) {
+        resolveCollision(choice, for: tab)
+    }
+
+    func resolvePendingFileCollisionNow(
+        _ choice: CollisionChoice,
+        for tab: EditorSession
+    ) async throws {
+        try await resolveCollisionNow(choice, for: tab)
     }
 }
 
@@ -1293,28 +1322,80 @@ private extension AppState {
             guard let self, let tab else { return }
             do {
                 let outcome = try await tab.rename(to: proposedName)
-                if case let .completed(destination) = outcome {
-                    if let sourceLocator {
-                        do {
-                            try await self.workspaceIndexCoordinator.recordCommittedMove(
-                                documentID: tab.documentID,
-                                from: sourceLocator,
-                                to: destination
-                            )
-                        } catch {
-                            self.presentError(
-                                "The document was renamed, but Clio couldn’t update navigation immediately.",
-                                underlying: error
-                            )
-                            self.refreshWorkspaceDiscovery()
-                        }
-                    } else {
-                        self.refreshWorkspaceDiscovery()
-                    }
-                }
+                await self.finishNavigationMutation(
+                    outcome,
+                    documentID: tab.documentID,
+                    sourceLocator: sourceLocator,
+                    operationName: "renamed"
+                )
             } catch {
                 self.presentError("Clio couldn’t rename that document.", underlying: error)
             }
+        }
+    }
+
+    func resolveCollision(_ choice: CollisionChoice, for tab: EditorSession) {
+        Task { @MainActor [weak self, weak tab] in
+            guard let self, let tab else { return }
+            do {
+                try await self.resolveCollisionNow(choice, for: tab)
+            } catch {
+                self.presentError(
+                    "Clio couldn’t complete the file operation. No version was silently replaced.",
+                    underlying: error
+                )
+            }
+        }
+    }
+
+    func resolveCollisionNow(
+        _ choice: CollisionChoice,
+        for tab: EditorSession
+    ) async throws {
+        let sourceLocator = tab.locator
+        let outcome = try await tab.resolveCollisionNow(choice)
+        await finishNavigationMutation(
+            outcome,
+            documentID: tab.documentID,
+            sourceLocator: sourceLocator,
+            operationName: "moved"
+        )
+    }
+
+    private func finishNavigationMutation(
+        _ outcome: FileMutationOutcome,
+        documentID: DocumentID,
+        sourceLocator: DocumentLocator?,
+        operationName: String
+    ) async {
+        let destination: DocumentLocator
+        switch outcome {
+        case .completed(let locator):
+            destination = locator
+        case .completedWithRecovery(let locator, let notice):
+            destination = locator
+            let retainedPath = notice.retainedURL?.path ?? notice.sourceURL.path
+            crashRecoveryMessage = "The document moved, and Clio retained the prior source bytes at \(retainedPath)."
+        case .collision, .cancelled:
+            return
+        }
+
+        guard let sourceLocator else {
+            refreshWorkspaceDiscovery()
+            return
+        }
+        do {
+            try await workspaceIndexCoordinator.recordCommittedMove(
+                documentID: documentID,
+                from: sourceLocator,
+                to: destination
+            )
+        } catch {
+            presentError(
+                "The document was \(operationName), but Clio couldn’t update navigation immediately.",
+                underlying: error
+            )
+            refreshWorkspaceDiscovery()
         }
     }
 
@@ -1572,9 +1653,8 @@ private extension AppState {
             throw WorkspaceActivationError.authorization(error)
         }
 
-        let documentURLs: [URL]
         do {
-            documentURLs = try newWorkspace.documentURLs()
+            _ = try newWorkspace.documentURLs()
         } catch {
             throw WorkspaceActivationError.contents(error)
         }

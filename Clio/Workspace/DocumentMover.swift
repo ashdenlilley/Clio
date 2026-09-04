@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 @MainActor
@@ -82,6 +83,11 @@ final class DocumentMover {
         if destinationURL.standardizedFileURL == sourceURL.standardizedFileURL {
             return .completed(proposedLocator)
         }
+
+        try await fileIO.createParentDirectory(
+            for: destinationURL,
+            inside: destinationWorkspace.rootURL
+        )
 
         if await fileIO.fileExists(at: destinationURL) {
             let collision = FileCollision(
@@ -498,6 +504,16 @@ private actor FileMutationExecutor {
         fileManager.fileExists(atPath: url.path)
     }
 
+    func createParentDirectory(
+        for url: URL,
+        inside rootURL: URL
+    ) throws {
+        try RootConfinedDirectoryCreator.createParent(
+            of: url,
+            inside: rootURL
+        )
+    }
+
     func snapshot(at url: URL) throws -> (data: Data, revision: DiskRevision) {
         try DocumentRevisionReader.documentSnapshot(at: url)
     }
@@ -632,5 +648,90 @@ private actor FileMutationExecutor {
             if !fileManager.fileExists(atPath: candidate.path) { return candidate }
         }
         throw Workspace.WorkspaceError.noAvailableFilename(url.lastPathComponent)
+    }
+}
+
+/// Creates missing destination folders from a descriptor anchored at the
+/// authorized workspace root. Every component is opened with `O_NOFOLLOW`, so
+/// a concurrent symlink replacement cannot redirect creation outside the
+/// workspace grant.
+enum RootConfinedDirectoryCreator {
+    static func createParent(
+        of destinationURL: URL,
+        inside rootURL: URL,
+        beforeOpeningComponent: ((URL) throws -> Void)? = nil
+    ) throws {
+        let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let destination = destinationURL.standardizedFileURL
+        let parent = destination.deletingLastPathComponent()
+        let rootComponents = root.pathComponents
+        let parentComponents = parent.pathComponents
+        guard parentComponents.count >= rootComponents.count,
+              Array(parentComponents.prefix(rootComponents.count)) == rootComponents else {
+            throw invalidPath(destination)
+        }
+
+        let rootDescriptor = open(
+            root.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard rootDescriptor >= 0 else { throw posixError(for: root) }
+        var currentDescriptor = rootDescriptor
+        defer {
+            if currentDescriptor != rootDescriptor { close(currentDescriptor) }
+            close(rootDescriptor)
+        }
+
+        var inspectedURL = root
+        for component in parentComponents.dropFirst(rootComponents.count) {
+            guard component != ".", component != "..", component != "/" else {
+                throw invalidPath(destination)
+            }
+            inspectedURL.appendPathComponent(component, isDirectory: true)
+            try beforeOpeningComponent?(inspectedURL)
+
+            var nextDescriptor = component.withCString {
+                openat(
+                    currentDescriptor,
+                    $0,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+                )
+            }
+            if nextDescriptor < 0, errno == ENOENT {
+                let created = component.withCString {
+                    mkdirat(currentDescriptor, $0, mode_t(0o755))
+                }
+                guard created == 0 || errno == EEXIST else {
+                    throw posixError(for: inspectedURL)
+                }
+                nextDescriptor = component.withCString {
+                    openat(
+                        currentDescriptor,
+                        $0,
+                        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+                    )
+                }
+            }
+            guard nextDescriptor >= 0 else {
+                throw posixError(for: inspectedURL)
+            }
+            if currentDescriptor != rootDescriptor { close(currentDescriptor) }
+            currentDescriptor = nextDescriptor
+        }
+    }
+
+    private static func invalidPath(_ url: URL) -> CocoaError {
+        CocoaError(
+            .fileWriteInvalidFileName,
+            userInfo: [NSFilePathErrorKey: url.path]
+        )
+    }
+
+    private static func posixError(for url: URL) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSFilePathErrorKey: url.path]
+        )
     }
 }

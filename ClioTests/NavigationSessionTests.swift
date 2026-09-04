@@ -703,6 +703,42 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(queries[1].workspaceFilter, filter)
     }
 
+    func testAppDiscoveryRefreshIncludesIgnoredFilesWhenTemporarilyEnabled() async throws {
+        try await withTemporaryDirectory { folder in
+            try Data("ignored.md\n".utf8).write(
+                to: folder.appendingPathComponent(".gitignore")
+            )
+            try Data("visible on request".utf8).write(
+                to: folder.appendingPathComponent("ignored.md")
+            )
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let discovery = WorkspaceDiscoverySettings(defaults: defaults)
+            discovery.temporarilyShowsIgnored = true
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                discoverySettings: discovery,
+                searchIndex: RecordingSearchIndex()
+            )
+
+            for _ in 0..<100 {
+                if appState.workspaceTrees[descriptor.id]?.files.isEmpty == false {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+
+            let ignoredFile = try XCTUnwrap(
+                appState.workspaceTrees[descriptor.id]?.files.first {
+                    $0.relativePath == "ignored.md"
+                }
+            )
+            XCTAssertNotNil(ignoredFile.exclusionReason)
+        }
+    }
+
     func testSidebarMoveChangesPhysicalLocationAndRetargetsEveryOpenTab() async throws {
         try await withTemporaryDirectory { sourceFolder in
             try await withTemporaryDirectory { destinationFolder in
@@ -790,6 +826,119 @@ final class NavigationSessionTests: XCTestCase {
                         && $0.fileURL == destinationURL
                 })
             }
+        }
+    }
+
+    func testRenameCollisionRetryUpdatesNavigationWithApprovedRevision() async throws {
+        try await withTemporaryDirectory { folder in
+            let sourceURL = folder.appendingPathComponent("source.md")
+            let occupiedURL = folder.appendingPathComponent("target.md")
+            try Data("source bytes".utf8).write(to: sourceURL)
+            try Data("occupied bytes".utf8).write(to: occupiedURL)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
+            let index = RecordingSearchIndex()
+            let appState = AppState(
+                defaults: defaults,
+                recoveryStore: RecoveryStore(
+                    rootURL: folder.appendingPathComponent("Recovery")
+                ),
+                workspaceCatalog: catalog,
+                searchIndex: index
+            )
+            let window = EditorWindowSession(request: .newDocument())
+            window.connect(to: appState)
+            let tab = try XCTUnwrap(window.activeTab)
+            try tab.activate(
+                documentURL: sourceURL,
+                in: workspace,
+                workspaceID: descriptor.id,
+                registry: appState.documentRegistry,
+                conflictResolver: appState.conflictResolver,
+                documentMover: appState.documentMover
+            )
+            let documentID = tab.documentID
+
+            let initial = try await tab.rename(to: "target.md")
+            guard case let .collision(approval) = initial else {
+                return XCTFail("Expected the occupied destination to require approval")
+            }
+            XCTAssertEqual(tab.pendingCollision?.id, approval.id)
+
+            try await appState.resolvePendingFileCollisionNow(.keepBoth, for: tab)
+
+            let destinationURL = folder.appendingPathComponent("target (2).md")
+            XCTAssertEqual(
+                try XCTUnwrap(tab.fileURL).standardizedFileURL,
+                destinationURL.standardizedFileURL
+            )
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+            XCTAssertEqual(try String(contentsOf: occupiedURL), "occupied bytes")
+            XCTAssertEqual(try String(contentsOf: destinationURL), "source bytes")
+            XCTAssertNil(tab.pendingCollision)
+            XCTAssertEqual(tab.documentID, documentID)
+            let events = await index.recordedEvents()
+            XCTAssertTrue(events.contains {
+                $0.kind == .deleted
+                    && $0.fileURL?.standardizedFileURL == sourceURL.standardizedFileURL
+            })
+            XCTAssertTrue(events.contains {
+                $0.kind == .created
+                    && $0.fileURL?.standardizedFileURL == destinationURL.standardizedFileURL
+            })
+        }
+    }
+
+    func testNestedMoveParentCreationRejectsSymlinkReplacementRace() throws {
+        try withTemporaryDirectory { root in
+            let outside = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ClioNavigationOutside-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: outside,
+                withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: outside) }
+
+            let expectedParent = root.appendingPathComponent("drafts", isDirectory: true)
+            let retainedParent = root.appendingPathComponent("retained", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: expectedParent,
+                withIntermediateDirectories: true
+            )
+            let destination = expectedParent
+                .appendingPathComponent("nested", isDirectory: true)
+                .appendingPathComponent("move.md")
+            var replaced = false
+
+            XCTAssertThrowsError(
+                try RootConfinedDirectoryCreator.createParent(
+                    of: destination,
+                    inside: root,
+                    beforeOpeningComponent: { componentURL in
+                        guard !replaced,
+                              componentURL.standardizedFileURL == expectedParent.standardizedFileURL else {
+                            return
+                        }
+                        replaced = true
+                        try FileManager.default.moveItem(
+                            at: expectedParent,
+                            to: retainedParent
+                        )
+                        try FileManager.default.createSymbolicLink(
+                            at: expectedParent,
+                            withDestinationURL: outside
+                        )
+                    }
+                )
+            )
+            XCTAssertTrue(replaced)
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: outside.appendingPathComponent("nested").path
+                )
+            )
         }
     }
 
@@ -1076,11 +1225,12 @@ private extension NavigationSessionTests {
                     isStale: false
                 )
             },
-            workspaceFactory: { id, url in
+            workspaceFactory: { id, url, journal in
                 try Workspace(
                     id: id,
                     rootURL: url,
-                    accessSecurityScopedResource: false
+                    accessSecurityScopedResource: false,
+                    crashRecoveryJournal: journal
                 )
             }
         )

@@ -120,13 +120,19 @@ struct ContentView: View {
             presenting: windowSession.activeTab?.pendingCollision
         ) { _ in
             Button("Cancel", role: .cancel) {
-                windowSession.activeTab?.resolveCollision(.cancel)
+                if let tab = windowSession.activeTab {
+                    appState.resolvePendingFileCollision(.cancel, for: tab)
+                }
             }
             Button("Keep Both") {
-                windowSession.activeTab?.resolveCollision(.keepBoth)
+                if let tab = windowSession.activeTab {
+                    appState.resolvePendingFileCollision(.keepBoth, for: tab)
+                }
             }
             Button("Replace", role: .destructive) {
-                windowSession.activeTab?.resolveCollision(.replace)
+                if let tab = windowSession.activeTab {
+                    appState.resolvePendingFileCollision(.replace, for: tab)
+                }
             }
         } message: { collision in
             Text("\(collision.proposedLocator.relativePath) is already present. Replace it or keep both using the next “name (2).md” variant.")

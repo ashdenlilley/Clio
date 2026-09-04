@@ -589,28 +589,21 @@ final class EditorSession: Identifiable {
         return outcome
     }
 
-    func resolveCollision(_ choice: CollisionChoice) {
+    func resolveCollisionNow(
+        _ choice: CollisionChoice
+    ) async throws -> FileMutationOutcome {
         guard let filename = pendingRenameFilename,
-              let approvedCollision = pendingCollision else { return }
+              let approvedCollision = pendingCollision else { return .cancelled }
         if choice == .cancel {
             pendingCollision = nil
             pendingRenameFilename = nil
-            return
+            return .cancelled
         }
-        Task { @MainActor [weak self] in
-            do {
-                _ = try await self?.rename(
-                    to: filename,
-                    collisionChoice: choice,
-                    approvedCollision: approvedCollision
-                )
-            } catch {
-                self?.presentError(
-                    "Clio couldn’t complete the file operation. No version was silently replaced.",
-                    underlying: error
-                )
-            }
-        }
+        return try await rename(
+            to: filename,
+            collisionChoice: choice,
+            approvedCollision: approvedCollision
+        )
     }
 
     func moveToTrash() throws {
