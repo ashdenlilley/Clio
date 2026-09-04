@@ -1,0 +1,12 @@
+.DS_Store
+
+# Xcode user state and local build output
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager, if packages are added later
+.build/
+.swiftpm/
+
