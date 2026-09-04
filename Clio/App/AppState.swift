@@ -301,6 +301,16 @@ final class AppState {
             allSaved = false
         }
 
+        do {
+            try documentRegistry.identityStore.flushPendingPersistence()
+        } catch {
+            allSaved = false
+            presentError(
+                "Clio couldn’t finish saving document identity metadata.",
+                underlying: error
+            )
+        }
+
         return allSaved
     }
 
@@ -695,16 +705,19 @@ private extension AppState {
             case .moved:
                 guard let oldURL = event.previousFileURL,
                       let newURL = event.fileURL,
-                      let document = documentRegistry.document(at: oldURL, in: workspace) else {
+                      let document = event.documentID.flatMap({
+                          documentRegistry.document(withID: $0)
+                      }) ?? documentRegistry.document(at: oldURL, in: workspace) else {
                     return
                 }
-                let oldLocator = try workspace.locator(for: oldURL)
                 try workspace.reconcileExternalMove(
                     for: document,
                     from: oldURL,
                     to: newURL
                 )
-                documentRegistry.removeLocator(oldLocator, for: document.id)
+                if let oldLocator = try? workspace.locator(for: oldURL) {
+                    documentRegistry.removeLocator(oldLocator, for: document.id)
+                }
                 documentRegistry.updateAliases(for: document, in: workspace)
                 documentRegistry.retarget(document, to: workspace)
                 if document.conflict != nil {
@@ -773,7 +786,19 @@ private extension AppState {
                 }
 
             case .created:
-                break
+                guard let url = event.fileURL,
+                      let document = documentRegistry.document(at: url, in: workspace) else {
+                    return
+                }
+                // A path may be recreated while a correlated delete is still
+                // pending. Treat it as an external revision before autosave
+                // can resume against stale bytes.
+                try workspace.reconcileExternalChange(for: document)
+                if document.conflict != nil {
+                    documentRegistry.cancelAutosave(for: document.id)
+                } else if document.fileURL != nil {
+                    documentRegistry.updateAliases(for: document, in: workspace)
+                }
             }
         } catch {
             presentError(

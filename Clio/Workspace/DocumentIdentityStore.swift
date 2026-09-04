@@ -50,6 +50,7 @@ final class DocumentIdentityStore: @unchecked Sendable {
         var locators: [String: UUID] = [:]
         var physicalFiles: [String: UUID] = [:]
         var physicalPaths: [String: String] = [:]
+        var physicalKeyByPath: [String: String] = [:]
         var tombstones: [String: UUID] = [:]
         var tombstoneOrder: [String] = []
 
@@ -67,6 +68,18 @@ final class DocumentIdentityStore: @unchecked Sendable {
             tombstones = try values.decodeIfPresent([String: UUID].self, forKey: .tombstones) ?? [:]
             tombstoneOrder = try values.decodeIfPresent([String].self, forKey: .tombstoneOrder)
                 ?? Array(tombstones.keys)
+
+            // This reverse index is derived rather than persisted so older
+            // stores migrate automatically. Collapse historical duplicate
+            // path entries left by inode-swapping autosaves while loading.
+            for key in physicalPaths.keys.sorted() {
+                guard let path = physicalPaths[key] else { continue }
+                if let superseded = physicalKeyByPath.updateValue(key, forKey: path),
+                   superseded != key {
+                    physicalFiles[superseded] = nil
+                    physicalPaths[superseded] = nil
+                }
+            }
         }
     }
 
@@ -77,6 +90,7 @@ final class DocumentIdentityStore: @unchecked Sendable {
         qos: .utility
     )
     private let storageURL: URL?
+    private let persistenceWriter: (Data, URL) throws -> Void
     private var state: State
     private var startupError: Error?
     private var pendingPersistence: DispatchWorkItem?
@@ -91,8 +105,12 @@ final class DocumentIdentityStore: @unchecked Sendable {
         let tombstones: Int
     }
 
-    init(storageURL: URL? = DocumentIdentityStore.defaultStorageURL) {
+    init(
+        storageURL: URL? = DocumentIdentityStore.defaultStorageURL,
+        persistenceWriter: @escaping (Data, URL) throws -> Void = DocumentIdentityStore.writeData
+    ) {
         self.storageURL = storageURL
+        self.persistenceWriter = persistenceWriter
         guard let storageURL,
               FileManager.default.fileExists(atPath: storageURL.path) else {
             state = State()
@@ -122,14 +140,8 @@ final class DocumentIdentityStore: @unchecked Sendable {
         // Update every observed resource path before resolving locators. This
         // lets one scan distinguish a moved live inode from a newly-created
         // inode that reused its old path, regardless of traversal order.
-        for candidate in candidates {
-            guard let identity = candidate.physicalIdentity,
-                  let canonicalPath = candidate.canonicalPath else { continue }
-            let key = Self.key(identity)
-            if state.physicalPaths[key] != canonicalPath {
-                state.physicalPaths[key] = canonicalPath
-                changed = true
-            }
+        if reconcileObservedPhysicalPathsLocked(candidates) {
+            changed = true
         }
         var physicalsByDocumentID: [UUID: [(key: String, path: String)]] = [:]
         physicalsByDocumentID.reserveCapacity(state.physicalFiles.count)
@@ -144,8 +156,7 @@ final class DocumentIdentityStore: @unchecked Sendable {
             var physicalID = physicalKey.flatMap { state.physicalFiles[$0] }
             if physicalID == tombstonedID {
                 if let physicalKey {
-                    state.physicalFiles[physicalKey] = nil
-                    state.physicalPaths[physicalKey] = nil
+                    removePhysicalLocked(key: physicalKey)
                 }
                 physicalID = nil
                 changed = true
@@ -339,6 +350,14 @@ final class DocumentIdentityStore: @unchecked Sendable {
         if let startupError { throw startupError }
         try persistLocked()
     }
+
+    /// Background persistence failures are observable without crossing the
+    /// identity lock. A lifecycle flush retries the latest complete state.
+    func persistenceFailureDescription() -> String? {
+        persistenceLock.lock()
+        defer { persistenceLock.unlock() }
+        return backgroundPersistenceError?.localizedDescription
+    }
 }
 
 private extension DocumentIdentityStore {
@@ -355,31 +374,97 @@ private extension DocumentIdentityStore {
         }
     }
 
+    func reconcileObservedPhysicalPathsLocked(
+        _ candidates: [DocumentIdentityCandidate]
+    ) -> Bool {
+        var changed = false
+        var observedKeyByPath: [String: String] = [:]
+        observedKeyByPath.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            guard let identity = candidate.physicalIdentity,
+                  let path = candidate.canonicalPath else { continue }
+            let key = Self.key(identity)
+            observedKeyByPath[path] = key
+            if state.physicalPaths[key] != path {
+                state.physicalPaths[key] = path
+                changed = true
+            }
+        }
+
+        var rebuilt: [String: String] = [:]
+        rebuilt.reserveCapacity(state.physicalPaths.count)
+        var staleKeys: [String] = []
+        for (key, path) in state.physicalPaths {
+            if let observed = observedKeyByPath[path], observed != key {
+                staleKeys.append(key)
+            } else if let existing = rebuilt[path], existing != key {
+                let winner = observedKeyByPath[path] ?? key
+                staleKeys.append(winner == key ? existing : key)
+                rebuilt[path] = winner
+            } else {
+                rebuilt[path] = key
+            }
+        }
+        let staleKeySet = Set(staleKeys)
+        for key in staleKeySet {
+            state.physicalFiles[key] = nil
+            state.physicalPaths[key] = nil
+            changed = true
+        }
+        let filtered = rebuilt.filter { !staleKeySet.contains($0.value) }
+        if state.physicalKeyByPath != filtered {
+            state.physicalKeyByPath = filtered
+            changed = true
+        }
+        return changed
+    }
+
     func bindPhysicalLocked(
         key: String,
         documentID: UUID,
         canonicalPath: String?
     ) -> Bool {
         var changed = false
-        if let canonicalPath {
-            let staleKeys = state.physicalPaths.compactMap { existingKey, path in
-                path == canonicalPath && existingKey != key ? existingKey : nil
-            }
-            for staleKey in staleKeys {
-                state.physicalFiles[staleKey] = nil
-                state.physicalPaths[staleKey] = nil
-                changed = true
-            }
+        if let canonicalPath,
+           bindPhysicalPathLocked(key: key, canonicalPath: canonicalPath) {
+            changed = true
         }
         if state.physicalFiles[key] != documentID {
             state.physicalFiles[key] = documentID
             changed = true
         }
-        if let canonicalPath, state.physicalPaths[key] != canonicalPath {
+        return changed
+    }
+
+    func bindPhysicalPathLocked(key: String, canonicalPath: String) -> Bool {
+        var changed = false
+        if let oldPath = state.physicalPaths[key], oldPath != canonicalPath,
+           state.physicalKeyByPath[oldPath] == key {
+            state.physicalKeyByPath[oldPath] = nil
+            changed = true
+        }
+        if let superseded = state.physicalKeyByPath[canonicalPath],
+           superseded != key {
+            removePhysicalLocked(key: superseded)
+            changed = true
+        }
+        if state.physicalPaths[key] != canonicalPath {
             state.physicalPaths[key] = canonicalPath
             changed = true
         }
+        if state.physicalKeyByPath[canonicalPath] != key {
+            state.physicalKeyByPath[canonicalPath] = key
+            changed = true
+        }
         return changed
+    }
+
+    func removePhysicalLocked(key: String) {
+        if let path = state.physicalPaths.removeValue(forKey: key),
+           state.physicalKeyByPath[path] == key {
+            state.physicalKeyByPath[path] = nil
+        }
+        state.physicalFiles[key] = nil
     }
 
     func pruneOrphanedPhysicalMappingsLocked() -> Bool {
@@ -388,8 +473,7 @@ private extension DocumentIdentityStore {
             liveIDs.contains($0.value) ? nil : $0.key
         }
         for key in staleKeys {
-            state.physicalFiles[key] = nil
-            state.physicalPaths[key] = nil
+            removePhysicalLocked(key: key)
         }
         return !staleKeys.isEmpty
     }
@@ -429,7 +513,7 @@ private extension DocumentIdentityStore {
         persistenceLock.unlock()
         let snapshot = state
         try persistenceQueue.sync {
-            try Self.write(snapshot, to: storageURL)
+            try Self.write(snapshot, to: storageURL, using: persistenceWriter)
         }
         persistenceLock.lock()
         backgroundPersistenceError = nil
@@ -461,7 +545,7 @@ private extension DocumentIdentityStore {
             self.persistenceQueue.async { [weak self] in
                 guard let self else { return }
                 do {
-                    try Self.write(snapshot, to: storageURL)
+                    try Self.write(snapshot, to: storageURL, using: self.persistenceWriter)
                 } catch {
                     self.persistenceLock.lock()
                     self.backgroundPersistenceError = error
@@ -481,13 +565,21 @@ private extension DocumentIdentityStore {
         )
     }
 
-    private static func write(_ state: State, to storageURL: URL) throws {
+    private static func write(
+        _ state: State,
+        to storageURL: URL,
+        using writer: (Data, URL) throws -> Void
+    ) throws {
+        let data = try JSONEncoder().encode(state)
+        try writer(data, storageURL)
+    }
+
+    private static func writeData(_ data: Data, to storageURL: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(
             at: storageURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let data = try JSONEncoder().encode(state)
         try data.write(to: storageURL, options: .atomic)
     }
 }

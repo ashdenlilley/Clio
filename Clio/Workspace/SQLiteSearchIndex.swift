@@ -530,11 +530,19 @@ private extension SQLiteSearchIndex {
 
     static func isMissingFileError(_ error: Error) -> Bool {
         let error = error as NSError
-        if error.domain == NSCocoaErrorDomain {
-            return error.code == NSFileNoSuchFileError
-                || error.code == NSFileReadNoSuchFileError
+        if error.domain == NSCocoaErrorDomain,
+           error.code == NSFileNoSuchFileError
+            || error.code == NSFileReadNoSuchFileError {
+            return true
         }
-        return error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT)
+        if error.domain == NSPOSIXErrorDomain,
+           error.code == Int(ENOENT) || error.code == Int(ENOTDIR) {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isMissingFileError(underlying)
+        }
+        return false
     }
 
     static func relativePath(

@@ -38,6 +38,9 @@ struct WorkspaceEvent: Codable, Hashable, Sendable, Identifiable {
     let observedAt: Date
     let origin: WorkspaceEventOrigin
     let selfWriteToken: UUID?
+    /// Authoritative identity for synthesized cross-root moves whose source
+    /// locator cannot be expressed in the destination workspace.
+    let documentID: DocumentID?
 
     init(
         id: UUID = UUID(),
@@ -47,7 +50,8 @@ struct WorkspaceEvent: Codable, Hashable, Sendable, Identifiable {
         previousFileURL: URL? = nil,
         observedAt: Date = Date(),
         origin: WorkspaceEventOrigin = .unknown,
-        selfWriteToken: UUID? = nil
+        selfWriteToken: UUID? = nil,
+        documentID: DocumentID? = nil
     ) {
         self.id = id
         self.workspaceID = workspaceID
@@ -57,6 +61,7 @@ struct WorkspaceEvent: Codable, Hashable, Sendable, Identifiable {
         self.observedAt = observedAt
         self.origin = origin
         self.selfWriteToken = selfWriteToken
+        self.documentID = documentID
     }
 }
 

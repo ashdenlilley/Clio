@@ -403,6 +403,92 @@ final class DocumentIdentityIntegrationTests: XCTestCase {
         XCTAssertNotEqual(reusedID, originalID)
     }
 
+    func testIdentityResolutionScalesLinearlyToOneHundredThousandCandidates() throws {
+        func candidates(count: Int, workspaceID: WorkspaceID) throws -> [DocumentIdentityCandidate] {
+            try (0..<count).map { number in
+                DocumentIdentityCandidate(
+                    locator: try DocumentLocator(
+                        workspaceID: workspaceID,
+                        relativePath: "notes/\(number).md"
+                    ),
+                    physicalIdentity: .resource(
+                        volumeIdentifier: "test-volume",
+                        fileResourceIdentifier: "file-\(number)"
+                    ),
+                    canonicalPath: "/workspace/notes/\(number).md"
+                )
+            }
+        }
+
+        let workspaceID = WorkspaceID()
+        let small = try candidates(count: 25_000, workspaceID: workspaceID)
+        let large = try candidates(count: 100_000, workspaceID: workspaceID)
+        let smallStart = ProcessInfo.processInfo.systemUptime
+        _ = try DocumentIdentityStore(storageURL: nil).resolve(small)
+        let smallDuration = ProcessInfo.processInfo.systemUptime - smallStart
+        let largeStart = ProcessInfo.processInfo.systemUptime
+        _ = try DocumentIdentityStore(storageURL: nil).resolve(large)
+        let largeDuration = ProcessInfo.processInfo.systemUptime - largeStart
+
+        XCTAssertLessThan(
+            largeDuration,
+            smallDuration * 8 + 2,
+            "100k identity resolution regressed toward quadratic behavior"
+        )
+    }
+
+    func testBackgroundPersistenceFailureIsObservableAndLifecycleFlushRetries() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let writer = FailableIdentityWriter()
+            let storageURL = rootURL.appendingPathComponent("identities.json")
+            let store = DocumentIdentityStore(
+                storageURL: storageURL,
+                persistenceWriter: { try writer.write($0, to: $1) }
+            )
+            let locator = try DocumentLocator(
+                workspaceID: WorkspaceID(),
+                relativePath: "note.md"
+            )
+            let id = try store.resolve(DocumentIdentityCandidate(locator: locator))
+            writer.shouldFail = true
+            try store.bind(
+                id,
+                locator: locator,
+                physicalIdentity: .resource(
+                    volumeIdentifier: "volume",
+                    fileResourceIdentifier: "durable-file"
+                ),
+                canonicalPath: "/workspace/note.md"
+            )
+            for _ in 0..<50 where store.persistenceFailureDescription() == nil {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertNotNil(store.persistenceFailureDescription())
+
+            writer.shouldFail = false
+            try store.flushPendingPersistence()
+            XCTAssertNil(store.persistenceFailureDescription())
+            let restored = DocumentIdentityStore(storageURL: storageURL)
+            let alias = try DocumentLocator(
+                workspaceID: WorkspaceID(),
+                relativePath: "alias.md"
+            )
+            XCTAssertEqual(
+                try restored.resolve(
+                    DocumentIdentityCandidate(
+                        locator: alias,
+                        physicalIdentity: .resource(
+                            volumeIdentifier: "volume",
+                            fileResourceIdentifier: "durable-file"
+                        ),
+                        canonicalPath: "/workspace/note.md"
+                    )
+                ),
+                id
+            )
+        }
+    }
+
     @MainActor
     func testLiveRegistryIdentityWinsAndRepairsPersistentMismatch() throws {
         try withTemporaryDirectory { rootURL in
@@ -440,6 +526,26 @@ final class DocumentIdentityIntegrationTests: XCTestCase {
 }
 
 private extension DocumentIdentityIntegrationTests {
+    final class FailableIdentityWriter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var failureEnabled = false
+        var shouldFail: Bool {
+            get { lock.withLock { failureEnabled } }
+            set { lock.withLock { failureEnabled = newValue } }
+        }
+
+        func write(_ data: Data, to url: URL) throws {
+            if shouldFail {
+                throw NSError(domain: "ClioIdentityTests", code: 91)
+            }
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
     func write(_ source: String, to url: URL) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),

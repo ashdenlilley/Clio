@@ -167,6 +167,63 @@ final class WorkspaceIndexTests: XCTestCase {
         }
     }
 
+    func testFullScanReportsUnavailableWhenRootDisappearsAfterValidation() async throws {
+        try await withTemporaryDirectory { rootURL in
+            try write("vanishing", to: rootURL.appendingPathComponent("note.md"))
+            let fileManager = DisappearingRootFileManager(rootURL: rootURL)
+            fileManager.disappearsDuringNextScan = true
+
+            do {
+                _ = try await WorkspaceScanner(
+                    fileManager: fileManager,
+                    identityStore: DocumentIdentityStore(storageURL: nil)
+                ).scan(
+                    workspace: WorkspaceDescriptor(rootURL: rootURL),
+                    policy: .default
+                )
+                XCTFail("Expected the vanished root to be unavailable")
+            } catch let error as WorkspaceScanner.ScannerError {
+                guard case .rootUnavailable = error else {
+                    return XCTFail("Unexpected scanner error: \(error)")
+                }
+            }
+        }
+    }
+
+    func testIncrementalIndexTreatsENOTDIRAndWrappedMissingAsDeletion() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let folderURL = rootURL.appendingPathComponent("folder", isDirectory: true)
+            let noteURL = folderURL.appendingPathComponent("note.md")
+            try write("nested stale token", to: noteURL)
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: rootURL.appendingPathComponent("index.sqlite3")
+            )
+            try await index.rebuild(workspaces: [workspace], policy: .default)
+            try FileManager.default.removeItem(at: folderURL)
+            try write("not a directory", to: folderURL)
+
+            try await index.apply([
+                WorkspaceEvent(
+                    workspaceID: workspace.id,
+                    kind: .modified,
+                    fileURL: noteURL,
+                    origin: .external
+                ),
+            ])
+            let result = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "nested stale"))
+            )
+            XCTAssertTrue(result.results.isEmpty)
+            let wrapped = NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadUnknownError,
+                userInfo: [NSUnderlyingErrorKey: POSIXError(.ENOENT)]
+            )
+            XCTAssertTrue(WorkspaceScanner.isRacedDisappearance(wrapped))
+        }
+    }
+
     func testScannerMatchesGitIgnoreOracleForNestedAndEscapedRules() async throws {
         guard gitExecutableURL != nil else {
             throw XCTSkip("Git is unavailable for the differential ignore test.")
@@ -805,6 +862,105 @@ final class WorkspaceIndexTests: XCTestCase {
     }
 
     @MainActor
+    func testTwoRescanOnlyMarkersCorrelateOverlappingMoveBeforeSlowRebuildInEitherOrder() async throws {
+        try await assertRescanOnlyOverlappingMove(nestedFirst: true)
+        try await assertRescanOnlyOverlappingMove(nestedFirst: false)
+    }
+
+    @MainActor
+    func testFinderSiblingWorkspaceMoveRetargetsCleanDirtyAndConflictedBuffersInEitherOrder() async throws {
+        for mode in SiblingMoveMode.allCases {
+            for destinationFirst in [false, true] {
+                try await assertSiblingWorkspaceMove(
+                    mode: mode,
+                    destinationFirst: destinationFirst
+                )
+            }
+        }
+    }
+
+    @MainActor
+    func testRecreatedPathCancelsDeferredDeleteAndLoadsExternalRevision() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let fileURL = rootURL.appendingPathComponent("recreated.md")
+            try write("original", to: fileURL)
+            let setup = try makeReconciliationCoordinator(rootURL: rootURL)
+            defer { setup.defaults.removePersistentDomain(forName: setup.suiteName) }
+            try await setup.coordinator.synchronize(policy: .default)
+            let document = try setup.registry.open(fileURL, in: setup.workspace)
+            try FileManager.default.removeItem(at: fileURL)
+            try await setup.coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: setup.descriptor.id,
+                    kind: .deleted,
+                    fileURL: fileURL,
+                    origin: .external
+                ),
+            ])
+            try write("recreated outside bytes", to: fileURL)
+            try await setup.coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: setup.descriptor.id,
+                    kind: .created,
+                    fileURL: fileURL,
+                    origin: .external
+                ),
+            ])
+            try await Task.sleep(for: .milliseconds(650))
+
+            XCTAssertEqual(document.fileURL, fileURL.standardizedFileURL)
+            XCTAssertEqual(document.text, "recreated outside bytes")
+            XCTAssertFalse(document.isDirty)
+        }
+    }
+
+    @MainActor
+    func testRenameAwayThenBackDoesNotSuppressLaterRealDelete() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let fileURL = rootURL.appendingPathComponent("roundtrip.md")
+            let awayURL = rootURL.appendingPathComponent("away.md")
+            try write("roundtrip", to: fileURL)
+            let setup = try makeReconciliationCoordinator(rootURL: rootURL)
+            defer { setup.defaults.removePersistentDomain(forName: setup.suiteName) }
+            try await setup.coordinator.synchronize(policy: .default)
+            let document = try setup.registry.open(fileURL, in: setup.workspace)
+            try FileManager.default.moveItem(at: fileURL, to: awayURL)
+            try await setup.coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: setup.descriptor.id,
+                    kind: .moved,
+                    fileURL: awayURL,
+                    previousFileURL: fileURL,
+                    origin: .external
+                ),
+            ])
+            try FileManager.default.moveItem(at: awayURL, to: fileURL)
+            try await setup.coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: setup.descriptor.id,
+                    kind: .moved,
+                    fileURL: fileURL,
+                    previousFileURL: awayURL,
+                    origin: .external
+                ),
+            ])
+            try FileManager.default.removeItem(at: fileURL)
+            try await setup.coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: setup.descriptor.id,
+                    kind: .deleted,
+                    fileURL: fileURL,
+                    origin: .external
+                ),
+            ])
+            try await Task.sleep(for: .milliseconds(650))
+
+            XCTAssertNil(document.fileURL)
+            XCTAssertTrue(document.requiresExplicitRestore)
+        }
+    }
+
+    @MainActor
     func testWatcherEventsInvalidateIndexAndTreeWhileAccessLossKeepsStaleTree() async throws {
         try await withTemporaryDirectory { rootURL in
             let workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
@@ -989,6 +1145,101 @@ final class WorkspaceIndexTests: XCTestCase {
     }
 
     @MainActor
+    func testWatcherEventsDuringLongSynchronizationAreBoundedToRescan() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let catalog = testCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(rootURL)
+            let index = SuspendedSearchIndex()
+            var source: ManualWorkspaceEventSource?
+            let coordinator = WorkspaceIndexCoordinator(
+                catalog: catalog,
+                registry: DocumentBufferRegistry(
+                    identityStore: DocumentIdentityStore(storageURL: nil)
+                ),
+                searchIndex: index,
+                watcherFactory: { _ in
+                    let created = ManualWorkspaceEventSource()
+                    source = created
+                    return created
+                }
+            )
+            let synchronization = Task {
+                try await coordinator.synchronize(policy: .default)
+            }
+            await index.waitUntilRebuildStarts()
+            for number in 0..<3_000 {
+                try XCTUnwrap(source).send(
+                    WorkspaceEvent(
+                        workspaceID: descriptor.id,
+                        kind: .modified,
+                        fileURL: rootURL.appendingPathComponent("\(number).md")
+                    )
+                )
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            await index.resumeRebuild()
+            try await synchronization.value
+            for _ in 0..<100 {
+                if await index.appliedBatchCount > 0 { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let applied = await index.lastAppliedEvents
+            XCTAssertEqual(applied.count, 1)
+            XCTAssertEqual(applied.first?.kind, .rescanRequired)
+        }
+    }
+
+    @MainActor
+    func testRootDisappearanceDuringRescanKeepsStaleTreeAndIndex() async throws {
+        try await withTemporaryDirectory { baseURL in
+            let rootURL = baseURL.appendingPathComponent("workspace", isDirectory: true)
+            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try write("stale retained token", to: rootURL.appendingPathComponent("note.md"))
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let catalog = testCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(rootURL)
+            let fileManager = DisappearingRootFileManager(rootURL: rootURL)
+            let store = DocumentIdentityStore(storageURL: nil)
+            let index = try SQLiteSearchIndex(
+                databaseURL: baseURL.appendingPathComponent("stale.sqlite3"),
+                identityStore: store
+            )
+            let coordinator = WorkspaceIndexCoordinator(
+                catalog: catalog,
+                registry: DocumentBufferRegistry(identityStore: store),
+                searchIndex: index,
+                scanner: WorkspaceScanner(fileManager: fileManager, identityStore: store),
+                watcherFactory: { _ in IdleWorkspaceEventSource() }
+            )
+            try await coordinator.synchronize(policy: .default)
+            let originalTree = coordinator.treeSnapshots[descriptor.id]
+            fileManager.disappearsDuringNextScan = true
+
+            try await coordinator.apply([
+                WorkspaceEvent(
+                    workspaceID: descriptor.id,
+                    kind: .rescanRequired,
+                    fileURL: rootURL,
+                    origin: .external
+                ),
+            ])
+
+            XCTAssertEqual(coordinator.treeSnapshots[descriptor.id], originalTree)
+            XCTAssertNotNil(coordinator.failures[descriptor.id])
+            XCTAssertNotNil(coordinator.globalFailure)
+            let retained = try await finalBatch(
+                from: await coordinator.search(
+                    WorkspaceSearchQuery(text: "stale retained")
+                )
+            )
+            XCTAssertEqual(retained.results.count, 1)
+        }
+    }
+
+    @MainActor
     func testCommittedCrossWorkspaceMoveRetainsCanonicalSearchAndTreeIdentity() async throws {
         try await withTemporaryDirectory { baseURL in
             let sourceURL = baseURL.appendingPathComponent("source", isDirectory: true)
@@ -1167,6 +1418,204 @@ private extension WorkspaceIndexTests {
         case rescanThenMove
     }
 
+    enum SiblingMoveMode: CaseIterable {
+        case clean
+        case dirty
+        case conflicted
+    }
+
+    @MainActor
+    func makeReconciliationCoordinator(rootURL: URL) throws -> (
+        descriptor: WorkspaceDescriptor,
+        workspace: Workspace,
+        registry: DocumentBufferRegistry,
+        coordinator: WorkspaceIndexCoordinator,
+        defaults: UserDefaults,
+        suiteName: String
+    ) {
+        let (defaults, suiteName) = try temporaryDefaults()
+        let catalog = testCatalog(defaults: defaults)
+        let descriptor = try catalog.addAuthorizedFolder(rootURL)
+        let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
+        let store = DocumentIdentityStore(
+            storageURL: rootURL.appendingPathComponent("identities.json")
+        )
+        let registry = DocumentBufferRegistry(identityStore: store)
+        let state = AppState(
+            defaults: defaults,
+            recoveryStore: RecoveryStore(
+                rootURL: rootURL.appendingPathComponent("recovery", isDirectory: true)
+            ),
+            documentRegistry: registry
+        )
+        let coordinator = WorkspaceIndexCoordinator(
+            catalog: catalog,
+            registry: registry,
+            searchIndex: try SQLiteSearchIndex(
+                databaseURL: rootURL.appendingPathComponent("index.sqlite3"),
+                identityStore: store
+            ),
+            eventReconciler: { event, workspace in
+                await state.reconcileWorkspaceEvent(event, in: workspace)
+            },
+            watcherFactory: { _ in IdleWorkspaceEventSource() }
+        )
+        return (descriptor, workspace, registry, coordinator, defaults, suiteName)
+    }
+
+    @MainActor
+    func assertSiblingWorkspaceMove(
+        mode: SiblingMoveMode,
+        destinationFirst: Bool
+    ) async throws {
+        try await withTemporaryDirectory { baseURL in
+            let sourceURL = baseURL.appendingPathComponent("source", isDirectory: true)
+            let destinationURL = baseURL.appendingPathComponent("destination", isDirectory: true)
+            try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            let oldURL = sourceURL.appendingPathComponent("note.md")
+            let newURL = destinationURL.appendingPathComponent("note.md")
+            try write("disk base", to: oldURL)
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let catalog = testCatalog(defaults: defaults)
+            let sourceDescriptor = try catalog.addAuthorizedFolder(sourceURL)
+            let destinationDescriptor = try catalog.addAuthorizedFolder(destinationURL)
+            let sourceWorkspace = try XCTUnwrap(catalog.workspace(id: sourceDescriptor.id))
+            let destinationWorkspace = try XCTUnwrap(catalog.workspace(id: destinationDescriptor.id))
+            let store = DocumentIdentityStore(storageURL: baseURL.appendingPathComponent("ids.json"))
+            let registry = DocumentBufferRegistry(identityStore: store)
+            let state = AppState(
+                defaults: defaults,
+                recoveryStore: RecoveryStore(
+                    rootURL: baseURL.appendingPathComponent("recovery", isDirectory: true)
+                ),
+                documentRegistry: registry
+            )
+            let coordinator = WorkspaceIndexCoordinator(
+                catalog: catalog,
+                registry: registry,
+                searchIndex: try SQLiteSearchIndex(
+                    databaseURL: baseURL.appendingPathComponent("index.sqlite3"),
+                    identityStore: store
+                ),
+                eventReconciler: { event, workspace in
+                    await state.reconcileWorkspaceEvent(event, in: workspace)
+                },
+                watcherFactory: { _ in IdleWorkspaceEventSource() }
+            )
+            try await coordinator.synchronize(policy: .default)
+            let document = try registry.open(oldURL, in: sourceWorkspace)
+            if mode != .clean {
+                document.replaceText(with: "local unsaved bytes")
+            }
+            if mode == .conflicted {
+                let handle = try FileHandle(forWritingTo: oldURL)
+                try handle.truncate(atOffset: 0)
+                try handle.write(contentsOf: Data("outside conflicted bytes".utf8))
+                try handle.synchronize()
+                try handle.close()
+                try sourceWorkspace.reconcileExternalChange(for: document)
+                XCTAssertNotNil(document.conflict)
+            }
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+            let sourceDelete = WorkspaceEvent(
+                workspaceID: sourceDescriptor.id,
+                kind: .deleted,
+                fileURL: oldURL,
+                origin: .external
+            )
+            let destinationCreate = WorkspaceEvent(
+                workspaceID: destinationDescriptor.id,
+                kind: .created,
+                fileURL: newURL,
+                origin: .external
+            )
+            if destinationFirst {
+                try await coordinator.apply([destinationCreate])
+                try await coordinator.apply([sourceDelete])
+            } else {
+                try await coordinator.apply([sourceDelete])
+                try await coordinator.apply([destinationCreate])
+            }
+            try await Task.sleep(for: .milliseconds(650))
+
+            XCTAssertEqual(document.fileURL, newURL.standardizedFileURL)
+            XCTAssertEqual(document.text, mode == .clean ? "disk base" : "local unsaved bytes")
+            XCTAssertEqual(document.conflict != nil, mode == .conflicted)
+            XCTAssertEqual(document.isDirty, mode != .clean)
+            XCTAssertTrue(try registry.open(newURL, in: destinationWorkspace) === document)
+        }
+    }
+
+    @MainActor
+    func assertRescanOnlyOverlappingMove(nestedFirst: Bool) async throws {
+        try await withTemporaryDirectory { rootURL in
+            let nestedURL = rootURL.appendingPathComponent("nested", isDirectory: true)
+            try FileManager.default.createDirectory(at: nestedURL, withIntermediateDirectories: true)
+            let oldURL = nestedURL.appendingPathComponent("note.md")
+            let newURL = rootURL.appendingPathComponent("moved.md")
+            try write("rescan physical identity", to: oldURL)
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let catalog = testCatalog(defaults: defaults)
+            let parent = try catalog.addAuthorizedFolder(rootURL)
+            let nested = try catalog.addAuthorizedFolder(nestedURL)
+            let store = DocumentIdentityStore(storageURL: nil)
+            let registry = DocumentBufferRegistry(identityStore: store)
+            let state = AppState(
+                defaults: defaults,
+                recoveryStore: RecoveryStore(
+                    rootURL: rootURL.appendingPathComponent("recovery", isDirectory: true)
+                ),
+                documentRegistry: registry
+            )
+            let index = SuspendedApplySearchIndex()
+            let coordinator = WorkspaceIndexCoordinator(
+                catalog: catalog,
+                registry: registry,
+                searchIndex: index,
+                scanner: WorkspaceScanner(identityStore: store),
+                eventReconciler: { event, workspace in
+                    await state.reconcileWorkspaceEvent(event, in: workspace)
+                },
+                watcherFactory: { _ in IdleWorkspaceEventSource() }
+            )
+            try await coordinator.synchronize(policy: .default)
+            let file = try XCTUnwrap(
+                coordinator.treeSnapshots[nested.id]?.files.first {
+                    $0.relativePath == "note.md"
+                }
+            )
+            let document = try coordinator.open(file)
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+            let parentRescan = WorkspaceEvent(
+                workspaceID: parent.id,
+                kind: .rescanRequired,
+                fileURL: rootURL,
+                origin: .external
+            )
+            let nestedRescan = WorkspaceEvent(
+                workspaceID: nested.id,
+                kind: .rescanRequired,
+                fileURL: nestedURL,
+                origin: .external
+            )
+            let task = Task {
+                try await coordinator.apply(
+                    nestedFirst ? [nestedRescan, parentRescan] : [parentRescan, nestedRescan]
+                )
+            }
+            await index.waitUntilApplyStarts()
+            try await Task.sleep(for: .milliseconds(600))
+            XCTAssertEqual(document.fileURL, newURL.standardizedFileURL)
+            await index.resumeApply()
+            try await task.value
+            XCTAssertFalse(document.isDirty)
+            XCTAssertNil(document.conflict)
+        }
+    }
+
     @MainActor
     func assertOverlappingWatcherMove(order: OverlappingMoveOrder) async throws {
         try await withTemporaryDirectory { rootURL in
@@ -1229,7 +1678,7 @@ private extension WorkspaceIndexTests {
             switch order {
             case .deleteThenMove:
                 try await coordinator.apply([deletion])
-                XCTAssertEqual(document.fileURL, oldURL.standardizedFileURL)
+                XCTAssertEqual(document.fileURL, newURL.standardizedFileURL)
                 try await coordinator.apply([move])
             case .moveThenDelete:
                 try await coordinator.apply([move])
@@ -1243,7 +1692,7 @@ private extension WorkspaceIndexTests {
                         origin: .external
                     ),
                 ])
-                XCTAssertEqual(document.fileURL, oldURL.standardizedFileURL)
+                XCTAssertEqual(document.fileURL, newURL.standardizedFileURL)
                 try await coordinator.apply([move])
             }
             try await Task.sleep(for: .milliseconds(650))
@@ -1411,6 +1860,7 @@ private actor SuspendedSearchIndex: SearchIndexing {
     private var rebuildContinuation: CheckedContinuation<Void, Never>?
     private(set) var rebuildStarted = false
     private(set) var appliedBatchCount = 0
+    private(set) var lastAppliedEvents: [WorkspaceEvent] = []
 
     func rebuild(
         workspaces: [WorkspaceDescriptor],
@@ -1435,6 +1885,43 @@ private actor SuspendedSearchIndex: SearchIndexing {
 
     func apply(_ events: [WorkspaceEvent]) async throws {
         appliedBatchCount += 1
+        lastAppliedEvents = events
+    }
+
+    func quickOpen(
+        _ query: WorkspaceSearchQuery
+    ) async -> AsyncThrowingStream<SearchBatch, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func search(
+        _ query: WorkspaceSearchQuery
+    ) async -> AsyncThrowingStream<SearchBatch, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
+private actor SuspendedApplySearchIndex: SearchIndexing {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var applyStarted = false
+
+    func rebuild(
+        workspaces: [WorkspaceDescriptor],
+        policy: DiscoveryPolicy
+    ) async throws {}
+
+    func apply(_ events: [WorkspaceEvent]) async throws {
+        applyStarted = true
+        await withCheckedContinuation { self.continuation = $0 }
+    }
+
+    func waitUntilApplyStarts() async {
+        while !applyStarted { await Task.yield() }
+    }
+
+    func resumeApply() {
+        continuation?.resume()
+        continuation = nil
     }
 
     func quickOpen(
@@ -1479,5 +1966,37 @@ private final class DisappearingScanFileManager: FileManager, @unchecked Sendabl
             try? super.removeItem(at: entryURL)
         }
         return children
+    }
+}
+
+private final class DisappearingRootFileManager: FileManager, @unchecked Sendable {
+    private let rootURL: URL
+    private let lock = NSLock()
+    private var shouldDisappear = false
+
+    var disappearsDuringNextScan: Bool {
+        get { lock.withLock { shouldDisappear } }
+        set { lock.withLock { shouldDisappear = newValue } }
+    }
+
+    init(rootURL: URL) {
+        self.rootURL = rootURL.standardizedFileURL
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        if url.standardizedFileURL == rootURL, disappearsDuringNextScan {
+            disappearsDuringNextScan = false
+            try? super.removeItem(at: rootURL)
+        }
+        return try super.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: mask
+        )
     }
 }

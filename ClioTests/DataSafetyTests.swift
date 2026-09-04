@@ -750,15 +750,12 @@ final class DataSafetyTests: XCTestCase {
             try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
             let watcher = WorkspaceWatcher(workspaceID: WorkspaceID(), rootURL: workspaceURL)
             try await Task.sleep(for: .milliseconds(120))
-            let collector = Task { () -> [WorkspaceEventKind] in
-                var kinds: [WorkspaceEventKind] = []
-                for await event in await watcher.events() {
-                    kinds.append(event.kind)
-                    if kinds.contains(.created), kinds.contains(.moved), kinds.contains(.deleted) {
-                        break
-                    }
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream {
+                    await recorder.record(event.kind)
                 }
-                return kinds
             }
 
             let created = nested.appendingPathComponent("one.md")
@@ -771,11 +768,205 @@ final class DataSafetyTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(120))
             try FileManager.default.removeItem(at: moved)
 
-            let kinds = try await withTimeout(.seconds(3)) { await collector.value }
+            for _ in 0..<300 {
+                if await recorder.contains(.created),
+                   await recorder.contains(.moved),
+                   await recorder.contains(.deleted) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let kinds = await recorder.all
+            collector.cancel()
             XCTAssertTrue(kinds.contains(.created))
             XCTAssertTrue(kinds.contains(.modified))
             XCTAssertTrue(kinds.contains(.moved))
             XCTAssertTrue(kinds.contains(.deleted))
+        }
+    }
+
+    func testWatcherReportsInPlaceWriteWithinOneSecondWithoutFullRescan() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let fileURL = workspaceURL.appendingPathComponent("in-place.md")
+            try Data("before".utf8).write(to: fileURL)
+            let scans = LockedCounter()
+            let rawEvents = RawEventRecorder()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                fullScanObserver: { scans.increment() },
+                rawEventObserver: { rawEvents.record(url: $0, flags: $1) }
+            )
+            try await Task.sleep(for: .milliseconds(150))
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream
+                where event.fileURL?.standardizedFileURL == fileURL.standardizedFileURL {
+                    await recorder.record(event.kind)
+                    if event.kind == .modified { return }
+                }
+            }
+
+            let physicalBefore = PhysicalFileIdentity.authorizedFile(at: fileURL)
+            try Data("after direct write".utf8).write(to: fileURL, options: [])
+            let physicalAfter = PhysicalFileIdentity.authorizedFile(at: fileURL)
+
+            for _ in 0..<100 {
+                if await recorder.contains(.modified) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(physicalAfter, physicalBefore, "test write must retain the inode")
+            let sawModification = await recorder.contains(.modified)
+            XCTAssertTrue(sawModification, "raw FSEvents: \(rawEvents.values)")
+            collector.cancel()
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(scans.value, 1)
+        }
+    }
+
+    func testWatcherHandlesSustainedAtomicSavesWithoutRepeatedFullScans() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let fileURL = workspaceURL.appendingPathComponent("atomic.md")
+            try Data("initial".utf8).write(to: fileURL)
+            let scans = LockedCounter()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                fullScanObserver: { scans.increment() }
+            )
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream
+                where event.fileURL?.standardizedFileURL == fileURL.standardizedFileURL {
+                    await recorder.record(event.kind)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(150))
+
+            for revision in 0..<12 {
+                try Data("revision \(revision)".utf8).write(to: fileURL, options: .atomic)
+                try await Task.sleep(for: .milliseconds(60))
+            }
+            for _ in 0..<100 {
+                if await recorder.contains(.modified) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try await Task.sleep(for: .milliseconds(200))
+
+            let sawModification = await recorder.contains(.modified)
+            XCTAssertTrue(sawModification)
+            XCTAssertEqual(scans.value, 1)
+            collector.cancel()
+        }
+    }
+
+    func testWatcherReportsDeletionOfFilePresentAtStartupWithinOneSecond() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let fileURL = workspaceURL.appendingPathComponent("delete-me.md")
+            try Data("before deletion".utf8).write(to: fileURL)
+            let rawEvents = RawEventRecorder()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                rawEventObserver: { rawEvents.record(url: $0, flags: $1) }
+            )
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream {
+                    await recorder.record(event.kind)
+                    if event.kind == .deleted { return }
+                }
+            }
+
+            try await Task.sleep(for: .milliseconds(120))
+            try FileManager.default.removeItem(at: fileURL)
+            for _ in 0..<100 {
+                let sawDeletion = await recorder.contains(.deleted)
+                if sawDeletion { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let kinds = await recorder.all
+            XCTAssertTrue(kinds.contains(.deleted), "events: \(kinds); raw FSEvents: \(rawEvents.values)")
+            collector.cancel()
+        }
+    }
+
+    func testWatcherReportsInPlaceGitIgnoreChangeWithinOneSecond() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let ignoreURL = workspaceURL.appendingPathComponent(".gitignore")
+            try Data("*.tmp".utf8).write(to: ignoreURL)
+            let watcher = WorkspaceWatcher(workspaceID: WorkspaceID(), rootURL: workspaceURL)
+            try await Task.sleep(for: .milliseconds(150))
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream
+                where event.fileURL?.standardizedFileURL == ignoreURL.standardizedFileURL {
+                    await recorder.record(event.kind)
+                    if event.kind == .rescanRequired { return }
+                }
+            }
+            let handle = try FileHandle(forWritingTo: ignoreURL)
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: Data("*.md".utf8))
+            try handle.synchronize()
+            try handle.close()
+
+            for _ in 0..<100 {
+                if await recorder.contains(.rescanRequired) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let sawRescan = await recorder.contains(.rescanRequired)
+            XCTAssertTrue(sawRescan)
+            collector.cancel()
+        }
+    }
+
+    func testWatcherTeardownFinishesStreamAfterFSEventsStart() async throws {
+        try await withDirectories { workspaceURL, _ in
+            var watcher: WorkspaceWatcher? = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL
+            )
+            weak var weakWatcher = watcher
+            let stream = await watcher!.events()
+            try await Task.sleep(for: .milliseconds(150))
+            watcher = nil
+            for _ in 0..<50 where weakWatcher != nil {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNil(weakWatcher)
+            let finished = Task { () -> Bool in
+                for await _ in stream {}
+                return true
+            }
+            let didFinish = try await withTimeout(.seconds(1)) { await finished.value }
+            XCTAssertTrue(didFinish)
+        }
+    }
+
+    func testWatcherReportsAccessLossWhenAuthorizedRootDisappears() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let watcher = WorkspaceWatcher(workspaceID: WorkspaceID(), rootURL: workspaceURL)
+            let stream = await watcher.events()
+            let recorder = EventRecorder()
+            let collector = Task {
+                for await event in stream {
+                    await recorder.record(event.kind)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(150))
+
+            try FileManager.default.removeItem(at: workspaceURL)
+            for _ in 0..<100 {
+                if await recorder.contains(.accessLost) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            let sawAccessLoss = await recorder.contains(.accessLost)
+            XCTAssertTrue(sawAccessLoss)
+            collector.cancel()
         }
     }
 
@@ -807,6 +998,29 @@ final class DataSafetyTests: XCTestCase {
 }
 
 private extension DataSafetyTests {
+    final class LockedCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        var value: Int { lock.withLock { count } }
+        func increment() { lock.withLock { count += 1 } }
+    }
+
+    actor EventRecorder {
+        private var kinds: [WorkspaceEventKind] = []
+        func record(_ kind: WorkspaceEventKind) { kinds.append(kind) }
+        func contains(_ kind: WorkspaceEventKind) -> Bool { kinds.contains(kind) }
+        var all: [WorkspaceEventKind] { kinds }
+    }
+
+    final class RawEventRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [String] = []
+        var values: [String] { lock.withLock { events } }
+        func record(url: URL, flags: UInt32) {
+            lock.withLock { events.append("\(url.path):\(flags)") }
+        }
+    }
+
     final class TestClock: @unchecked Sendable {
         var now: Date
         init(_ now: Date) { self.now = now }

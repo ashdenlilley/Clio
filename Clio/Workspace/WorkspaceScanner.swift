@@ -71,6 +71,9 @@ actor WorkspaceScanner {
                         == .orderedAscending
                 }
             } catch where Self.isRacedDisappearance(error) {
+                if directory.relativePath.isEmpty {
+                    throw ScannerError.rootUnavailable(rootURL)
+                }
                 continue
             }
 
@@ -281,7 +284,7 @@ actor WorkspaceScanner {
     }
 }
 
-private extension WorkspaceScanner {
+extension WorkspaceScanner {
     static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey,
         .isRegularFileKey,
@@ -314,7 +317,7 @@ private extension WorkspaceScanner {
         return String(filePath.dropFirst(rootPath.count + 1))
     }
 
-    static func isRacedDisappearance(_ error: Error) -> Bool {
+    nonisolated static func isRacedDisappearance(_ error: Error) -> Bool {
         let error = error as NSError
         if error.domain == NSCocoaErrorDomain,
            error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError {

@@ -40,13 +40,9 @@ final class WorkspaceIndexCoordinator {
     @ObservationIgnored private var deferredBufferDeletions: [
         String: (token: UUID, workspaceID: WorkspaceID, task: Task<Void, Never>)
     ] = [:]
-    @ObservationIgnored private var deferredBufferAudits: [
-        WorkspaceID: (token: UUID, task: Task<Void, Never>)
-    ] = [:]
-    @ObservationIgnored private var recentMoveSourceExpirations: [String: Date] = [:]
 
     private static let aliasMoveCorrelationDelay = Duration.milliseconds(500)
-    private static let recentMoveRetention: TimeInterval = 5
+    private static let maximumPendingEventsPerWorkspace = 2_048
 
     init(
         catalog: WorkspaceCatalog,
@@ -85,7 +81,6 @@ final class WorkspaceIndexCoordinator {
         watcherTasks.values.forEach { $0.cancel() }
         debounceTask?.cancel()
         deferredBufferDeletions.values.forEach { $0.task.cancel() }
-        deferredBufferAudits.values.forEach { $0.task.cancel() }
     }
 
     /// Reconciles watcher ownership and rebuilds both tree and index from the
@@ -113,6 +108,7 @@ final class WorkspaceIndexCoordinator {
         var snapshots = treeSnapshots.filter { id, _ in
             descriptors.contains { $0.id == id }
         }
+        var firstScanError: Error?
 
         for descriptor in descriptors {
             do {
@@ -127,14 +123,26 @@ final class WorkspaceIndexCoordinator {
                 snapshots[descriptor.id] = scanned
                 failures[descriptor.id] = nil
             } catch {
+                if firstScanError == nil { firstScanError = error }
                 failures[descriptor.id] = Failure(
                     workspaceID: descriptor.id,
                     message: error.localizedDescription
                 )
+                if Self.isRootUnavailable(error) {
+                    stopWatcher(for: descriptor.id)
+                }
             }
         }
         guard generation == mutationGeneration else { throw CancellationError() }
         treeSnapshots = snapshots
+
+        if let firstScanError {
+            globalFailure = Failure(
+                workspaceID: nil,
+                message: "Clio kept the last complete index because a workspace is unavailable."
+            )
+            throw firstScanError
+        }
 
         do {
             try await searchIndex.rebuild(workspaces: descriptors, policy: policy)
@@ -200,63 +208,97 @@ final class WorkspaceIndexCoordinator {
         guard !events.isEmpty else { return }
         mutationGeneration &+= 1
         let generation = mutationGeneration
-        if reconcilingBuffers, let eventReconciler {
-            try await reconcileBuffers(
-                for: events,
-                generation: generation,
-                using: eventReconciler
-            )
-        }
         let accessFailures = events.filter {
             $0.kind == .accessLost || $0.kind == .error
         }
         let inaccessibleWorkspaceIDs = Set(accessFailures.map(\.workspaceID))
         for event in accessFailures {
-            watcherTasks.removeValue(forKey: event.workspaceID)?.cancel()
-            watcherSources[event.workspaceID] = nil
-            watchedRootURLs[event.workspaceID] = nil
+            stopWatcher(for: event.workspaceID)
             cancelDeferredDeletions(for: event.workspaceID)
             failures[event.workspaceID] = Failure(
                 workspaceID: event.workspaceID,
                 message: "Clio lost access to this workspace. Its last index and tree remain available."
             )
         }
-        let actionableEvents = events.filter {
+        var actionableEvents = events.filter {
             !inaccessibleWorkspaceIDs.contains($0.workspaceID)
                 && $0.kind != .accessLost
                 && $0.kind != .error
         }
         guard !actionableEvents.isEmpty else { return }
-        do {
-            try await searchIndex.apply(actionableEvents)
-            guard generation == mutationGeneration else { throw CancellationError() }
-            globalFailure = nil
-        } catch {
-            globalFailure = Failure(workspaceID: nil, message: error.localizedDescription)
-            throw error
-        }
 
-        for workspaceID in Set(actionableEvents.map(\.workspaceID)) {
-            guard let descriptor = catalog.descriptors.first(where: { $0.id == workspaceID }) else {
-                treeSnapshots[workspaceID] = nil
-                failures[workspaceID] = nil
-                continue
-            }
+        cancelDeferredDeletionsRevalidated(by: actionableEvents)
+        let requiresGlobalDiscovery = actionableEvents.contains {
+            $0.kind == .rootChanged
+                || $0.kind == .rescanRequired
+                || $0.kind == .deleted
+        }
+        let descriptorIDs = requiresGlobalDiscovery
+            ? Set(catalog.descriptors.map(\.id))
+            : Set(actionableEvents.map(\.workspaceID))
+        var scannedSnapshots: [WorkspaceID: WorkspaceTreeSnapshot] = [:]
+        var unavailableWorkspaceIDs: Set<WorkspaceID> = []
+        for descriptor in catalog.descriptors where descriptorIDs.contains(descriptor.id) {
             do {
-                let scanned = try await scanner.scan(
+                scannedSnapshots[descriptor.id] = try await scanner.scan(
                     workspace: descriptor,
                     policy: policy,
                     includesIgnored: includesIgnoredInTree
                 )
-                guard generation == mutationGeneration else { throw CancellationError() }
-                treeSnapshots[workspaceID] = scanned
-                failures[workspaceID] = nil
+                failures[descriptor.id] = nil
             } catch {
-                failures[workspaceID] = Failure(
-                    workspaceID: workspaceID,
+                failures[descriptor.id] = Failure(
+                    workspaceID: descriptor.id,
                     message: error.localizedDescription
                 )
+                if Self.isRootUnavailable(error) {
+                    unavailableWorkspaceIDs.insert(descriptor.id)
+                    stopWatcher(for: descriptor.id)
+                }
             }
+        }
+        guard generation == mutationGeneration else { throw CancellationError() }
+
+        if reconcilingBuffers, let eventReconciler {
+            try await reconcileDiscoveredMoves(
+                in: scannedSnapshots,
+                generation: generation,
+                using: eventReconciler
+            )
+        }
+        actionableEvents.removeAll {
+            unavailableWorkspaceIDs.contains($0.workspaceID)
+                || (requiresGlobalDiscovery
+                    && !unavailableWorkspaceIDs.isEmpty
+                    && ($0.kind == .rootChanged || $0.kind == .rescanRequired))
+        }
+
+        if !actionableEvents.isEmpty {
+            do {
+                try await searchIndex.apply(actionableEvents)
+                guard generation == mutationGeneration else { throw CancellationError() }
+                globalFailure = nil
+            } catch {
+                globalFailure = Failure(workspaceID: nil, message: error.localizedDescription)
+                throw error
+            }
+        } else if !unavailableWorkspaceIDs.isEmpty {
+            globalFailure = Failure(
+                workspaceID: nil,
+                message: "Clio kept the last complete index because a workspace is unavailable."
+            )
+        }
+
+        for (workspaceID, snapshot) in scannedSnapshots
+        where !unavailableWorkspaceIDs.contains(workspaceID) {
+            treeSnapshots[workspaceID] = snapshot
+        }
+        if reconcilingBuffers, let eventReconciler, !actionableEvents.isEmpty {
+            try await reconcileBuffers(
+                for: actionableEvents,
+                generation: generation,
+                using: eventReconciler
+            )
         }
         guard generation == mutationGeneration else { throw CancellationError() }
     }
@@ -294,9 +336,6 @@ final class WorkspaceIndexCoordinator {
         pendingEvents.removeAll()
         deferredBufferDeletions.values.forEach { $0.task.cancel() }
         deferredBufferDeletions.removeAll()
-        deferredBufferAudits.values.forEach { $0.task.cancel() }
-        deferredBufferAudits.removeAll()
-        recentMoveSourceExpirations.removeAll()
     }
 }
 
@@ -338,7 +377,36 @@ private extension WorkspaceIndexCoordinator {
     }
 
     func enqueue(_ event: WorkspaceEvent) {
-        pendingEvents[event.workspaceID, default: []].append(event)
+        var queued = pendingEvents[event.workspaceID, default: []]
+        if event.kind == .accessLost || event.kind == .error {
+            queued = [event]
+        } else if queued.contains(where: {
+            $0.kind == .accessLost || $0.kind == .error
+        }) {
+            return
+        } else if event.kind == .rescanRequired || event.kind == .rootChanged {
+            queued = [event]
+        } else if queued.contains(where: {
+            $0.kind == .rescanRequired || $0.kind == .rootChanged
+        }) {
+            return
+        } else if queued.count >= Self.maximumPendingEventsPerWorkspace {
+            let rootURL = catalog.descriptors.first(where: {
+                $0.id == event.workspaceID
+            })?.rootURL
+            queued = [
+                WorkspaceEvent(
+                    workspaceID: event.workspaceID,
+                    kind: .rescanRequired,
+                    fileURL: rootURL,
+                    observedAt: event.observedAt,
+                    origin: .unknown
+                ),
+            ]
+        } else {
+            queued.append(event)
+        }
+        pendingEvents[event.workspaceID] = queued
         schedulePendingEventsIfNeeded()
     }
 
@@ -392,53 +460,83 @@ private extension WorkspaceIndexCoordinator {
         return coalesced.sorted { $0.observedAt < $1.observedAt }
     }
 
-    /// Parent and nested roots can describe one physical move as a parent
-    /// `.moved` plus a nested `.deleted`. The two watcher batches need not
-    /// arrive together, so overlapping-root deletions wait briefly for their
-    /// move twin. Move-first delivery is remembered for the same reason.
+    func reconcileDiscoveredMoves(
+        in snapshots: [WorkspaceID: WorkspaceTreeSnapshot],
+        generation: UInt64,
+        using eventReconciler: @escaping EventReconciler
+    ) async throws {
+        var locations: [DocumentID: [(workspace: Workspace, url: URL)]] = [:]
+        for snapshot in snapshots.values {
+            guard let workspace = catalog.workspace(id: snapshot.workspace.id) else { continue }
+            for file in snapshot.files {
+                guard let url = try? workspace.fileURL(for: file.locator) else { continue }
+                locations[file.documentID, default: []].append((workspace, url))
+            }
+        }
+
+        for document in registry.openDocuments {
+            guard let sourceURL = document.fileURL?.standardizedFileURL,
+                  !FileManager.default.fileExists(atPath: sourceURL.path),
+                  let destination = locations[document.id]?.first(where: {
+                      $0.url.standardizedFileURL != sourceURL
+                          && FileManager.default.fileExists(atPath: $0.url.path)
+                  }) else { continue }
+            let event = WorkspaceEvent(
+                workspaceID: destination.workspace.id,
+                kind: .moved,
+                fileURL: destination.url,
+                previousFileURL: sourceURL,
+                origin: .external,
+                documentID: document.id
+            )
+            try await eventReconciler(event, destination.workspace)
+            guard generation == mutationGeneration else { throw CancellationError() }
+            if document.fileURL?.standardizedFileURL == destination.url.standardizedFileURL {
+                deferredBufferDeletions.removeValue(forKey: sourceURL.path)?.task.cancel()
+                retireAliases(for: document.id, at: sourceURL)
+            }
+        }
+    }
+
+    func cancelDeferredDeletionsRevalidated(by events: [WorkspaceEvent]) {
+        for event in events {
+            switch event.kind {
+            case .created, .modified:
+                if let path = event.fileURL?.standardizedFileURL.path {
+                    deferredBufferDeletions.removeValue(forKey: path)?.task.cancel()
+                }
+            case .moved:
+                for url in [event.previousFileURL, event.fileURL].compactMap({ $0 }) {
+                    deferredBufferDeletions.removeValue(
+                        forKey: url.standardizedFileURL.path
+                    )?.task.cancel()
+                }
+            case .deleted, .rootChanged, .rescanRequired, .accessLost, .error:
+                break
+            }
+        }
+    }
+
     func reconcileBuffers(
         for events: [WorkspaceEvent],
         generation: UInt64,
         using eventReconciler: @escaping EventReconciler
     ) async throws {
-        let now = Date()
-        recentMoveSourceExpirations = recentMoveSourceExpirations.filter {
-            $0.value > now
-        }
-
-        for event in events where event.kind == .moved {
-            guard let path = event.previousFileURL?.standardizedFileURL.path else { continue }
-            recentMoveSourceExpirations[path] = now.addingTimeInterval(
-                Self.recentMoveRetention
-            )
-            deferredBufferDeletions.removeValue(forKey: path)?.task.cancel()
-        }
-
         for event in events {
             guard let workspace = catalog.workspace(id: event.workspaceID) else { continue }
-            if (event.kind == .rescanRequired || event.kind == .rootChanged),
-               isOverlappingWorkspace(workspace) {
-                deferBufferAudit(event, using: eventReconciler)
-                continue
-            }
-            if event.kind == .deleted,
-               let fileURL = event.fileURL,
-               isCoveredByOverlappingWorkspaces(fileURL) {
-                let path = fileURL.standardizedFileURL.path
-                if recentMoveSourceExpirations[path] != nil {
-                    continue
-                }
+            if event.kind == .deleted, let fileURL = event.fileURL {
                 deferBufferDeletion(
                     event,
                     workspace: workspace,
-                    path: path,
+                    path: fileURL.standardizedFileURL.path,
                     using: eventReconciler
                 )
                 continue
             }
 
             let movedDocument = event.kind == .moved
-                ? event.previousFileURL.flatMap { registry.document(at: $0, in: workspace) }
+                ? event.documentID.flatMap(registry.document(withID:))
+                    ?? event.previousFileURL.flatMap { registry.document(at: $0, in: workspace) }
                 : nil
             try await eventReconciler(event, workspace)
             guard generation == mutationGeneration else { throw CancellationError() }
@@ -460,7 +558,8 @@ private extension WorkspaceIndexCoordinator {
     ) {
         deferredBufferDeletions.removeValue(forKey: path)?.task.cancel()
         let token = UUID()
-        let document = event.fileURL.flatMap { registry.document(at: $0, in: workspace) }
+        let document = event.documentID.flatMap(registry.document(withID:))
+            ?? event.fileURL.flatMap { registry.document(at: $0, in: workspace) }
         let task = Task { @MainActor [weak self, weak document] in
             do {
                 try await Task.sleep(for: Self.aliasMoveCorrelationDelay)
@@ -469,6 +568,25 @@ private extension WorkspaceIndexCoordinator {
                       self.deferredBufferDeletions[path]?.token == token else { return }
                 self.deferredBufferDeletions[path] = nil
                 guard let currentWorkspace = self.catalog.workspace(id: event.workspaceID) else {
+                    return
+                }
+                let deletedURL = URL(fileURLWithPath: path).standardizedFileURL
+                if FileManager.default.fileExists(atPath: path) {
+                    try await eventReconciler(
+                        WorkspaceEvent(
+                            workspaceID: event.workspaceID,
+                            kind: .modified,
+                            fileURL: deletedURL,
+                            origin: .external,
+                            documentID: document?.id
+                        ),
+                        currentWorkspace
+                    )
+                    return
+                }
+                if let document,
+                   document.fileURL?.standardizedFileURL != deletedURL {
+                    self.retireAliases(for: document.id, at: deletedURL)
                     return
                 }
                 try await eventReconciler(event, currentWorkspace)
@@ -487,59 +605,6 @@ private extension WorkspaceIndexCoordinator {
         deferredBufferDeletions[path] = (token, event.workspaceID, task)
     }
 
-    func deferBufferAudit(
-        _ event: WorkspaceEvent,
-        using eventReconciler: @escaping EventReconciler
-    ) {
-        deferredBufferAudits.removeValue(forKey: event.workspaceID)?.task.cancel()
-        let token = UUID()
-        let candidates: [(document: Document, sourceURL: URL)] = catalog
-            .workspace(id: event.workspaceID)
-            .map { workspace in
-                registry.openDocuments.compactMap { document in
-                    guard let sourceURL = document.fileURL,
-                          workspace.contains(sourceURL) else { return nil }
-                    return (document, sourceURL)
-                }
-            } ?? []
-        let task = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: Self.aliasMoveCorrelationDelay)
-                guard !Task.isCancelled,
-                      let self,
-                      self.deferredBufferAudits[event.workspaceID]?.token == token else { return }
-                self.deferredBufferAudits[event.workspaceID] = nil
-                guard let workspace = self.catalog.workspace(id: event.workspaceID) else { return }
-                try await eventReconciler(event, workspace)
-                for candidate in candidates where candidate.document.fileURL == nil {
-                    self.retireAliases(
-                        for: candidate.document.id,
-                        at: candidate.sourceURL
-                    )
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                self?.globalFailure = Failure(
-                    workspaceID: event.workspaceID,
-                    message: error.localizedDescription
-                )
-            }
-        }
-        deferredBufferAudits[event.workspaceID] = (token, task)
-    }
-
-    func isCoveredByOverlappingWorkspaces(_ fileURL: URL) -> Bool {
-        catalog.workspaces.lazy.filter { $0.contains(fileURL) }.prefix(2).count == 2
-    }
-
-    func isOverlappingWorkspace(_ workspace: Workspace) -> Bool {
-        catalog.workspaces.contains { candidate in
-            candidate.id != workspace.id
-                && (workspace.contains(candidate.rootURL) || candidate.contains(workspace.rootURL))
-        }
-    }
-
     func retireAliases(for documentID: DocumentID, at fileURL: URL) {
         for workspace in catalog.workspaces where workspace.contains(fileURL) {
             guard let locator = try? workspace.locator(for: fileURL) else { continue }
@@ -548,13 +613,26 @@ private extension WorkspaceIndexCoordinator {
     }
 
     func cancelDeferredDeletions(for workspaceID: WorkspaceID) {
-        deferredBufferAudits.removeValue(forKey: workspaceID)?.task.cancel()
         let paths = deferredBufferDeletions.compactMap {
             $0.value.workspaceID == workspaceID ? $0.key : nil
         }
         for path in paths {
             deferredBufferDeletions.removeValue(forKey: path)?.task.cancel()
         }
+    }
+
+    func stopWatcher(for workspaceID: WorkspaceID) {
+        watcherTasks.removeValue(forKey: workspaceID)?.cancel()
+        watcherSources[workspaceID] = nil
+        watchedRootURLs[workspaceID] = nil
+    }
+
+    static func isRootUnavailable(_ error: Error) -> Bool {
+        guard let scannerError = error as? WorkspaceScanner.ScannerError else {
+            return false
+        }
+        if case .rootUnavailable = scannerError { return true }
+        return false
     }
 
     func canonicalizing(

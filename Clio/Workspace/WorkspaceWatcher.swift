@@ -1,10 +1,16 @@
 import Darwin
+import CoreServices
 import Foundation
 
-/// Recursive vnode watcher. It watches each real directory and converts a
-/// metadata rescan into stable create/modify/move/delete events without ever
-/// following symlinks.
+/// One recursive FSEvents stream observes file-level writes without spending
+/// one descriptor per file/directory. A root vnode source makes access loss
+/// immediate, while snapshot diffs retain stable move semantics.
 final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
+    private final class CallbackBox {
+        weak var watcher: WorkspaceWatcher?
+        init(_ watcher: WorkspaceWatcher) { self.watcher = watcher }
+    }
+
     private struct FileState: Equatable {
         let identity: PhysicalFileIdentity
         let url: URL
@@ -14,17 +20,31 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
 
     private let workspaceID: WorkspaceID
     private let rootURL: URL
+    private let eventRootPath: String
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let stream: AsyncStream<WorkspaceEvent>
     private let continuation: AsyncStream<WorkspaceEvent>.Continuation
-    private var sources: [String: DispatchSourceFileSystemObject] = [:]
+    private let fullScanObserver: (@Sendable () -> Void)?
+    private let rawEventObserver: (@Sendable (URL, FSEventStreamEventFlags) -> Void)?
+    private var eventStream: FSEventStreamRef?
+    private var eventStreamContext: UnsafeMutableRawPointer?
+    private var rootSource: DispatchSourceFileSystemObject?
     private var snapshot: [PhysicalFileIdentity: FileState] = [:]
+    private var snapshotKeyByPath: [String: PhysicalFileIdentity] = [:]
     private var pendingScan: DispatchWorkItem?
 
-    init(workspaceID: WorkspaceID, rootURL: URL) {
+    init(
+        workspaceID: WorkspaceID,
+        rootURL: URL,
+        fullScanObserver: (@Sendable () -> Void)? = nil,
+        rawEventObserver: (@Sendable (URL, FSEventStreamEventFlags) -> Void)? = nil
+    ) {
         self.workspaceID = workspaceID
-        self.rootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        self.rootURL = rootURL.standardizedFileURL
+        eventRootPath = Self.realPath(of: self.rootURL.path)
+        self.fullScanObserver = fullScanObserver
+        self.rawEventObserver = rawEventObserver
         queue = DispatchQueue(label: "olympus.clio.workspace-watcher", qos: .utility)
         var captured: AsyncStream<WorkspaceEvent>.Continuation!
         stream = AsyncStream(bufferingPolicy: .bufferingNewest(2_048)) {
@@ -32,7 +52,13 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         }
         continuation = captured
         queue.setSpecific(key: queueKey, value: 1)
-        queue.async { [weak self] in self?.start() }
+        // Start the O(1) event sources before publishing the watcher. The
+        // potentially large initial scan remains asynchronous, but no edit or
+        // deletion can fall into a gap between construction and monitoring.
+        queue.sync {
+            guard prepareMonitoring() else { return }
+            queue.async { [weak self] in self?.loadInitialSnapshot() }
+        }
     }
 
     deinit {
@@ -46,21 +72,43 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
     private func shutdownOnQueue() {
         pendingScan?.cancel()
         pendingScan = nil
-        sources.values.forEach { $0.cancel() }
-        sources.removeAll()
+        rootSource?.cancel()
+        rootSource = nil
+        if let eventStream {
+            FSEventStreamStop(eventStream)
+            FSEventStreamInvalidate(eventStream)
+            FSEventStreamRelease(eventStream)
+            self.eventStream = nil
+        }
+        if let eventStreamContext {
+            Unmanaged<CallbackBox>.fromOpaque(eventStreamContext).release()
+            self.eventStreamContext = nil
+        }
         continuation.finish()
     }
 
     func events() async -> AsyncStream<WorkspaceEvent> { stream }
 
-    private func start() {
+    private func prepareMonitoring() -> Bool {
         guard FileManager.default.fileExists(atPath: rootURL.path) else {
             emit(kind: .accessLost, fileURL: rootURL)
             continuation.finish()
+            return false
+        }
+        guard startRootSource(), startEventStream() else {
+            shutdownOnQueue()
+            return false
+        }
+        return true
+    }
+
+    private func loadInitialSnapshot() {
+        guard let initial = scanFiles() else {
+            emit(kind: .accessLost, fileURL: rootURL)
+            shutdownOnQueue()
             return
         }
-        snapshot = scanFiles()
-        refreshDirectorySources()
+        replaceSnapshot(with: initial)
     }
 
     private func scheduleScan() {
@@ -73,18 +121,21 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
     private func rescan() {
         guard FileManager.default.fileExists(atPath: rootURL.path) else {
             emit(kind: .accessLost, fileURL: rootURL)
-            sources.values.forEach { $0.cancel() }
-            sources.removeAll()
             snapshot.removeAll()
+            snapshotKeyByPath.removeAll()
+            shutdownOnQueue()
             return
         }
 
-        let next = scanFiles()
+        guard let next = scanFiles() else {
+            emit(kind: .accessLost, fileURL: rootURL)
+            shutdownOnQueue()
+            return
+        }
         if !emitChanges(from: snapshot, to: next) {
             emit(kind: .rescanRequired, fileURL: rootURL)
         }
-        snapshot = next
-        refreshDirectorySources()
+        replaceSnapshot(with: next)
     }
 
     private func emitChanges(
@@ -137,7 +188,8 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         return didEmit
     }
 
-    private func scanFiles() -> [PhysicalFileIdentity: FileState] {
+    private func scanFiles() -> [PhysicalFileIdentity: FileState]? {
+        fullScanObserver?()
         let keys: [URLResourceKey] = [
             .isDirectoryKey,
             .isRegularFileKey,
@@ -145,11 +197,12 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
             .contentModificationDateKey,
             .fileSizeKey,
         ]
-        guard let enumerator = FileManager.default.enumerator(
+        guard FileManager.default.isReadableFile(atPath: rootURL.path),
+              let enumerator = FileManager.default.enumerator(
             at: rootURL,
             includingPropertiesForKeys: keys,
             options: [.skipsPackageDescendants]
-        ) else { return [:] }
+        ) else { return nil }
 
         var files: [PhysicalFileIdentity: FileState] = [:]
         for case let url as URL in enumerator {
@@ -173,44 +226,219 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         return files
     }
 
-    private func refreshDirectorySources() {
-        let currentDirectories = Set(directoryURLs().map(\.path))
-        for path in sources.keys where !currentDirectories.contains(path) {
-            sources.removeValue(forKey: path)?.cancel()
+    private func replaceSnapshot(with next: [PhysicalFileIdentity: FileState]) {
+        snapshot = next
+        snapshotKeyByPath = Dictionary(
+            uniqueKeysWithValues: next.map { ($0.value.url.standardizedFileURL.path, $0.key) }
+        )
+    }
+
+    private func startRootSource() -> Bool {
+        let descriptor = open(rootURL.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            emit(kind: .accessLost, fileURL: rootURL)
+            return false
         }
-        for path in currentDirectories where sources[path] == nil {
-            let descriptor = open(path, O_EVTONLY)
-            guard descriptor >= 0 else { continue }
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: descriptor,
-                eventMask: [.write, .delete, .rename, .extend, .attrib, .link, .revoke],
-                queue: queue
-            )
-            source.setEventHandler { [weak self] in self?.scheduleScan() }
-            source.setCancelHandler { close(descriptor) }
-            sources[path] = source
-            source.resume()
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.delete, .rename, .revoke],
+            queue: queue
+        )
+        source.setEventHandler { [weak self] in self?.scheduleScan() }
+        source.setCancelHandler { close(descriptor) }
+        rootSource = source
+        source.resume()
+        return true
+    }
+
+    private func startEventStream() -> Bool {
+        let retainedBox = Unmanaged.passRetained(CallbackBox(self)).toOpaque()
+        eventStreamContext = retainedBox
+        var context = FSEventStreamContext(
+            version: 0,
+            info: retainedBox,
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagWatchRoot
+                | kFSEventStreamCreateFlagNoDefer
+                | kFSEventStreamCreateFlagUseCFTypes
+        )
+        guard let stream = FSEventStreamCreate(
+            nil,
+            Self.handleEvents,
+            &context,
+            [rootURL.path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.05,
+            flags
+        ) else {
+            Unmanaged<CallbackBox>.fromOpaque(retainedBox).release()
+            eventStreamContext = nil
+            emit(kind: .error, fileURL: rootURL)
+            return false
+        }
+        eventStream = stream
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            eventStream = nil
+            emit(kind: .error, fileURL: rootURL)
+            return false
+        }
+        return true
+    }
+
+    private static let handleEvents: FSEventStreamCallback = {
+        _, context, count, eventPaths, eventFlags, _ in
+        guard let context,
+              let watcher = Unmanaged<CallbackBox>
+            .fromOpaque(context)
+            .takeUnretainedValue()
+            .watcher else { return }
+        let paths = Unmanaged<CFArray>
+            .fromOpaque(eventPaths)
+            .takeUnretainedValue() as NSArray
+        for index in 0..<count {
+            let flags = eventFlags[index]
+            guard index < paths.count,
+                  let path = paths[index] as? String else { continue }
+            watcher.handleEvent(at: URL(fileURLWithPath: path), flags: flags)
         }
     }
 
-    private func directoryURLs() -> [URL] {
-        var directories = [rootURL]
-        guard let enumerator = FileManager.default.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: [.skipsPackageDescendants]
-        ) else { return directories }
-        for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else {
-                continue
-            }
-            if values.isSymbolicLink == true {
-                if values.isDirectory == true { enumerator.skipDescendants() }
-            } else if values.isDirectory == true {
-                directories.append(url.standardizedFileURL)
-            }
+    private static func realPath(of path: String) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &buffer) != nil else { return path }
+        return String(cString: buffer)
+    }
+
+    private func normalizedEventURL(_ url: URL) -> URL {
+        let path = url.standardizedFileURL.path
+        guard path == eventRootPath || path.hasPrefix(eventRootPath + "/") else {
+            return url.standardizedFileURL
         }
-        return directories
+        let suffix = String(path.dropFirst(eventRootPath.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return suffix.isEmpty
+            ? rootURL
+            : rootURL.appendingPathComponent(suffix).standardizedFileURL
+    }
+
+    private static func isSupportedDocument(_ url: URL) -> Bool {
+        ["md", "markdown", "txt"].contains(url.pathExtension.lowercased())
+    }
+
+    private func updateSnapshotEntry(at url: URL) {
+        let standardized = url.standardizedFileURL
+        guard let values = try? standardized.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ]),
+        values.isRegularFile == true,
+        values.isSymbolicLink != true else { return }
+        removeSnapshotEntry(at: standardized)
+        let identity = PhysicalFileIdentity.authorizedFile(at: standardized)
+        snapshot[identity] = FileState(
+            identity: identity,
+            url: standardized,
+            modificationDate: values.contentModificationDate ?? .distantPast,
+            byteCount: Int64(values.fileSize ?? 0)
+        )
+        snapshotKeyByPath[standardized.path] = identity
+    }
+
+    private func removeSnapshotEntry(at url: URL) {
+        let path = url.standardizedFileURL.path
+        guard let key = snapshotKeyByPath.removeValue(forKey: path) else { return }
+        snapshot[key] = nil
+    }
+
+    private func handleEvent(at url: URL, flags: FSEventStreamEventFlags) {
+        let url = normalizedEventURL(url)
+        rawEventObserver?(url, flags)
+        let requiresAudit = flags.containsAny(
+            FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagKernelDropped),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped)
+        )
+        if requiresAudit {
+            emit(kind: .rescanRequired, fileURL: rootURL)
+            scheduleScan()
+            return
+        }
+        if flags.containsAny(
+            FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagMount),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagUnmount)
+        ) {
+            if FileManager.default.fileExists(atPath: rootURL.path) {
+                emit(kind: .rootChanged, fileURL: rootURL)
+                scheduleScan()
+            } else {
+                emit(kind: .accessLost, fileURL: rootURL)
+                queue.async { [weak self] in self?.shutdownOnQueue() }
+            }
+            return
+        }
+
+        if url.lastPathComponent == ".gitignore" {
+            emit(kind: .rescanRequired, fileURL: url)
+            return
+        }
+        if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0 {
+            if url.standardizedFileURL == rootURL,
+               flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved) == 0,
+               flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed) == 0 {
+                return
+            }
+            if flags.containsAny(
+                FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated),
+                FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved),
+                FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed)
+            ) {
+                scheduleScan()
+            }
+            return
+        }
+        guard Self.isSupportedDocument(url) else { return }
+        if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed) != 0 {
+            if FileManager.default.fileExists(atPath: url.path),
+               snapshotKeyByPath[url.standardizedFileURL.path] != nil {
+                // Atomic parity saves replace the inode at the same locator.
+                // Rebind that single snapshot entry instead of scanning the
+                // entire workspace for every keystroke-driven save.
+                updateSnapshotEntry(at: url)
+                emit(kind: .modified, fileURL: url)
+            } else {
+                scheduleScan()
+            }
+            return
+        }
+        if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved) != 0 {
+            if FileManager.default.fileExists(atPath: url.path),
+               snapshotKeyByPath[url.standardizedFileURL.path] != nil {
+                updateSnapshotEntry(at: url)
+                emit(kind: .modified, fileURL: url)
+            } else {
+                removeSnapshotEntry(at: url)
+                emit(kind: .deleted, fileURL: url)
+            }
+        } else if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated) != 0 {
+            let alreadyTracked = snapshotKeyByPath[url.standardizedFileURL.path] != nil
+            updateSnapshotEntry(at: url)
+            emit(kind: alreadyTracked ? .modified : .created, fileURL: url)
+        } else {
+            updateSnapshotEntry(at: url)
+            emit(kind: .modified, fileURL: url)
+        }
     }
 
     private func emit(
@@ -239,5 +467,11 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
                 origin: .unknown
             )
         )
+    }
+}
+
+private extension FSEventStreamEventFlags {
+    func containsAny(_ flags: FSEventStreamEventFlags...) -> Bool {
+        flags.contains { self & $0 != 0 }
     }
 }

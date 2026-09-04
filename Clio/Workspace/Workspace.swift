@@ -220,13 +220,13 @@ final class Workspace {
     }
 
     func locator(for fileURL: URL) throws -> DocumentLocator {
-        let standardizedURL = fileURL.standardizedFileURL
-        guard contains(standardizedURL), standardizedURL != rootURL else {
-            throw WorkspaceError.fileOutsideWorkspace(standardizedURL)
+        let resolvedURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard contains(resolvedURL), resolvedURL != rootURL else {
+            throw WorkspaceError.fileOutsideWorkspace(resolvedURL)
         }
         return try DocumentLocator(
             workspaceID: id,
-            relativePath: relativePath(for: standardizedURL)
+            relativePath: relativePath(for: resolvedURL)
         )
     }
 
@@ -240,13 +240,13 @@ final class Workspace {
     }
 
     func relativePath(for fileURL: URL) -> String {
-        let standardizedURL = fileURL.standardizedFileURL
-        guard contains(standardizedURL) else {
-            return standardizedURL.lastPathComponent
+        let resolvedURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard contains(resolvedURL) else {
+            return resolvedURL.lastPathComponent
         }
 
         let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
-        return String(standardizedURL.path.dropFirst(rootPath.count))
+        return String(resolvedURL.path.dropFirst(rootPath.count))
     }
 
     func contains(_ fileURL: URL) -> Bool {
