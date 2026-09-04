@@ -81,28 +81,15 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
     ) async throws -> Document {
         let standardizedURL = fileURL.standardizedFileURL
         let locator = try workspace.locator(for: standardizedURL)
-        let initialIdentity = PhysicalFileIdentity.authorizedFile(at: standardizedURL)
-        if let existing = document(for: initialIdentity, locator: locator) {
-            try identityStore.bind(
-                existing.id,
-                locator: locator,
-                physicalIdentity: initialIdentity,
-                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
-            )
-            updateAliases(
-                for: existing.id,
-                identity: initialIdentity,
-                locator: locator,
-                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
-            )
-            return existing
-        }
 
         for _ in 0..<8 {
             let prepared = try await workspace.prepareDocumentInBackground(
                 at: standardizedURL
             )
-            guard prepared.fileURL == standardizedURL else { continue }
+            guard prepared.fileURL == standardizedURL,
+                  try await workspace.confirmPreparedDocument(prepared) else {
+                continue
+            }
 
             if let existing = document(for: prepared.identity, locator: locator) {
                 try identityStore.bind(
@@ -128,12 +115,6 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
                     preferredID: preferredID
                 )
             )
-            guard try await workspace.confirmPreparedDocument(prepared) else {
-                continue
-            }
-            if let existing = document(for: prepared.identity, locator: locator) {
-                return existing
-            }
 
             let runtimeID = canonicalRuntimeID(
                 for: prepared.identity,
