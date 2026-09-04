@@ -70,6 +70,8 @@ struct ExportSavePanelConfiguration: Equatable, Sendable {
 
 @MainActor
 protocol ExportPanelPresenting: AnyObject {
+    func cancelPendingPanel()
+
     func chooseDestination(
         configuration: ExportSavePanelConfiguration,
         initialDirectory: URL?,
@@ -82,8 +84,22 @@ protocol ExportPanelPresenting: AnyObject {
     ) async -> PDFPrintSettings?
 }
 
+extension ExportPanelPresenting {
+    func cancelPendingPanel() {}
+}
+
 @MainActor
 final class NativeExportPanelPresenter: ExportPanelPresenting {
+    private var pendingPanelID: UUID?
+    private var cancelPanel: (() -> Void)?
+
+    func cancelPendingPanel() {
+        let cancellation = cancelPanel
+        cancelPanel = nil
+        pendingPanelID = nil
+        cancellation?()
+    }
+
     func chooseDestination(
         configuration: ExportSavePanelConfiguration,
         initialDirectory: URL?,
@@ -101,8 +117,15 @@ final class NativeExportPanelPresenter: ExportPanelPresenting {
             panel.allowedContentTypes = [type]
         }
 
+        let panelID = UUID()
+        pendingPanelID = panelID
+        cancelPanel = { [weak panel] in panel?.cancel(nil) }
         return await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { response in
+                if self.pendingPanelID == panelID {
+                    self.pendingPanelID = nil
+                    self.cancelPanel = nil
+                }
                 continuation.resume(returning: response == .OK ? panel.url : nil)
             }
         }
@@ -114,12 +137,25 @@ final class NativeExportPanelPresenter: ExportPanelPresenting {
     ) async -> PDFPrintSettings? {
         let printInfo = current.clioPrintInfo()
         let pageLayout = NSPageLayout()
+        let panelID = UUID()
+        pendingPanelID = panelID
         return await withCheckedContinuation { continuation in
             pageLayout.beginSheet(using: printInfo, on: window) { result in
+                if self.pendingPanelID == panelID {
+                    self.pendingPanelID = nil
+                    self.cancelPanel = nil
+                }
                 let settings = result == .changed
                     ? PDFPrintSettingsStore.systemDefault(printInfo: printInfo)
                     : nil
                 continuation.resume(returning: settings)
+            }
+            if let sheet = window.attachedSheet {
+                cancelPanel = { [weak window, weak sheet] in
+                    guard let window, let sheet,
+                          window.attachedSheet === sheet else { return }
+                    window.endSheet(sheet, returnCode: .cancel)
+                }
             }
         }
     }
@@ -413,6 +449,7 @@ final class DocumentExportPresentation {
     func cancel() {
         operationTask?.cancel()
         operationTask = nil
+        panelPresenter.cancelPendingPanel()
         coordinator.cancel()
         isExporting = false
         isOptionsPresented = false
