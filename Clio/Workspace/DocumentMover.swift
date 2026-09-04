@@ -112,7 +112,6 @@ final class DocumentMover {
                 } else {
                     displacedSnapshot = nil
                 }
-                let replaced = try await fileIO.snapshot(at: destinationURL)
                 if let displacedSnapshot, displacedSnapshot.isDirty {
                     _ = try await recoveryStore.preserve(
                         documentID: displacedSnapshot.documentID,
