@@ -6,6 +6,20 @@ enum EditorOpeningMode: String, Codable, Hashable, Sendable {
     case newDocument
 }
 
+enum EditorSynchronizationError: LocalizedError {
+    case editorMaterializationInProgress
+    case invalidEditorMutation
+
+    var errorDescription: String? {
+        switch self {
+        case .editorMaterializationInProgress:
+            "Clio is still applying recent edits. Keep this window open; saving will continue as soon as the document catches up."
+        case .invalidEditorMutation:
+            "Clio couldn’t apply a queued editor change. The on-screen buffer was left open and no stale bytes were saved."
+        }
+    }
+}
+
 struct EditorWindowRequest: Codable, Hashable, Sendable {
     let id: UUID
     var openingMode: EditorOpeningMode
@@ -90,6 +104,9 @@ final class EditorSession: Identifiable {
     private var saveAfterEditorEdits = false
 
     @ObservationIgnored
+    private var editorSynchronizationFailure: EditorSynchronizationError?
+
+    @ObservationIgnored
     private(set) var editorMaterializationCount = 0
 
     @ObservationIgnored
@@ -153,6 +170,14 @@ final class EditorSession: Identifiable {
             bufferID: document?.id.rawValue ?? id,
             revision: contentRevision
         )
+    }
+
+    /// True while NSTextView contains edits that are not yet reflected in the
+    /// canonical `Document`, or when a captured mutation could not be applied.
+    /// Synchronous lifecycle and destructive actions must refuse while this is
+    /// true so the visible buffer remains recoverable.
+    var hasUnsettledEditorEdits: Bool {
+        hasPendingEditorEdits || editorSynchronizationFailure != nil
     }
 
     var activeConflict: DocumentConflict? { document?.conflict }
@@ -266,7 +291,8 @@ final class EditorSession: Identifiable {
     /// away from the main actor and publishes only if its base generation is
     /// still current.
     func editorTextDidChange(_ edit: MarkdownTextEdit) {
-        guard let document, let autosaver else { return }
+        guard editorSynchronizationFailure == nil,
+              let document, let autosaver else { return }
 
         let source = document.text
         if source.utf8.count <= 256 * 1_024,
@@ -280,7 +306,50 @@ final class EditorSession: Identifiable {
         }
 
         enqueueEditorEdit(edit)
-        startEditorEditDrain(document: document, autosaver: autosaver)
+        startEditorEditDrain(document: document)
+    }
+
+    /// Awaits the bounded editor-delta pipeline without forcing a full
+    /// NSTextView snapshot onto the main actor. Async rename/move/export and
+    /// restoration capture paths must cross this boundary before observing the
+    /// canonical document. New edits arriving while it waits are included.
+    func settlePendingEditorEdits() async throws {
+        while true {
+            if let editorSynchronizationFailure {
+                throw editorSynchronizationFailure
+            }
+
+            if let editorEditTask {
+                await editorEditTask.value
+                continue
+            }
+
+            guard !pendingEditorEdits.isEmpty else { return }
+            guard let document, autosaver != nil else {
+                editorSynchronizationFailure = .invalidEditorMutation
+                throw EditorSynchronizationError.invalidEditorMutation
+            }
+            startEditorEditDrain(document: document)
+        }
+    }
+
+    /// Export/restoration integration point: the returned immutable snapshot
+    /// includes every edit accepted by NSTextView before this call completes.
+    func settledDocumentSnapshot() async throws -> Document.Snapshot? {
+        guard let document else { return nil }
+        if let registry {
+            return try await registry.withSettledEditorEdits(for: document.id) {
+                guard self.document === document else { return nil }
+                return document.snapshot()
+            }
+        }
+
+        while true {
+            try await settlePendingEditorEdits()
+            guard self.document === document else { return nil }
+            guard !hasUnsettledEditorEdits else { continue }
+            return document.snapshot()
+        }
     }
 
     private func publishEditorText(
@@ -312,6 +381,11 @@ final class EditorSession: Identifiable {
     }
 
     func saveNow() {
+        if let editorSynchronizationFailure {
+            errorMessage = editorSynchronizationFailure.localizedDescription
+            presentedErrorContext = .save
+            return
+        }
         guard !hasPendingEditorEdits else {
             saveAfterEditorEdits = true
             return
@@ -334,6 +408,9 @@ final class EditorSession: Identifiable {
     }
 
     func flush() throws {
+        if let editorSynchronizationFailure {
+            throw editorSynchronizationFailure
+        }
         guard !hasPendingEditorEdits else {
             throw EditorSynchronizationError.editorMaterializationInProgress
         }
@@ -345,6 +422,11 @@ final class EditorSession: Identifiable {
 
     @discardableResult
     func flushForLifecycleEvent() -> Bool {
+        if let editorSynchronizationFailure {
+            errorMessage = editorSynchronizationFailure.localizedDescription
+            presentedErrorContext = .save
+            return false
+        }
         guard !hasPendingEditorEdits else {
             errorMessage = EditorSynchronizationError
                 .editorMaterializationInProgress.localizedDescription
@@ -394,11 +476,14 @@ final class EditorSession: Identifiable {
     }
 
     func resolveConflictNow(_ choice: ConflictChoice) async throws {
-        guard let document, let workspace, let conflictResolver else { return }
-        if let editorEditTask {
-            await editorEditTask.value
+        guard let document else { return }
+        if let registry {
+            try await registry.settlePendingEditorEdits(for: document.id)
+        } else {
+            try await settlePendingEditorEdits()
         }
         guard self.document === document else { return }
+        guard let workspace, let conflictResolver else { return }
         isResolvingConflict = true
         defer { isResolvingConflict = false }
         _ = try await conflictResolver.resolve(
@@ -417,7 +502,14 @@ final class EditorSession: Identifiable {
         collisionChoice: CollisionChoice? = nil,
         approvedCollision: FileCollision? = nil
     ) async throws -> FileMutationOutcome {
-        guard let document, let workspace, let documentMover else {
+        guard let document else { return .cancelled }
+        if let registry {
+            try await registry.settlePendingEditorEdits(for: document.id)
+        } else {
+            try await settlePendingEditorEdits()
+        }
+        guard self.document === document,
+              let workspace, let documentMover else {
             return .cancelled
         }
         let outcome = try await documentMover.move(
@@ -466,6 +558,10 @@ final class EditorSession: Identifiable {
 
     func moveToTrash() throws {
         guard let document, let workspace, let documentMover else { return }
+        if registry?.hasUnsettledEditorEdits(for: document.id)
+            ?? hasUnsettledEditorEdits {
+            throw EditorSynchronizationError.editorMaterializationInProgress
+        }
         try documentMover.moveToTrash(
             document,
             workspace: workspace,
@@ -480,7 +576,9 @@ final class EditorSession: Identifiable {
     }
 
     func retargetDocument(to workspace: Workspace, autosaver: Autosaver) {
-        invalidatePendingEditorEdits()
+        // The registry retargets the existing autosave pipeline during a
+        // cross-workspace move. Retain any accepted deltas; the drain publishes
+        // through the current autosaver when background materialization ends.
         self.workspace = workspace
         self.autosaver = autosaver
         ownsAutosaver = false
@@ -500,20 +598,6 @@ private extension EditorSession {
     enum PresentedErrorContext {
         case general
         case save
-    }
-
-    enum EditorSynchronizationError: LocalizedError {
-        case editorMaterializationInProgress
-        case invalidEditorMutation
-
-        var errorDescription: String? {
-            switch self {
-            case .editorMaterializationInProgress:
-                "Clio is still applying recent edits. Keep this window open; saving will continue as soon as the document catches up."
-            case .invalidEditorMutation:
-                "Clio couldn’t apply a queued editor change. The on-screen buffer was left open and no stale bytes were saved."
-            }
-        }
     }
 
     var hasPendingEditorEdits: Bool {
@@ -539,12 +623,12 @@ private extension EditorSession {
         pendingEditorEdits.append(edit)
     }
 
-    func startEditorEditDrain(document: Document, autosaver: Autosaver) {
+    func startEditorEditDrain(document: Document) {
         guard editorEditTask == nil else { return }
 
         let epoch = editorEditEpoch
         let documentID = document.id
-        editorEditTask = Task { @MainActor [weak self, weak document, weak autosaver] in
+        editorEditTask = Task { @MainActor [weak self, weak document] in
             do {
                 // Gather key-repeat/burst input before paying for a large
                 // immutable model snapshot.
@@ -553,10 +637,10 @@ private extension EditorSession {
                 return
             }
 
-            guard let self, let document, let autosaver else { return }
+            guard let self, let document else { return }
             while self.editorEditEpoch == epoch,
                   self.document === document,
-                  self.autosaver === autosaver,
+                  self.autosaver != nil,
                   document.id == documentID,
                   !self.pendingEditorEdits.isEmpty {
                 let edits = self.pendingEditorEdits
@@ -574,14 +658,15 @@ private extension EditorSession {
                       !Task.isCancelled,
                       self.editorEditEpoch == epoch,
                       self.document === document,
-                      self.autosaver === autosaver,
+                      let autosaver = self.autosaver,
                       document.revision == baseRevision else {
                     if self.editorEditEpoch == epoch {
                         self.pendingEditorEdits.removeAll(keepingCapacity: true)
                         self.pendingEditorRevisionAdvance = 0
                         self.editorEditTask = nil
-                        self.errorMessage = EditorSynchronizationError
-                            .invalidEditorMutation.localizedDescription
+                        self.editorSynchronizationFailure = .invalidEditorMutation
+                        self.errorMessage = self.editorSynchronizationFailure?
+                            .localizedDescription
                         self.presentedErrorContext = .save
                     }
                     return
@@ -613,6 +698,7 @@ private extension EditorSession {
         pendingEditorEdits.removeAll(keepingCapacity: true)
         pendingEditorRevisionAdvance = 0
         saveAfterEditorEdits = false
+        editorSynchronizationFailure = nil
     }
 
     func loadInitialDocument(

@@ -25,7 +25,9 @@ final class Autosaver {
     private var pendingDocument: Document?
     private var debounceTask: Task<Void, Never>?
     private var generation: UInt64 = 0
-    private var isSuspended = false
+    private var suspensionDepth = 0
+
+    private var isSuspended: Bool { suspensionDepth > 0 }
 
     init(
         workspace: Workspace,
@@ -127,16 +129,23 @@ final class Autosaver {
     }
 
     func suspendForFileOperation() {
-        isSuspended = true
+        suspensionDepth += 1
+        guard suspensionDepth == 1 else { return }
         generation &+= 1
         debounceTask?.cancel()
         debounceTask = nil
     }
 
     func resumeAfterFileOperation() {
-        guard isSuspended else { return }
-        isSuspended = false
+        guard suspensionDepth > 0 else { return }
+        suspensionDepth -= 1
+        guard suspensionDepth == 0 else { return }
         guard let pendingDocument else { return }
+        guard pendingDocument.isDirty else {
+            self.pendingDocument = nil
+            lastError = nil
+            return
+        }
         documentDidChange(pendingDocument)
     }
 }

@@ -156,6 +156,37 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func testNestedFileOperationSuspensionsOnlyResumeAfterFinalOwner() throws {
+        try withTemporaryDirectory { directoryURL in
+            let fileURL = directoryURL.appendingPathComponent("draft.md")
+            try Data("old".utf8).write(to: fileURL)
+
+            let workspace = try Workspace(
+                rootURL: directoryURL,
+                accessSecurityScopedResource: false
+            )
+            let document = try workspace.loadDocument(at: fileURL)
+            let autosaver = Autosaver(workspace: workspace)
+
+            autosaver.suspendForFileOperation()
+            autosaver.suspendForFileOperation()
+            document.replaceText(with: "nested-safe")
+            autosaver.documentDidChange(document)
+            autosaver.resumeAfterFileOperation()
+
+            XCTAssertThrowsError(try autosaver.flush(document)) { error in
+                guard case Autosaver.SaveError.fileOperationInProgress = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+            XCTAssertEqual(try String(contentsOf: fileURL), "old")
+
+            autosaver.resumeAfterFileOperation()
+            XCTAssertEqual(try autosaver.flush(document), fileURL)
+            XCTAssertEqual(try String(contentsOf: fileURL), "nested-safe")
+        }
+    }
+
     func testInvalidUTF8IsRejected() throws {
         try withTemporaryDirectory { directoryURL in
             let fileURL = directoryURL.appendingPathComponent("invalid.md")

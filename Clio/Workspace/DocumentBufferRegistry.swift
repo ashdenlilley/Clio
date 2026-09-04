@@ -162,6 +162,46 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         }
     }
 
+    /// Async file operations use this boundary before moving or snapshotting a
+    /// canonical buffer. Every window bound to the document must catch up, not
+    /// only the window that initiated the command.
+    func settlePendingEditorEdits(for documentID: DocumentID) async throws {
+        while true {
+            let currentSessions = boundSessions(for: documentID)
+            for session in currentSessions {
+                try await session.settlePendingEditorEdits()
+            }
+            guard !boundSessions(for: documentID).contains(where: \.hasUnsettledEditorEdits) else {
+                continue
+            }
+            return
+        }
+    }
+
+    /// Synchronous destructive/lifecycle paths cannot await. They use this to
+    /// refuse the operation and retain every visible editor buffer instead.
+    func hasUnsettledEditorEdits(for documentID: DocumentID) -> Bool {
+        boundSessions(for: documentID).contains(where: \.hasUnsettledEditorEdits)
+    }
+
+    /// Runs a synchronous canonical-buffer observation or mutation after every
+    /// bound editor has caught up. Autosave remains suspended across the wait
+    /// and operation, preventing an older debounce from acting on a path while
+    /// workspace reconciliation is in flight.
+    func withSettledEditorEdits<T>(
+        for documentID: DocumentID,
+        _ operation: @MainActor () throws -> T
+    ) async throws -> T {
+        suspendAutosave(for: documentID)
+        defer { resumeAutosave(for: documentID) }
+
+        repeat {
+            try await settlePendingEditorEdits(for: documentID)
+        } while hasUnsettledEditorEdits(for: documentID)
+
+        return try operation()
+    }
+
     func documentID(
         for identity: PhysicalFileIdentity,
         locator: DocumentLocator

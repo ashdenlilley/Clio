@@ -43,6 +43,14 @@ final class DocumentMover {
         approvedCollision: FileCollision? = nil,
         registry: DocumentBufferRegistry? = nil
     ) async throws -> FileMutationOutcome {
+        registry?.suspendAutosave(for: document.id)
+        defer { registry?.resumeAutosave(for: document.id) }
+        if let registry {
+            repeat {
+                try await registry.settlePendingEditorEdits(for: document.id)
+            } while registry.hasUnsettledEditorEdits(for: document.id)
+        }
+
         guard let sourceURL = document.fileURL else { return .cancelled }
         _ = try sourceWorkspace.save(document)
         let sourceAtApproval = try await fileIO.snapshot(at: sourceURL)
@@ -51,8 +59,6 @@ final class DocumentMover {
             try sourceWorkspace.reconcileExternalChange(for: document)
             throw MoveError.sourceChanged(sourceURL)
         }
-        registry?.suspendAutosave(for: document.id)
-        defer { registry?.resumeAutosave(for: document.id) }
 
         let filename = Workspace.safeFilename(
             from: preferredFilename ?? sourceURL.lastPathComponent
@@ -95,13 +101,23 @@ final class DocumentMover {
                     at: destinationURL,
                     in: destinationWorkspace
                 )
-                if let displacedDocument,
-                   displacedDocument !== document,
-                   displacedDocument.isDirty {
+                let displacedSnapshot: Document.Snapshot?
+                if let displacedDocument, displacedDocument !== document,
+                   let registry {
+                    displacedSnapshot = try await registry.withSettledEditorEdits(
+                        for: displacedDocument.id
+                    ) {
+                        displacedDocument.snapshot()
+                    }
+                } else {
+                    displacedSnapshot = nil
+                }
+                let replaced = try await fileIO.snapshot(at: destinationURL)
+                if let displacedSnapshot, displacedSnapshot.isDirty {
                     _ = try await recoveryStore.preserve(
-                        documentID: displacedDocument.id,
-                        filename: displacedDocument.filename,
-                        data: Data(displacedDocument.text.utf8),
+                        documentID: displacedSnapshot.documentID,
+                        filename: displacedSnapshot.preferredFilename,
+                        data: Data(displacedSnapshot.text.utf8),
                         sourceModificationDate: nil
                     )
                 }
@@ -239,6 +255,9 @@ final class DocumentMover {
         workspace: Workspace,
         registry: DocumentBufferRegistry? = nil
     ) throws -> URL? {
+        if registry?.hasUnsettledEditorEdits(for: document.id) == true {
+            throw EditorSynchronizationError.editorMaterializationInProgress
+        }
         guard let fileURL = document.fileURL else { return nil }
         _ = try workspace.save(document)
         registry?.cancelAutosave(for: document.id)

@@ -695,11 +695,15 @@ private extension AppState {
                       let document = documentRegistry.document(at: url, in: workspace) else {
                     return
                 }
-                try workspace.reconcileExternalChange(for: document)
-                if document.conflict != nil {
-                    documentRegistry.cancelAutosave(for: document.id)
-                } else if document.fileURL != nil {
-                    documentRegistry.updateAliases(for: document, in: workspace)
+                try await documentRegistry.withSettledEditorEdits(for: document.id) {
+                    guard document.fileURL?.standardizedFileURL
+                            == url.standardizedFileURL else { return }
+                    try workspace.reconcileExternalChange(for: document)
+                    if document.conflict != nil {
+                        documentRegistry.cancelAutosave(for: document.id)
+                    } else if document.fileURL != nil {
+                        documentRegistry.updateAliases(for: document, in: workspace)
+                    }
                 }
 
             case .moved:
@@ -710,18 +714,22 @@ private extension AppState {
                       }) ?? documentRegistry.document(at: oldURL, in: workspace) else {
                     return
                 }
-                try workspace.reconcileExternalMove(
-                    for: document,
-                    from: oldURL,
-                    to: newURL
-                )
-                if let oldLocator = try? workspace.locator(for: oldURL) {
-                    documentRegistry.removeLocator(oldLocator, for: document.id)
-                }
-                documentRegistry.updateAliases(for: document, in: workspace)
-                documentRegistry.retarget(document, to: workspace)
-                if document.conflict != nil {
-                    documentRegistry.cancelAutosave(for: document.id)
+                try await documentRegistry.withSettledEditorEdits(for: document.id) {
+                    guard document.fileURL?.standardizedFileURL
+                            == oldURL.standardizedFileURL else { return }
+                    try workspace.reconcileExternalMove(
+                        for: document,
+                        from: oldURL,
+                        to: newURL
+                    )
+                    if let oldLocator = try? workspace.locator(for: oldURL) {
+                        documentRegistry.removeLocator(oldLocator, for: document.id)
+                    }
+                    documentRegistry.updateAliases(for: document, in: workspace)
+                    documentRegistry.retarget(document, to: workspace)
+                    if document.conflict != nil {
+                        documentRegistry.cancelAutosave(for: document.id)
+                    }
                 }
 
             case .deleted:
@@ -729,27 +737,32 @@ private extension AppState {
                       let document = documentRegistry.document(at: url, in: workspace) else {
                     return
                 }
-                let locator = try workspace.locator(for: url)
-                guard document.fileURL?.standardizedFileURL == url.standardizedFileURL else {
-                    // A second overlapping watcher may report the source path
-                    // after another watcher already retargeted this buffer.
-                    documentRegistry.removeLocator(locator, for: document.id)
-                    return
-                }
-                documentRegistry.cancelAutosave(for: document.id)
-                if document.conflict != nil {
+                let needsConflictDetachment = try await documentRegistry
+                    .withSettledEditorEdits(for: document.id) {
+                        let locator = try workspace.locator(for: url)
+                        guard document.fileURL?.standardizedFileURL
+                                == url.standardizedFileURL else {
+                            // A second overlapping watcher may report the source path
+                            // after another watcher already retargeted this buffer.
+                            documentRegistry.removeLocator(locator, for: document.id)
+                            return false
+                        }
+                        documentRegistry.cancelAutosave(for: document.id)
+                        guard document.conflict == nil else { return true }
+                        try workspace.checkpointCrashRecovery(
+                            for: document,
+                            reason: .externalDeletion
+                        )
+                        document.markUnbacked(previous: locator)
+                        documentRegistry.detach(document.id, from: locator)
+                        return false
+                    }
+                if needsConflictDetachment {
                     try await conflictResolver.detachAfterExternalDeletion(
                         document,
                         workspace: workspace,
                         registry: documentRegistry
                     )
-                } else {
-                    try workspace.checkpointCrashRecovery(
-                        for: document,
-                        reason: .externalDeletion
-                    )
-                    document.markUnbacked(previous: locator)
-                    documentRegistry.detach(document.id, from: locator)
                 }
 
             case .accessLost, .error:
@@ -757,31 +770,36 @@ private extension AppState {
 
             case .rescanRequired, .rootChanged:
                 for document in documentRegistry.openDocuments {
-                    guard let url = document.fileURL, workspace.contains(url) else { continue }
-                    if !fileManager.fileExists(atPath: url.path) {
-                        let locator = try workspace.locator(for: url)
-                        documentRegistry.cancelAutosave(for: document.id)
-                        if document.conflict != nil {
-                            try await conflictResolver.detachAfterExternalDeletion(
-                                document,
-                                workspace: workspace,
-                                registry: documentRegistry
-                            )
-                        } else {
-                            try workspace.checkpointCrashRecovery(
-                                for: document,
-                                reason: .externalDeletion
-                            )
-                            document.markUnbacked(previous: locator)
-                            documentRegistry.detach(document.id, from: locator)
+                    let needsConflictDetachment = try await documentRegistry
+                        .withSettledEditorEdits(for: document.id) {
+                            guard let url = document.fileURL,
+                                  workspace.contains(url) else { return false }
+                            if !fileManager.fileExists(atPath: url.path) {
+                                let locator = try workspace.locator(for: url)
+                                documentRegistry.cancelAutosave(for: document.id)
+                                guard document.conflict == nil else { return true }
+                                try workspace.checkpointCrashRecovery(
+                                    for: document,
+                                    reason: .externalDeletion
+                                )
+                                document.markUnbacked(previous: locator)
+                                documentRegistry.detach(document.id, from: locator)
+                                return false
+                            }
+                            try workspace.reconcileExternalChange(for: document)
+                            if document.conflict != nil {
+                                documentRegistry.cancelAutosave(for: document.id)
+                            } else if document.fileURL != nil {
+                                documentRegistry.updateAliases(for: document, in: workspace)
+                            }
+                            return false
                         }
-                        continue
-                    }
-                    try workspace.reconcileExternalChange(for: document)
-                    if document.conflict != nil {
-                        documentRegistry.cancelAutosave(for: document.id)
-                    } else if document.fileURL != nil {
-                        documentRegistry.updateAliases(for: document, in: workspace)
+                    if needsConflictDetachment {
+                        try await conflictResolver.detachAfterExternalDeletion(
+                            document,
+                            workspace: workspace,
+                            registry: documentRegistry
+                        )
                     }
                 }
 

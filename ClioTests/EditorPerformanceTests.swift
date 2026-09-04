@@ -197,6 +197,318 @@ final class EditorPerformanceTests: XCTestCase {
     }
 
     @MainActor
+    func testRenameImmediatelyAfterLargeEditSettlesExactBytesBeforeMove() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorRename-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorRenameRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: recoveryURL,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let source = String(repeating: "large source line\n", count: 32_768)
+        let sourceURL = directoryURL.appendingPathComponent("draft.md")
+        try Data(source.utf8).write(to: sourceURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry()
+        let mover = DocumentMover(
+            recoveryStore: RecoveryStore(rootURL: recoveryURL)
+        )
+        let session = EditorSession(openingMode: .mostRecent)
+        session.activate(
+            in: workspace,
+            documentURLs: [sourceURL],
+            registry: registry,
+            documentMover: mover
+        )
+
+        let suffix = "saved-before-rename"
+        session.editorTextDidChange(MarkdownTextEdit(
+            replacedRange: UTF16Range(
+                location: (source as NSString).length,
+                length: 0
+            ),
+            replacement: suffix
+        ))
+        XCTAssertTrue(session.hasUnsettledEditorEdits)
+        XCTAssertFalse(session.flushForLifecycleEvent())
+
+        let outcome = try await session.rename(to: "renamed.md")
+        let destinationURL = directoryURL.appendingPathComponent("renamed.md")
+        let expected = source + suffix
+
+        XCTAssertEqual(
+            outcome,
+            .completed(try workspace.locator(for: destinationURL))
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: destinationURL), Data(expected.utf8))
+        XCTAssertEqual(session.draftText, expected)
+        XCTAssertFalse(session.hasUnsettledEditorEdits)
+    }
+
+    @MainActor
+    func testDirectCrossWorkspaceMoveSettlesImmediateLargeEdit() async throws {
+        let sourceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorMoveSource-\(UUID().uuidString)", isDirectory: true)
+        let destinationRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorMoveDestination-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorMoveRecovery-\(UUID().uuidString)", isDirectory: true)
+        for url in [sourceRoot, destinationRoot, recoveryURL] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        defer {
+            try? FileManager.default.removeItem(at: sourceRoot)
+            try? FileManager.default.removeItem(at: destinationRoot)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let source = String(repeating: "cross workspace line\n", count: 32_768)
+        let sourceURL = sourceRoot.appendingPathComponent("draft.md")
+        try Data(source.utf8).write(to: sourceURL)
+        let sourceWorkspace = try Workspace(
+            rootURL: sourceRoot,
+            accessSecurityScopedResource: false
+        )
+        let destinationWorkspace = try Workspace(
+            rootURL: destinationRoot,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry()
+        let mover = DocumentMover(
+            recoveryStore: RecoveryStore(rootURL: recoveryURL)
+        )
+        let session = EditorSession(openingMode: .mostRecent)
+        session.activate(
+            in: sourceWorkspace,
+            documentURLs: [sourceURL],
+            registry: registry,
+            documentMover: mover
+        )
+        let document = try XCTUnwrap(session.document)
+
+        let suffix = "moved-after-edit"
+        session.editorTextDidChange(MarkdownTextEdit(
+            replacedRange: UTF16Range(
+                location: (source as NSString).length,
+                length: 0
+            ),
+            replacement: suffix
+        ))
+
+        let outcome = try await mover.move(
+            document,
+            from: sourceWorkspace,
+            to: destinationWorkspace,
+            registry: registry
+        )
+        let destinationURL = destinationRoot.appendingPathComponent("draft.md")
+
+        XCTAssertEqual(
+            outcome,
+            .completed(try destinationWorkspace.locator(for: destinationURL))
+        )
+        XCTAssertEqual(try Data(contentsOf: destinationURL), Data((source + suffix).utf8))
+        XCTAssertEqual(session.fileURL, destinationURL)
+        XCTAssertEqual(session.draftText, source + suffix)
+        XCTAssertFalse(session.hasUnsettledEditorEdits)
+    }
+
+    @MainActor
+    func testTrashRefusesImmediateLargeEditUntilSettled() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorTrash-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorTrashRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: recoveryURL,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let source = String(repeating: "trash safety line\n", count: 32_768)
+        let sourceURL = directoryURL.appendingPathComponent("draft.md")
+        let trashedURL = directoryURL.appendingPathComponent("trashed.md")
+        try Data(source.utf8).write(to: sourceURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        var trashInvocationCount = 0
+        let mover = DocumentMover(
+            recoveryStore: RecoveryStore(rootURL: recoveryURL),
+            trashOperation: { url in
+                trashInvocationCount += 1
+                try FileManager.default.moveItem(at: url, to: trashedURL)
+                return trashedURL
+            }
+        )
+        let session = EditorSession(openingMode: .mostRecent)
+        session.activate(
+            in: workspace,
+            documentURLs: [sourceURL],
+            documentMover: mover
+        )
+
+        let suffix = "kept-before-trash"
+        session.editorTextDidChange(MarkdownTextEdit(
+            replacedRange: UTF16Range(
+                location: (source as NSString).length,
+                length: 0
+            ),
+            replacement: suffix
+        ))
+
+        XCTAssertThrowsError(try session.moveToTrash())
+        XCTAssertEqual(trashInvocationCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+
+        try await session.settlePendingEditorEdits()
+        try session.moveToTrash()
+
+        XCTAssertEqual(trashInvocationCount, 1)
+        XCTAssertEqual(try Data(contentsOf: trashedURL), Data((source + suffix).utf8))
+    }
+
+    @MainActor
+    func testExternalChangeWaitsForImmediateLargeEditAndCreatesConflict() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorExternal-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorExternalRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: recoveryURL,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let source = String(repeating: "external safety line\n", count: 32_768)
+        let fileURL = directoryURL.appendingPathComponent("draft.md")
+        try Data(source.utf8).write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let defaultsName = "ClioEditorExternal.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let state = AppState(
+            defaults: defaults,
+            initialWorkspace: workspace,
+            recoveryStore: RecoveryStore(rootURL: recoveryURL)
+        )
+        let session = EditorSession(openingMode: .mostRecent)
+        state.register(session)
+        try await Task.sleep(for: .milliseconds(120))
+
+        let suffix = "local-before-outside-change"
+        session.editorTextDidChange(MarkdownTextEdit(
+            replacedRange: UTF16Range(
+                location: (source as NSString).length,
+                length: 0
+            ),
+            replacement: suffix
+        ))
+        try Data("outside".utf8).write(to: fileURL, options: .atomic)
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while session.activeConflict == nil, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(session.draftText, source + suffix)
+        XCTAssertEqual(session.activeConflict?.clio.source, source + suffix)
+        XCTAssertEqual(session.activeConflict?.external.source, "outside")
+        XCTAssertFalse(session.hasUnsettledEditorEdits)
+        XCTAssertEqual(try String(contentsOf: fileURL), "outside")
+    }
+
+    @MainActor
+    func testInvalidLargeDeltaMakesEveryMutationBoundaryRefuse() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorInvalid-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioEditorInvalidRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recoveryURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let source = String(repeating: "invalid delta line\n", count: 32_768)
+        let fileURL = directoryURL.appendingPathComponent("draft.md")
+        try Data(source.utf8).write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry()
+        let mover = DocumentMover(
+            recoveryStore: RecoveryStore(rootURL: recoveryURL),
+            trashOperation: { _ in XCTFail("Trash must not run"); return nil }
+        )
+        let session = EditorSession(openingMode: .mostRecent)
+        session.activate(
+            in: workspace,
+            documentURLs: [fileURL],
+            registry: registry,
+            documentMover: mover
+        )
+        session.editorTextDidChange(MarkdownTextEdit(
+            replacedRange: UTF16Range(location: Int.max / 2, length: 0),
+            replacement: "unsafely positioned"
+        ))
+
+        do {
+            try await session.settlePendingEditorEdits()
+            XCTFail("Invalid editor delta unexpectedly settled")
+        } catch {
+            XCTAssertTrue(error is EditorSynchronizationError)
+        }
+        XCTAssertTrue(session.hasUnsettledEditorEdits)
+        XCTAssertThrowsError(try session.flush())
+        XCTAssertFalse(session.flushForLifecycleEvent())
+        XCTAssertThrowsError(try session.moveToTrash())
+        do {
+            _ = try await session.rename(to: "renamed.md")
+            XCTFail("Rename unexpectedly ignored the invalid editor delta")
+        } catch {
+            XCTAssertTrue(error is EditorSynchronizationError)
+        }
+        XCTAssertEqual(session.draftText, source)
+        XCTAssertEqual(try Data(contentsOf: fileURL), Data(source.utf8))
+    }
+
+    @MainActor
     func testLargeWordCountRunsOffMainAndOnlyLatestRevisionPublishes() async throws {
         let session = EditorSession(openingMode: .newDocument)
         let stale = String(repeating: "stale ", count: 300_000)
