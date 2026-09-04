@@ -12,7 +12,7 @@ if [[ -z "${RELEASE_DIR}" || ! -d "${RELEASE_DIR}" ]]; then
     exit 64
 fi
 
-for command_name in ditto plutil shasum zipinfo; do
+for command_name in ditto plutil shasum unzip zipinfo; do
     clio_require_command "${command_name}"
 done
 
@@ -31,6 +31,8 @@ SCHEMA_VERSION="$(manifest_value schemaVersion)"
 ARTIFACT_NAME="$(manifest_value artifact)"
 CHECKSUM_NAME="$(manifest_value checksumFile)"
 BUILD_LOG_NAME="$(manifest_value buildLog)"
+TEST_LOG_NAME="$(manifest_value testLog)"
+TEST_RESULTS_NAME="$(manifest_value testResults)"
 VERIFICATION_LOG_NAME="$(manifest_value verificationLog)"
 SMOKE_LOG_NAME="$(manifest_value launchSmokeLog)"
 DSYM_NAME="$(manifest_value debugSymbols)"
@@ -92,6 +94,10 @@ CMARK_REVISION="$(manifest_value dependencies.swiftCMark.revision)"
     || clio_die "checksum filename does not match the manifest version"
 [[ "${BUILD_LOG_NAME}" == "Clio-${VERSION}-unsigned-build.log" ]] \
     || clio_die "build-log filename does not match the manifest version"
+[[ "${TEST_LOG_NAME}" == "Clio-${VERSION}-unsigned-tests.log" ]] \
+    || clio_die "test-log filename does not match the manifest version"
+[[ "${TEST_RESULTS_NAME}" == "Clio-${VERSION}-unsigned-tests.xcresult.zip" ]] \
+    || clio_die "test-results filename does not match the manifest version"
 [[ "${VERIFICATION_LOG_NAME}" == "Clio-${VERSION}-unsigned-verification.log" ]] \
     || clio_die "verification-log filename does not match the manifest version"
 [[ "${SMOKE_LOG_NAME}" == "Clio-${VERSION}-unsigned-launch-smoke.log" ]] \
@@ -107,6 +113,8 @@ for artifact_name in \
     "${ARTIFACT_NAME}" \
     "${CHECKSUM_NAME}" \
     "${BUILD_LOG_NAME}" \
+    "${TEST_LOG_NAME}" \
+    "${TEST_RESULTS_NAME}" \
     "${VERIFICATION_LOG_NAME}" \
     "${SMOKE_LOG_NAME}" \
     "${DSYM_NAME}" \
@@ -121,6 +129,8 @@ EXPECTED_FILE_LIST="$(
     printf '%s\n' \
         "${ARTIFACT_NAME}" \
         "${BUILD_LOG_NAME}" \
+        "${TEST_LOG_NAME}" \
+        "${TEST_RESULTS_NAME}" \
         "${CHECKSUM_NAME}" \
         "${DSYM_NAME}" \
         "${PACKAGE_RESOLVED_NAME}" \
@@ -144,6 +154,8 @@ EXPECTED_CHECKSUM_ENTRIES="$(
     printf '%s\n' \
         "${ARTIFACT_NAME}" \
         "${BUILD_LOG_NAME}" \
+        "${TEST_LOG_NAME}" \
+        "${TEST_RESULTS_NAME}" \
         "${DSYM_NAME}" \
         "${PACKAGE_RESOLVED_NAME}" \
         "${SMOKE_LOG_NAME}" \
@@ -187,6 +199,14 @@ for build_metadata in \
 done
 grep -q '^\*\* BUILD SUCCEEDED \*\*$' "${RELEASE_DIR}/${BUILD_LOG_NAME}" \
     || clio_die "build log does not contain a successful Release build"
+grep -q '^\*\* TEST SUCCEEDED \*\*$' "${RELEASE_DIR}/${TEST_LOG_NAME}" \
+    || clio_die "test log does not contain a successful test gate"
+unzip -tq "${RELEASE_DIR}/${TEST_RESULTS_NAME}" >/dev/null \
+    || clio_die "test result archive is corrupt"
+TEST_RESULT_LISTING="$(zipinfo -1 "${RELEASE_DIR}/${TEST_RESULTS_NAME}")" \
+    || clio_die "could not inspect the test result archive"
+grep -q '^Clio-tests.xcresult/Info.plist$' <<<"${TEST_RESULT_LISTING}" \
+    || clio_die "test result archive is missing its result bundle metadata"
 grep -q '^Verified unsigned-internal Clio ' "${RELEASE_DIR}/${VERIFICATION_LOG_NAME}" \
     || clio_die "static-verification log is incomplete"
 grep -q '^Launch smoke passed:' "${RELEASE_DIR}/${SMOKE_LOG_NAME}" \
