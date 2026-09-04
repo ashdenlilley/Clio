@@ -226,6 +226,7 @@ final class ExportPresentationTests: XCTestCase {
         presentation.presentPageSetup()
         try await waitUntil { panel.pageSetupContinuation != nil }
         presentation.cancel()
+        XCTAssertEqual(panel.cancellationRequests, 1)
         panel.pageSetupContinuation?.resume(returning: nil)
         panel.pageSetupContinuation = nil
         await Task.yield()
@@ -303,12 +304,17 @@ private final class FakeExportPanelPresenter: ExportPanelPresenting {
     private(set) var configurations: [ExportSavePanelConfiguration] = []
     private(set) var initialDirectories: [URL?] = []
     private(set) var pageSetupRequests = 0
+    private(set) var cancellationRequests = 0
     var suspendPageSetup = false
     var pageSetupContinuation: CheckedContinuation<PDFPrintSettings?, Never>?
 
     init(destination: URL?, pageSettings: PDFPrintSettings? = nil) {
         self.destination = destination
         self.pageSettings = pageSettings
+    }
+
+    func cancelPendingPanel() {
+        cancellationRequests += 1
     }
 
     func chooseDestination(
