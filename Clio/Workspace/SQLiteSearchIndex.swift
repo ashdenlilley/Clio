@@ -262,7 +262,7 @@ private extension SQLiteSearchIndex {
         let currentRelativePath: String?
     }
 
-    enum QueryMode {
+    enum QueryMode: Equatable {
         case filename
         case content
     }
@@ -579,14 +579,20 @@ private extension SQLiteSearchIndex {
                         limit: firstLimit,
                         prioritizesLatency: true
                     )
+                    // Content's early batch deliberately skips ranking. Even
+                    // a small result set needs a ranked final batch; otherwise
+                    // a short query would expose provisional scores/order.
+                    let needsSettledPass = mode == .content
+                        ? !first.isEmpty
+                        : query.limit > firstLimit && first.count == firstLimit
                     continuation.yield(
                         SearchBatch(
                             results: first,
-                            isFinal: query.limit <= firstLimit || first.count < firstLimit
+                            isFinal: !needsSettledPass
                         )
                     )
 
-                    if query.limit > firstLimit, first.count == firstLimit {
+                    if needsSettledPass {
                         try Task.checkCancellation()
                         let settled = try self.results(
                             for: query,
@@ -706,7 +712,7 @@ private extension SQLiteSearchIndex {
             return try filenameResults(for: query, limit: limit)
         }
         var conditions = ["documents_fts MATCH ?"]
-        var bindings = [firstTerm, ftsQuery]
+        var bindings = [ftsQuery]
         if let workspaceFilter = query.workspaceFilter {
             conditions.append("d.workspace_id = ?")
             bindings.append(workspaceFilter.rawValue.uuidString)
@@ -715,10 +721,29 @@ private extension SQLiteSearchIndex {
             conditions.append("d.excluded_pattern IS NULL")
         }
         bindings.append(String(limit))
+        bindings.append(firstTerm)
         let ordering = prioritizesLatency
-            ? "d.rowid"
+            ? "documents_fts.rowid"
             : "bm25(documents_fts), d.relative_path COLLATE NOCASE"
+        let score = prioritizesLatency ? "0.0" : "bm25(documents_fts)"
+        let resultOrdering = prioritizesLatency
+            ? "matches.document_rowid"
+            : "matches.ranking, d.relative_path COLLATE NOCASE"
+        // Keep FTS as the outer loop even with a workspace filter. Ordering
+        // by its rowid lets FTS stream the first LIMIT directly; d.rowid forces
+        // SQLite to sort every match before returning the first batch.
+        // Materialize only candidate IDs/scores before loading excerpts. The
+        // top-N sorter can admit many candidates before it finds the winners;
+        // none of those discarded candidates should hydrate/lowercase content.
         let sql = """
+        WITH matches AS MATERIALIZED (
+            SELECT documents_fts.rowid AS document_rowid, \(score) AS ranking
+            FROM documents_fts
+            CROSS JOIN documents d ON d.rowid = documents_fts.rowid
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY \(ordering)
+            LIMIT ?
+        )
         SELECT d.document_id, d.workspace_id, d.relative_path,
                substr(
                    d.content,
@@ -726,12 +751,10 @@ private extension SQLiteSearchIndex {
                    1024
                ),
                d.excluded_pattern, d.excluded_source, d.excluded_line, d.excluded_builtin,
-               bm25(documents_fts)
-        FROM documents_fts
-        JOIN documents d ON d.rowid = documents_fts.rowid
-        WHERE \(conditions.joined(separator: " AND "))
-        ORDER BY \(ordering)
-        LIMIT ?
+               matches.ranking
+        FROM matches
+        CROSS JOIN documents d ON d.rowid = matches.document_rowid
+        ORDER BY \(resultOrdering)
         """
 
         return try queryRows(sql: sql, bindings: bindings) { statement in

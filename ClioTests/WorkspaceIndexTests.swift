@@ -615,6 +615,45 @@ final class WorkspaceIndexTests: XCTestCase {
         }
     }
 
+    func testColdScopedContentSearchStreamsThenRanksDeterministicallyAtEveryLimit() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let scopeURL = rootURL.appendingPathComponent("scope", isDirectory: true)
+            let otherURL = rootURL.appendingPathComponent("other", isDirectory: true)
+            try FileManager.default.createDirectory(at: scopeURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: otherURL, withIntermediateDirectories: true)
+            for number in 0..<30 {
+                try write("needle " + String(repeating: "padding ", count: 100),
+                    to: scopeURL.appendingPathComponent(String(format: "a%02d.md", number)))
+            }
+            try write("needle needle needle needle needle", to: scopeURL.appendingPathComponent("z-best.md"))
+            try write("needle", to: otherURL.appendingPathComponent("outside.md"))
+            let scope = WorkspaceDescriptor(rootURL: scopeURL)
+            let databaseURL = rootURL.appendingPathComponent("cold.sqlite3")
+            let identityStore = DocumentIdentityStore(storageURL: rootURL.appendingPathComponent("identities.json"))
+            let index = try SQLiteSearchIndex(databaseURL: databaseURL, identityStore: identityStore)
+            try await index.rebuild(workspaces: [scope, WorkspaceDescriptor(rootURL: otherURL)], policy: .default)
+
+            for limit in [1, 10, 100] {
+                let reopened = try SQLiteSearchIndex(databaseURL: databaseURL, identityStore: identityStore)
+                var batches: [SearchBatch] = []
+                for try await batch in await reopened.search(
+                    WorkspaceSearchQuery(text: "needle", workspaceFilter: scope.id, limit: limit)
+                ) { batches.append(batch) }
+                XCTAssertEqual(batches.count, 2)
+                let first = try XCTUnwrap(batches.first)
+                let final = try XCTUnwrap(batches.last)
+                XCTAssertFalse(first.isFinal)
+                XCTAssertTrue(first.results.allSatisfy { $0.score == 0 })
+                XCTAssertTrue(final.isFinal)
+                XCTAssertEqual(final.results.count, min(limit, 31))
+                XCTAssertEqual(final.results.first?.relativePath, "z-best.md")
+                XCTAssertTrue(final.results.allSatisfy { $0.workspaceID == scope.id && $0.score > 0 })
+                XCTAssertEqual(final.results.dropFirst().map(\.relativePath),
+                    final.results.dropFirst().map(\.relativePath).sorted())
+            }
+        }
+    }
+
     func testContentSearchReturnsBoundedExcerptForTenMiBSingleLine() async throws {
         try await withTemporaryDirectory { rootURL in
             let half = PerformanceContract.fullMarkdownByteLimit / 2
