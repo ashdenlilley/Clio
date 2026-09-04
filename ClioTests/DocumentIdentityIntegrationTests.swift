@@ -259,6 +259,150 @@ final class DocumentIdentityIntegrationTests: XCTestCase {
         }
     }
 
+    func testCorruptIdentityStoreFailsClosedWithoutOverwritingMetadata() throws {
+        try withTemporaryDirectory { rootURL in
+            let storeURL = rootURL.appendingPathComponent("identities.json")
+            let corruptBytes = Data("{ definitely-not-json".utf8)
+            try corruptBytes.write(to: storeURL)
+            let store = DocumentIdentityStore(storageURL: storeURL)
+            let locator = try DocumentLocator(
+                workspaceID: WorkspaceID(),
+                relativePath: "note.md"
+            )
+
+            XCTAssertThrowsError(
+                try store.resolve(DocumentIdentityCandidate(locator: locator))
+            ) { error in
+                guard case DocumentIdentityStore.StoreError.corruptStore = error else {
+                    return XCTFail("Expected corrupt-store failure, got \(error)")
+                }
+            }
+            XCTAssertThrowsError(try store.flushPendingPersistence())
+            XCTAssertEqual(try Data(contentsOf: storeURL), corruptBytes)
+        }
+    }
+
+    @MainActor
+    func testRepeatedAtomicAutosaveKeepsPhysicalIdentityStateBounded() throws {
+        try withTemporaryDirectory { rootURL in
+            let fileURL = rootURL.appendingPathComponent("autosave.md")
+            try write("zero", to: fileURL)
+            let workspace = try Workspace(
+                rootURL: rootURL,
+                accessSecurityScopedResource: false
+            )
+            let storeURL = rootURL.appendingPathComponent("identities.json")
+            let store = DocumentIdentityStore(storageURL: storeURL)
+            let registry = DocumentBufferRegistry(identityStore: store)
+            let document = try registry.open(fileURL, in: workspace)
+            let autosaver = registry.autosaver(for: document, in: workspace)
+
+            for revision in 1...64 {
+                document.replaceText(with: "revision \(revision)")
+                autosaver.documentDidChange(document)
+                try autosaver.flush()
+                XCTAssertLessThanOrEqual(store.statistics().physicalFiles, 1)
+            }
+            try store.flushPendingPersistence()
+
+            XCTAssertEqual(store.statistics().physicalFiles, 1)
+            let restored = DocumentIdentityStore(storageURL: storeURL)
+            let locator = try workspace.locator(for: fileURL)
+            XCTAssertEqual(restored.storedDocumentID(for: locator), document.id)
+            XCTAssertLessThanOrEqual(restored.statistics().physicalFiles, 1)
+        }
+    }
+
+    func testDeletionPrunesStalePhysicalIDReuseAndBoundsTombstones() throws {
+        let store = DocumentIdentityStore(storageURL: nil)
+        let workspaceID = WorkspaceID()
+        let physical = PhysicalFileIdentity.resource(
+            volumeIdentifier: "volume",
+            fileResourceIdentifier: "reused-file-id"
+        )
+        let oldLocator = try DocumentLocator(
+            workspaceID: workspaceID,
+            relativePath: "old.md"
+        )
+        let oldID = try store.resolve(
+            DocumentIdentityCandidate(
+                locator: oldLocator,
+                physicalIdentity: physical,
+                canonicalPath: "/old.md"
+            )
+        )
+        try store.tombstone(oldLocator, documentID: oldID)
+        let newID = try store.resolve(
+            DocumentIdentityCandidate(
+                locator: try DocumentLocator(
+                    workspaceID: workspaceID,
+                    relativePath: "new.md"
+                ),
+                physicalIdentity: physical,
+                canonicalPath: "/new.md"
+            )
+        )
+        XCTAssertNotEqual(newID, oldID)
+
+        for number in 0..<(DocumentIdentityStore.maximumRetainedTombstones + 50) {
+            let locator = try DocumentLocator(
+                workspaceID: workspaceID,
+                relativePath: "deleted-\(number).md"
+            )
+            let id = try store.resolve(DocumentIdentityCandidate(locator: locator))
+            try store.tombstone(locator, documentID: id)
+        }
+        XCTAssertLessThanOrEqual(
+            store.statistics().tombstones,
+            DocumentIdentityStore.maximumRetainedTombstones
+        )
+    }
+
+    func testAtomicReplacementPrunesSupersededFileIDBeforeItCanBeReused() throws {
+        let store = DocumentIdentityStore(storageURL: nil)
+        let workspaceID = WorkspaceID()
+        let locator = try DocumentLocator(
+            workspaceID: workspaceID,
+            relativePath: "note.md"
+        )
+        let oldPhysical = PhysicalFileIdentity.resource(
+            volumeIdentifier: "volume",
+            fileResourceIdentifier: "old-inode"
+        )
+        let replacementPhysical = PhysicalFileIdentity.resource(
+            volumeIdentifier: "volume",
+            fileResourceIdentifier: "replacement-inode"
+        )
+        let originalID = try store.resolve(
+            DocumentIdentityCandidate(
+                locator: locator,
+                physicalIdentity: oldPhysical,
+                canonicalPath: "/workspace/note.md"
+            )
+        )
+        let replacementID = try store.resolve(
+            DocumentIdentityCandidate(
+                locator: locator,
+                physicalIdentity: replacementPhysical,
+                canonicalPath: "/workspace/note.md"
+            )
+        )
+        XCTAssertEqual(replacementID, originalID)
+        XCTAssertEqual(store.statistics().physicalFiles, 1)
+
+        let reusedID = try store.resolve(
+            DocumentIdentityCandidate(
+                locator: try DocumentLocator(
+                    workspaceID: workspaceID,
+                    relativePath: "unrelated.md"
+                ),
+                physicalIdentity: oldPhysical,
+                canonicalPath: "/workspace/unrelated.md"
+            )
+        )
+        XCTAssertNotEqual(reusedID, originalID)
+    }
+
     @MainActor
     func testLiveRegistryIdentityWinsAndRepairsPersistentMismatch() throws {
         try withTemporaryDirectory { rootURL in

@@ -51,9 +51,10 @@ final class DocumentIdentityStore: @unchecked Sendable {
         var physicalFiles: [String: UUID] = [:]
         var physicalPaths: [String: String] = [:]
         var tombstones: [String: UUID] = [:]
+        var tombstoneOrder: [String] = []
 
         private enum CodingKeys: String, CodingKey {
-            case locators, physicalFiles, physicalPaths, tombstones
+            case locators, physicalFiles, physicalPaths, tombstones, tombstoneOrder
         }
 
         init() {}
@@ -64,13 +65,31 @@ final class DocumentIdentityStore: @unchecked Sendable {
             physicalFiles = try values.decodeIfPresent([String: UUID].self, forKey: .physicalFiles) ?? [:]
             physicalPaths = try values.decodeIfPresent([String: String].self, forKey: .physicalPaths) ?? [:]
             tombstones = try values.decodeIfPresent([String: UUID].self, forKey: .tombstones) ?? [:]
+            tombstoneOrder = try values.decodeIfPresent([String].self, forKey: .tombstoneOrder)
+                ?? Array(tombstones.keys)
         }
     }
 
     private let lock = NSLock()
+    private let persistenceLock = NSLock()
+    private let persistenceQueue = DispatchQueue(
+        label: "olympus.clio.document-identity-persistence",
+        qos: .utility
+    )
     private let storageURL: URL?
     private var state: State
     private var startupError: Error?
+    private var pendingPersistence: DispatchWorkItem?
+    private var pendingPersistenceToken: UUID?
+    private var backgroundPersistenceError: Error?
+
+    static let maximumRetainedTombstones = 1_024
+
+    struct Statistics: Equatable {
+        let locators: Int
+        let physicalFiles: Int
+        let tombstones: Int
+    }
 
     init(storageURL: URL? = DocumentIdentityStore.defaultStorageURL) {
         self.storageURL = storageURL
@@ -124,7 +143,10 @@ final class DocumentIdentityStore: @unchecked Sendable {
             let tombstonedID = state.tombstones[locatorKey]
             var physicalID = physicalKey.flatMap { state.physicalFiles[$0] }
             if physicalID == tombstonedID {
-                if let physicalKey { state.physicalFiles[physicalKey] = nil }
+                if let physicalKey {
+                    state.physicalFiles[physicalKey] = nil
+                    state.physicalPaths[physicalKey] = nil
+                }
                 physicalID = nil
                 changed = true
             }
@@ -161,14 +183,18 @@ final class DocumentIdentityStore: @unchecked Sendable {
                 state.locators[locatorKey] = winner
                 changed = true
             }
-            if let physicalKey, state.physicalFiles[physicalKey] != winner {
-                state.physicalFiles[physicalKey] = winner
-                if let path = state.physicalPaths[physicalKey] {
+            if let physicalKey,
+               bindPhysicalLocked(
+                   key: physicalKey,
+                   documentID: winner,
+                   canonicalPath: candidate.canonicalPath
+               ) {
+                if let path = candidate.canonicalPath {
                     physicalsByDocumentID[winner, default: []].append((physicalKey, path))
                 }
                 changed = true
             }
-            if state.tombstones.removeValue(forKey: locatorKey) != nil {
+            if removeTombstoneLocked(locatorKey) {
                 changed = true
             }
             return DocumentID(rawValue: winner)
@@ -188,23 +214,33 @@ final class DocumentIdentityStore: @unchecked Sendable {
         if let startupError { throw startupError }
         let locatorKey = Self.key(locator)
         var changed = false
+        var requiresImmediatePersistence = false
         if state.locators[locatorKey] != documentID.rawValue {
             state.locators[locatorKey] = documentID.rawValue
             changed = true
+            requiresImmediatePersistence = true
         }
-        if state.tombstones.removeValue(forKey: locatorKey) != nil { changed = true }
+        if removeTombstoneLocked(locatorKey) {
+            changed = true
+            requiresImmediatePersistence = true
+        }
         if let physicalIdentity {
             let key = Self.key(physicalIdentity)
-            if state.physicalFiles[key] != documentID.rawValue {
-                state.physicalFiles[key] = documentID.rawValue
-                changed = true
-            }
-            if let canonicalPath, state.physicalPaths[key] != canonicalPath {
-                state.physicalPaths[key] = canonicalPath
+            if bindPhysicalLocked(
+                key: key,
+                documentID: documentID.rawValue,
+                canonicalPath: canonicalPath
+            ) {
                 changed = true
             }
         }
-        if changed { try persistLocked() }
+        if changed {
+            if requiresImmediatePersistence {
+                try persistLocked()
+            } else {
+                schedulePersistenceLocked()
+            }
+        }
     }
 
     func migrate(
@@ -224,14 +260,19 @@ final class DocumentIdentityStore: @unchecked Sendable {
             ?? physicalIdentity.flatMap { state.physicalFiles[Self.key($0)] }
             ?? UUID()
         state.locators[sourceKey] = nil
-        state.tombstones[sourceKey] = resolved
+        markTombstoneLocked(sourceKey, documentID: resolved)
         state.locators[destinationKey] = resolved
-        state.tombstones[destinationKey] = nil
+        _ = removeTombstoneLocked(destinationKey)
         if let physicalIdentity {
             let key = Self.key(physicalIdentity)
-            state.physicalFiles[key] = resolved
-            if let destinationPath { state.physicalPaths[key] = destinationPath }
+            _ = bindPhysicalLocked(
+                key: key,
+                documentID: resolved,
+                canonicalPath: destinationPath
+            )
         }
+        _ = pruneOrphanedPhysicalMappingsLocked()
+        _ = compactTombstonesLocked()
         try persistLocked()
         return DocumentID(rawValue: resolved)
     }
@@ -243,10 +284,9 @@ final class DocumentIdentityStore: @unchecked Sendable {
         let key = Self.key(locator)
         let previous = documentID?.rawValue ?? state.locators[key]
         var changed = state.locators.removeValue(forKey: key) != nil
-        if let previous, state.tombstones[key] != previous {
-            state.tombstones[key] = previous
-            changed = true
-        }
+        if let previous { changed = markTombstoneLocked(key, documentID: previous) || changed }
+        changed = pruneOrphanedPhysicalMappingsLocked() || changed
+        changed = compactTombstonesLocked() || changed
         if changed { try persistLocked() }
     }
 
@@ -267,9 +307,11 @@ final class DocumentIdentityStore: @unchecked Sendable {
         guard !keys.isEmpty else { return }
         for key in keys {
             if let id = state.locators.removeValue(forKey: key) {
-                state.tombstones[key] = id
+                markTombstoneLocked(key, documentID: id)
             }
         }
+        _ = pruneOrphanedPhysicalMappingsLocked()
+        _ = compactTombstonesLocked()
         try persistLocked()
     }
 
@@ -279,6 +321,23 @@ final class DocumentIdentityStore: @unchecked Sendable {
         guard state.tombstones[Self.key(locator)] == nil,
               let value = state.locators[Self.key(locator)] else { return nil }
         return DocumentID(rawValue: value)
+    }
+
+    func statistics() -> Statistics {
+        lock.lock()
+        defer { lock.unlock() }
+        return Statistics(
+            locators: state.locators.count,
+            physicalFiles: state.physicalFiles.count,
+            tombstones: state.tombstones.count
+        )
+    }
+
+    func flushPendingPersistence() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let startupError { throw startupError }
+        try persistLocked()
     }
 }
 
@@ -296,8 +355,133 @@ private extension DocumentIdentityStore {
         }
     }
 
+    func bindPhysicalLocked(
+        key: String,
+        documentID: UUID,
+        canonicalPath: String?
+    ) -> Bool {
+        var changed = false
+        if let canonicalPath {
+            let staleKeys = state.physicalPaths.compactMap { existingKey, path in
+                path == canonicalPath && existingKey != key ? existingKey : nil
+            }
+            for staleKey in staleKeys {
+                state.physicalFiles[staleKey] = nil
+                state.physicalPaths[staleKey] = nil
+                changed = true
+            }
+        }
+        if state.physicalFiles[key] != documentID {
+            state.physicalFiles[key] = documentID
+            changed = true
+        }
+        if let canonicalPath, state.physicalPaths[key] != canonicalPath {
+            state.physicalPaths[key] = canonicalPath
+            changed = true
+        }
+        return changed
+    }
+
+    func pruneOrphanedPhysicalMappingsLocked() -> Bool {
+        let liveIDs = Set(state.locators.values)
+        let staleKeys = state.physicalFiles.compactMap {
+            liveIDs.contains($0.value) ? nil : $0.key
+        }
+        for key in staleKeys {
+            state.physicalFiles[key] = nil
+            state.physicalPaths[key] = nil
+        }
+        return !staleKeys.isEmpty
+    }
+
+    @discardableResult
+    func markTombstoneLocked(_ key: String, documentID: UUID) -> Bool {
+        let changed = state.tombstones[key] != documentID
+        state.tombstones[key] = documentID
+        state.tombstoneOrder.removeAll { $0 == key }
+        state.tombstoneOrder.append(key)
+        return changed
+    }
+
+    func removeTombstoneLocked(_ key: String) -> Bool {
+        guard state.tombstones.removeValue(forKey: key) != nil else { return false }
+        state.tombstoneOrder.removeAll { $0 == key }
+        return true
+    }
+
+    func compactTombstonesLocked() -> Bool {
+        let original = state.tombstoneOrder
+        state.tombstoneOrder = state.tombstoneOrder.filter {
+            state.tombstones[$0] != nil
+        }
+        while state.tombstoneOrder.count > Self.maximumRetainedTombstones {
+            state.tombstones[state.tombstoneOrder.removeFirst()] = nil
+        }
+        return original != state.tombstoneOrder
+    }
+
     func persistLocked() throws {
         guard let storageURL else { return }
+        persistenceLock.lock()
+        pendingPersistence?.cancel()
+        pendingPersistence = nil
+        pendingPersistenceToken = nil
+        persistenceLock.unlock()
+        let snapshot = state
+        try persistenceQueue.sync {
+            try Self.write(snapshot, to: storageURL)
+        }
+        persistenceLock.lock()
+        backgroundPersistenceError = nil
+        persistenceLock.unlock()
+    }
+
+    func schedulePersistenceLocked() {
+        guard storageURL != nil else { return }
+        let token = UUID()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.persistenceLock.lock()
+            let isCurrent = self.pendingPersistenceToken == token
+            self.persistenceLock.unlock()
+            guard isCurrent else { return }
+
+            self.lock.lock()
+            let snapshot = self.state
+            self.lock.unlock()
+
+            self.persistenceLock.lock()
+            guard self.pendingPersistenceToken == token,
+                  let storageURL = self.storageURL else {
+                self.persistenceLock.unlock()
+                return
+            }
+            self.pendingPersistence = nil
+            self.pendingPersistenceToken = nil
+            self.persistenceQueue.async { [weak self] in
+                guard let self else { return }
+                do {
+                    try Self.write(snapshot, to: storageURL)
+                } catch {
+                    self.persistenceLock.lock()
+                    self.backgroundPersistenceError = error
+                    self.persistenceLock.unlock()
+                }
+            }
+            self.persistenceLock.unlock()
+        }
+        persistenceLock.lock()
+        pendingPersistence?.cancel()
+        pendingPersistence = work
+        pendingPersistenceToken = token
+        persistenceLock.unlock()
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + .milliseconds(100),
+            execute: work
+        )
+    }
+
+    private static func write(_ state: State, to storageURL: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(
             at: storageURL.deletingLastPathComponent(),

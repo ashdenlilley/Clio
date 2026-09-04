@@ -34,8 +34,17 @@ enum PhysicalFileIdentity: Hashable, Sendable {
             .volumeIdentifierKey,
         ]
 
-        if let values = try? canonicalURL.resourceValues(forKeys: keys),
-           let volumeIdentifier = values.volumeIdentifier,
+        guard let values = try? canonicalURL.resourceValues(forKeys: keys) else {
+            return .path(canonicalPath: canonicalURL.path)
+        }
+        return authorizedFile(at: canonicalURL, resourceValues: values)
+    }
+
+    static func authorizedFile(
+        at url: URL,
+        resourceValues values: URLResourceValues
+    ) -> Self {
+        if let volumeIdentifier = values.volumeIdentifier,
            let fileIdentifier = values.fileResourceIdentifier {
             return .resource(
                 volumeIdentifier: stableDescription(volumeIdentifier),
@@ -43,7 +52,9 @@ enum PhysicalFileIdentity: Hashable, Sendable {
             )
         }
 
-        return .path(canonicalPath: canonicalURL.path)
+        return .path(
+            canonicalPath: url.standardizedFileURL.resolvingSymlinksInPath().path
+        )
     }
 
     private static func stableDescription(_ value: Any) -> String {

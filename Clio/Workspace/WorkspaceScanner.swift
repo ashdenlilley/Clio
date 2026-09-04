@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 actor WorkspaceScanner {
@@ -59,31 +60,28 @@ actor WorkspaceScanner {
                 }
             }
 
-            let children = try fileManager.contentsOfDirectory(
-                at: directory.url,
-                includingPropertiesForKeys: [
-                    .isDirectoryKey,
-                    .isRegularFileKey,
-                    .isSymbolicLinkKey,
-                    .isPackageKey,
-                    .isHiddenKey,
-                    .contentModificationDateKey,
-                    .fileSizeKey,
-                ],
-                options: []
-            ).sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            let children: [URL]
+            do {
+                children = try fileManager.contentsOfDirectory(
+                    at: directory.url,
+                    includingPropertiesForKeys: Self.resourceKeys,
+                    options: []
+                ).sorted {
+                    $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent)
+                        == .orderedAscending
+                }
+            } catch where Self.isRacedDisappearance(error) {
+                continue
+            }
 
             for childURL in children {
                 try Task.checkCancellation()
-                let values = try childURL.resourceValues(forKeys: [
-                    .isDirectoryKey,
-                    .isRegularFileKey,
-                    .isSymbolicLinkKey,
-                    .isPackageKey,
-                    .isHiddenKey,
-                    .contentModificationDateKey,
-                    .fileSizeKey,
-                ])
+                let values: URLResourceValues
+                do {
+                    values = try childURL.resourceValues(forKeys: Set(Self.resourceKeys))
+                } catch where Self.isRacedDisappearance(error) {
+                    continue
+                }
 
                 guard values.isSymbolicLink != true else { continue }
                 let relativePath = Self.relativePath(
@@ -91,6 +89,9 @@ actor WorkspaceScanner {
                     rootURL: rootURL
                 )
                 guard !relativePath.isEmpty else {
+                    if !fileManager.fileExists(atPath: childURL.path) {
+                        continue
+                    }
                     throw ScannerError.invalidRelativePath(childURL)
                 }
 
@@ -119,6 +120,18 @@ actor WorkspaceScanner {
                     continue
                 }
                 guard exclusionReason == nil || includesIgnored else { continue }
+                let identityValues: URLResourceValues
+                do {
+                    // These keys are intentionally not prefetched above. The
+                    // uncached lookup validates that this directory entry is
+                    // still live, and its result replaces the later identity
+                    // stat on the 25k-file indexing path.
+                    identityValues = try childURL.resourceValues(
+                        forKeys: Self.identityResourceKeys
+                    )
+                } catch where Self.isRacedDisappearance(error) {
+                    continue
+                }
 
                 let locator = try DocumentLocator(
                     workspaceID: workspace.id,
@@ -129,6 +142,10 @@ actor WorkspaceScanner {
                         locator: locator,
                         url: childURL,
                         relativePath: relativePath,
+                        physicalIdentity: .authorizedFile(
+                            at: childURL,
+                            resourceValues: identityValues
+                        ),
                         modificationDate: values.contentModificationDate ?? .distantPast,
                         byteCount: Int64(values.fileSize ?? 0),
                         exclusionReason: exclusionReason
@@ -140,7 +157,7 @@ actor WorkspaceScanner {
         let ids = try identityStore.resolve(pendingFiles.map {
             DocumentIdentityCandidate(
                 locator: $0.locator,
-                physicalIdentity: .authorizedFile(at: $0.url),
+                physicalIdentity: $0.physicalIdentity,
                 canonicalPath: $0.url.standardizedFileURL.resolvingSymlinksInPath().path
             )
         })
@@ -265,10 +282,26 @@ actor WorkspaceScanner {
 }
 
 private extension WorkspaceScanner {
+    static let resourceKeys: [URLResourceKey] = [
+        .isDirectoryKey,
+        .isRegularFileKey,
+        .isSymbolicLinkKey,
+        .isPackageKey,
+        .isHiddenKey,
+        .contentModificationDateKey,
+        .fileSizeKey,
+    ]
+
+    static let identityResourceKeys: Set<URLResourceKey> = [
+        .fileResourceIdentifierKey,
+        .volumeIdentifierKey,
+    ]
+
     struct PendingFile {
         let locator: DocumentLocator
         let url: URL
         let relativePath: String
+        let physicalIdentity: PhysicalFileIdentity
         let modificationDate: Date
         let byteCount: Int64
         let exclusionReason: ExclusionReason?
@@ -279,6 +312,22 @@ private extension WorkspaceScanner {
         let filePath = fileURL.standardizedFileURL.path
         guard filePath.hasPrefix(rootPath + "/") else { return "" }
         return String(filePath.dropFirst(rootPath.count + 1))
+    }
+
+    static func isRacedDisappearance(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain,
+           error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain,
+           error.code == Int(ENOENT) || error.code == Int(ENOTDIR) {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isRacedDisappearance(underlying)
+        }
+        return false
     }
 
     static func isSupportedDocument(_ url: URL, policy: DiscoveryPolicy) -> Bool {

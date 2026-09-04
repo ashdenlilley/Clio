@@ -91,14 +91,15 @@ final class AppState {
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
         initialWorkspace: Workspace? = nil,
-        recoveryStore: RecoveryStore? = nil
+        recoveryStore: RecoveryStore? = nil,
+        documentRegistry: DocumentBufferRegistry? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
         let activeRecoveryStore = recoveryStore
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
-        documentRegistry = DocumentBufferRegistry()
+        self.documentRegistry = documentRegistry ?? DocumentBufferRegistry()
         conflictResolver = ConflictResolver(recoveryStore: activeRecoveryStore)
         documentMover = DocumentMover(
             recoveryStore: activeRecoveryStore,
@@ -169,6 +170,16 @@ final class AppState {
 
     var isWorkspaceReady: Bool {
         workspace != nil
+    }
+
+    /// Shared entry point for the global workspace coordinator. Stage 2's
+    /// single-root watcher and Stage 5 navigation both use the same canonical
+    /// buffer reconciliation rules.
+    func reconcileWorkspaceEvent(
+        _ event: WorkspaceEvent,
+        in workspace: Workspace
+    ) async {
+        await handleWorkspaceEvent(event, in: workspace)
     }
 
     var workspaceRootPath: String? {
@@ -565,6 +576,12 @@ private extension AppState {
                     return
                 }
                 let locator = try workspace.locator(for: url)
+                guard document.fileURL?.standardizedFileURL == url.standardizedFileURL else {
+                    // A second overlapping watcher may report the source path
+                    // after another watcher already retargeted this buffer.
+                    documentRegistry.removeLocator(locator, for: document.id)
+                    return
+                }
                 documentRegistry.cancelAutosave(for: document.id)
                 if document.conflict != nil {
                     try await conflictResolver.detachAfterExternalDeletion(

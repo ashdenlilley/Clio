@@ -218,12 +218,24 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         fileURL: URL?,
         previousFileURL: URL? = nil
     ) {
-        continuation.yield(
+        let event = WorkspaceEvent(
+            workspaceID: workspaceID,
+            kind: kind,
+            fileURL: fileURL,
+            previousFileURL: previousFileURL,
+            origin: .unknown
+        )
+        guard case .dropped = continuation.yield(event),
+              kind != .rescanRequired else { return }
+
+        // Losing even one detailed event could skip external-edit
+        // reconciliation. Keep a full-audit marker in the newest buffer slot;
+        // repeated overflow keeps replacing older detail with another marker.
+        _ = continuation.yield(
             WorkspaceEvent(
                 workspaceID: workspaceID,
-                kind: kind,
-                fileURL: fileURL,
-                previousFileURL: previousFileURL,
+                kind: .rescanRequired,
+                fileURL: rootURL,
                 origin: .unknown
             )
         )

@@ -758,6 +758,32 @@ final class DataSafetyTests: XCTestCase {
             XCTAssertTrue(kinds.contains(.deleted))
         }
     }
+
+    func testWatcherOverflowAlwaysLeavesAFullRescanMarker() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL
+            )
+            try await Task.sleep(for: .milliseconds(120))
+            for number in 0..<2_300 {
+                let url = workspaceURL.appendingPathComponent("bulk-\(number).md")
+                try Data("x".utf8).write(to: url)
+            }
+            try await Task.sleep(for: .milliseconds(750))
+
+            let collector = Task { () -> Bool in
+                for await event in await watcher.events() {
+                    if event.kind == .rescanRequired { return true }
+                }
+                return false
+            }
+            let foundMarker = try await withTimeout(.seconds(5)) {
+                await collector.value
+            }
+            XCTAssertTrue(foundMarker)
+        }
+    }
 }
 
 private extension DataSafetyTests {
