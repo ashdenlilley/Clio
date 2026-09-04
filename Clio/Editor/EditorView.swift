@@ -41,25 +41,33 @@ struct EditorConfiguration: Equatable {
 struct EditorView: NSViewRepresentable {
     private var text: String
     private var contentGeneration: BufferGeneration
+    private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
+    private var onSlashCommand: (@MainActor () -> Void)?
 
     init(
         text: String,
         contentGeneration: BufferGeneration,
+        viewport: Binding<EditorViewportState>? = nil,
         configuration: EditorConfiguration = EditorConfiguration(),
-        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
+        onSlashCommand: (@MainActor () -> Void)? = nil
     ) {
         self.text = text
         self.contentGeneration = contentGeneration
+        self.viewport = viewport
         self.configuration = configuration
         self.onTextEdit = onTextEdit
+        self.onSlashCommand = onSlashCommand
     }
 
     func makeCoordinator() -> EditorCoordinator {
         EditorCoordinator(
             configuration: configuration,
-            onTextEdit: onTextEdit
+            viewport: viewport,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
     }
 
@@ -71,7 +79,9 @@ struct EditorView: NSViewRepresentable {
             text: text,
             contentGeneration: contentGeneration,
             configuration: configuration,
-            onTextEdit: onTextEdit
+            viewport: viewport,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
         return surface
     }
@@ -81,7 +91,9 @@ struct EditorView: NSViewRepresentable {
             text: text,
             contentGeneration: contentGeneration,
             configuration: configuration,
-            onTextEdit: onTextEdit
+            viewport: viewport,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
     }
 }
@@ -104,9 +116,12 @@ final class EditorContainerView: NSView {
 
         wantsLayer = true
         layer?.backgroundColor = Palette.background.cgColor
+        focusRingType = .none
+        setAccessibilityIdentifier("editor.surface.no-focus-ring")
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.borderType = .noBorder
+        scrollView.focusRingType = .none
         scrollView.drawsBackground = true
         scrollView.backgroundColor = Palette.background
         scrollView.contentView.drawsBackground = true

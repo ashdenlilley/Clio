@@ -169,6 +169,24 @@ final class WorkspaceCatalog {
         )
     }
 
+    /// Restoration resolves the stored locator through the same retained
+    /// workspace grant and background hydration boundary as tree/search opens.
+    func openDocumentInBackground(
+        at locator: DocumentLocator,
+        preferredID: DocumentID?,
+        registry: DocumentBufferRegistry
+    ) async throws -> Document {
+        guard let workspace = activeWorkspaces[locator.workspaceID] else {
+            throw CatalogError.workspaceUnavailable(locator.workspaceID)
+        }
+        let url = try workspace.fileURL(for: locator)
+        return try await registry.openInBackground(
+            url,
+            in: workspace,
+            preferredID: preferredID
+        )
+    }
+
     func descriptor(containing fileURL: URL) -> WorkspaceDescriptor? {
         descriptors
             .filter { descriptor in

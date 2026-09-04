@@ -174,9 +174,6 @@ struct SettingsView: View {
         .onChange(of: discovery.policy) { _, _ in
             appState.discoveryPolicyDidChange()
         }
-        .onChange(of: discovery.temporarilyShowsIgnored) { _, _ in
-            appState.discoveryPolicyDidChange()
-        }
     }
 }
 

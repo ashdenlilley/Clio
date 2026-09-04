@@ -34,6 +34,10 @@ struct EditorTabRestorationState: Codable, Hashable, Sendable, Identifiable {
     let locator: DocumentLocator?
     var preferredFilename: String
     var viewport: EditorViewportState
+    /// Exact-file Powerbox access for documents whose parent was not added as
+    /// a workspace. Optional fields preserve decoding of older saved state.
+    var externalFileBookmark: Data? = nil
+    var externalFileURL: URL? = nil
 }
 
 struct EditorWindowRestorationState: Codable, Hashable, Sendable, Identifiable {
@@ -48,6 +52,7 @@ struct EditorWindowRestorationState: Codable, Hashable, Sendable, Identifiable {
         struct RestorationIntent: Hashable {
             let documentID: DocumentID
             let locator: DocumentLocator?
+            let externalFileURL: URL?
         }
 
         var retainedByIntent: [RestorationIntent: UUID] = [:]
@@ -56,7 +61,8 @@ struct EditorWindowRestorationState: Codable, Hashable, Sendable, Identifiable {
         for tab in tabs {
             let intent = RestorationIntent(
                 documentID: tab.documentID,
-                locator: tab.locator
+                locator: tab.locator,
+                externalFileURL: tab.externalFileURL?.standardizedFileURL
             )
             if let retainedID = retainedByIntent[intent] {
                 if activeTabID == tab.id { activeTabID = retainedID }

@@ -92,11 +92,15 @@ final class EditorWindowSession: Identifiable {
             tabs = restoration.tabs.map { tab in
                 EditorSession(
                     id: tab.id,
-                    openingMode: tab.locator == nil ? .newDocument : .mostRecent,
+                    openingMode: tab.locator == nil && tab.externalFileBookmark == nil
+                        ? .newDocument
+                        : .mostRecent,
                     restoredLocator: tab.locator,
                     restoredViewport: tab.viewport,
                     restoredPreferredFilename: tab.preferredFilename,
                     restoredDocumentID: tab.documentID,
+                    restoredExternalFileBookmark: tab.externalFileBookmark,
+                    restoredExternalFileURL: tab.externalFileURL,
                     startInFullScreen: restoration.isFullScreen
                 )
             }
@@ -235,6 +239,13 @@ final class EditorWindowSession: Identifiable {
 
     func noteEditorChange(to newText: String, edit: EditorTextEdit? = nil) {
         activeTab?.editorTextDidChange(newText, edit: edit)
+        scheduleWritingCollapse()
+    }
+
+    /// Production editor mutations arrive as bounded UTF-16 deltas so typing
+    /// never snapshots a multi-megabyte NSTextView on the main actor.
+    func noteEditorEdit(_ edit: MarkdownTextEdit) {
+        activeTab?.editorTextDidChange(edit)
         scheduleWritingCollapse()
     }
 

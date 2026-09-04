@@ -99,8 +99,8 @@ final class DataSafetyTests: XCTestCase {
         }
     }
 
-    func testRestoredDuplicatePathUsesCanonicalBufferEvenWhenAlreadyOpen() throws {
-        try withDirectories { workspaceURL, recoveryURL in
+    func testRestoredDuplicatePathUsesCanonicalBufferEvenWhenAlreadyOpen() async throws {
+        try await withDirectories { workspaceURL, recoveryURL in
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("shared".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
@@ -112,11 +112,13 @@ final class DataSafetyTests: XCTestCase {
             let first = EditorSession(openingMode: .mostRecent)
             let restored = EditorSession(
                 openingMode: .newDocument,
-                restoredRelativePath: "draft.md"
+                restoredLocator: try DocumentLocator(workspaceID: workspace.id, relativePath: "draft.md")
             )
 
             state.register(first)
+            try await waitUntil { first.document != nil }
             state.register(restored)
+            try await waitUntil { first.document != nil && restored.document != nil }
 
             XCTAssertTrue(first.document === restored.document)
             first.editorTextDidChange("from first")

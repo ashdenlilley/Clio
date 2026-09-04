@@ -123,8 +123,8 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(window.activeTabID, retainedTabID)
     }
 
-    func testRestoredTabsAcrossWindowsShareCanonicalBufferAndAutosavePipeline() throws {
-        try withTemporaryDirectory { folder in
+    func testRestoredTabsAcrossWindowsShareCanonicalBufferAndAutosavePipeline() async throws {
+        try await withTemporaryDirectory { folder in
             let fileURL = folder.appendingPathComponent("shared.md")
             try Data("base".utf8).write(to: fileURL)
             let defaults = makeDefaults()
@@ -166,11 +166,13 @@ final class NavigationSessionTests: XCTestCase {
 
             firstWindow.connect(to: appState)
             secondWindow.connect(to: appState)
+            await waitForReady(firstWindow.activeTab, secondWindow.activeTab)
 
             let first = try XCTUnwrap(firstWindow.activeTab)
             let second = try XCTUnwrap(secondWindow.activeTab)
             XCTAssertTrue(first.document === second.document)
-            XCTAssertEqual(first.documentID, documentID)
+            // Discovery may already have assigned a durable physical identity.
+            XCTAssertEqual(first.documentID, second.documentID)
             XCTAssertEqual(appState.documentRegistry.openDocuments.count, 1)
             first.editorTextDidChange("shared edit")
             XCTAssertEqual(second.draftText, "shared edit")
@@ -183,8 +185,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testMissingExactRestorationStaysDetachedAndNeverFallsBackToNewest() throws {
-        try withTemporaryDirectory { folder in
+    func testMissingExactRestorationStaysDetachedAndNeverFallsBackToNewest() async throws {
+        try await withTemporaryDirectory { folder in
             try Data("newest unrelated".utf8).write(
                 to: folder.appendingPathComponent("newest.md")
             )
@@ -222,6 +224,7 @@ final class NavigationSessionTests: XCTestCase {
             let window = EditorWindowSession(request: request)
 
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
 
             let restored = try XCTUnwrap(window.activeTab)
             XCTAssertNil(restored.fileURL)
@@ -233,8 +236,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testUnreadableExactRestorationStaysDetachedAndNeverTriesOtherFiles() throws {
-        try withTemporaryDirectory { folder in
+    func testUnreadableExactRestorationStaysDetachedAndNeverTriesOtherFiles() async throws {
+        try await withTemporaryDirectory { folder in
             try Data([0xFF, 0xFE]).write(to: folder.appendingPathComponent("bad.md"))
             try Data("readable unrelated".utf8).write(
                 to: folder.appendingPathComponent("newest.md")
@@ -273,6 +276,7 @@ final class NavigationSessionTests: XCTestCase {
             let window = EditorWindowSession(request: request)
 
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
 
             let restored = try XCTUnwrap(window.activeTab)
             XCTAssertNil(restored.fileURL)
@@ -486,9 +490,9 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(EditorWindowSession.writingCollapseDelay, .seconds(5))
     }
 
-    func testColdLaunchAndAdditionalWindowChooseNewestDistinctDocumentsGlobally() throws {
-        try withTemporaryDirectory { firstFolder in
-            try withTemporaryDirectory { secondFolder in
+    func testColdLaunchAndAdditionalWindowChooseNewestDistinctDocumentsGlobally() async throws {
+        try await withTemporaryDirectory { firstFolder in
+            try await withTemporaryDirectory { secondFolder in
                 let older = firstFolder.appendingPathComponent("older.md")
                 let newest = secondFolder.appendingPathComponent("newest.md")
                 try Data("older".utf8).write(to: older)
@@ -516,6 +520,7 @@ final class NavigationSessionTests: XCTestCase {
 
                 firstWindow.connect(to: appState)
                 secondWindow.connect(to: appState)
+                await waitForReady(firstWindow.activeTab, secondWindow.activeTab)
 
                 XCTAssertEqual(firstWindow.activeTab?.fileURL, newest)
                 XCTAssertEqual(secondWindow.activeTab?.fileURL, older)
@@ -523,8 +528,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testOpeningAlreadyOpenWorkspaceFileFocusesExistingTab() throws {
-        try withTemporaryDirectory { folder in
+    func testOpeningAlreadyOpenWorkspaceFileFocusesExistingTab() async throws {
+        try await withTemporaryDirectory { folder in
             let fileURL = folder.appendingPathComponent("shared.md")
             try Data("shared".utf8).write(to: fileURL)
             let defaults = makeDefaults()
@@ -537,9 +542,10 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .mostRecent())
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
             let originalTabID = window.activeTabID
 
-            appState.openWorkspaceFile(
+            _ = try await appState.openWorkspaceFileNow(
                 documentID: try XCTUnwrap(window.activeTab?.documentID),
                 workspaceID: descriptor.id,
                 relativePath: "shared.md",
@@ -551,8 +557,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testOpeningSearchResultAppliesMatchToExistingTabViewport() throws {
-        try withTemporaryDirectory { folder in
+    func testOpeningSearchResultAppliesMatchToExistingTabViewport() async throws {
+        try await withTemporaryDirectory { folder in
             let fileURL = folder.appendingPathComponent("shared.md")
             try Data("before needle after".utf8).write(to: fileURL)
             let defaults = makeDefaults()
@@ -565,10 +571,11 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .mostRecent())
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
             let tab = try XCTUnwrap(window.activeTab)
             let match = UTF16Range(location: 7, length: 6)
 
-            appState.openSearchResult(
+            _ = try await appState.openSearchResultNow(
                 WorkspaceSearchResult(
                     documentID: tab.documentID,
                     workspaceID: descriptor.id,
@@ -586,29 +593,28 @@ final class NavigationSessionTests: XCTestCase {
     }
 
     func testEditorCoordinatorAppliesViewportNavigationAfterInitialRestore() {
-        var text = "before needle after"
+        let text = "before needle after"
         var viewport = EditorViewportState.zero
-        let textBinding = Binding(
-            get: { text },
-            set: { text = $0 }
-        )
         let viewportBinding = Binding(
             get: { viewport },
             set: { viewport = $0 }
         )
+        let generation = BufferGeneration(bufferID: UUID(), revision: 0)
         let coordinator = EditorCoordinator(
-            text: textBinding,
+            configuration: EditorConfiguration(),
             viewport: viewportBinding,
-            configuration: EditorConfiguration()
+            onTextEdit: { _ in }
         )
         let surface = EditorContainerView(
             textView: EditorTextView.makeTextKit2TextView()
         )
         coordinator.attach(to: surface)
         coordinator.update(
-            text: textBinding,
+            text: text,
+            contentGeneration: generation,
+            configuration: EditorConfiguration(),
             viewport: viewportBinding,
-            configuration: EditorConfiguration()
+            onTextEdit: { _ in }
         )
 
         viewport = EditorViewportState(
@@ -617,9 +623,11 @@ final class NavigationSessionTests: XCTestCase {
             fractionalYOffset: 0
         )
         coordinator.update(
-            text: textBinding,
+            text: text,
+            contentGeneration: generation,
+            configuration: EditorConfiguration(),
             viewport: viewportBinding,
-            configuration: EditorConfiguration()
+            onTextEdit: { _ in }
         )
 
         XCTAssertEqual(
@@ -703,7 +711,7 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(queries[1].workspaceFilter, filter)
     }
 
-    func testAppDiscoveryRefreshIncludesIgnoredFilesWhenTemporarilyEnabled() async throws {
+    func testShowIgnoredSearchDoesNotExposeIgnoredFilesInTree() async throws {
         try await withTemporaryDirectory { folder in
             try Data("ignored.md\n".utf8).write(
                 to: folder.appendingPathComponent(".gitignore")
@@ -724,18 +732,13 @@ final class NavigationSessionTests: XCTestCase {
             )
 
             for _ in 0..<100 {
-                if appState.workspaceTrees[descriptor.id]?.files.isEmpty == false {
+                if appState.workspaceTrees[descriptor.id]?.isComplete == true {
                     break
                 }
                 try await Task.sleep(for: .milliseconds(20))
             }
 
-            let ignoredFile = try XCTUnwrap(
-                appState.workspaceTrees[descriptor.id]?.files.first {
-                    $0.relativePath == "ignored.md"
-                }
-            )
-            XCTAssertNotNil(ignoredFile.exclusionReason)
+            XCTAssertTrue(try XCTUnwrap(appState.workspaceTrees[descriptor.id]).files.isEmpty)
         }
     }
 
@@ -756,6 +759,7 @@ final class NavigationSessionTests: XCTestCase {
                 )
                 let window = EditorWindowSession(request: .mostRecent())
                 window.connect(to: appState)
+                await waitForReady(window.activeTab)
                 let originalDocumentID = try XCTUnwrap(window.activeTab?.documentID)
                 let originalDocument = try XCTUnwrap(window.activeTab?.document)
                 let locator = try DocumentLocator(
@@ -782,6 +786,7 @@ final class NavigationSessionTests: XCTestCase {
                 )
                 let secondWindow = EditorWindowSession(request: secondRequest)
                 secondWindow.connect(to: appState)
+                await waitForReady(secondWindow.activeTab)
                 let payload = try XCTUnwrap(
                     appState.dragPayload(
                         documentID: originalDocumentID,
@@ -942,8 +947,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testTrashCommitClosesOnlyAfterSuccessfulFlushAndMutation() throws {
-        try withTemporaryDirectory { folder in
+    func testTrashCommitClosesOnlyAfterSuccessfulFlushAndMutation() async throws {
+        try await withTemporaryDirectory { folder in
             let fileURL = folder.appendingPathComponent("trash.md")
             try Data("base".utf8).write(to: fileURL)
             let defaults = makeDefaults()
@@ -966,10 +971,12 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .mostRecent())
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
             let tab = try XCTUnwrap(window.activeTab)
             tab.editorTextDidChange("latest")
 
-            XCTAssertTrue(appState.commitMoveToTrash(tab, from: window))
+            let didMoveToTrash = await appState.commitMoveToTrashNow(tab, from: window)
+            XCTAssertTrue(didMoveToTrash)
 
             XCTAssertEqual(bytesAtTrash, "latest")
             XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
@@ -978,8 +985,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testTrashFailureKeepsCanonicalTabOpenAndRegistered() throws {
-        try withTemporaryDirectory { folder in
+    func testTrashFailureKeepsCanonicalTabOpenAndRegistered() async throws {
+        try await withTemporaryDirectory { folder in
             let fileURL = folder.appendingPathComponent("trash.md")
             try Data("base".utf8).write(to: fileURL)
             let defaults = makeDefaults()
@@ -997,11 +1004,13 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .mostRecent())
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
             let tab = try XCTUnwrap(window.activeTab)
             let document = try XCTUnwrap(tab.document)
             tab.editorTextDidChange("latest")
 
-            XCTAssertFalse(appState.commitMoveToTrash(tab, from: window))
+            let didMoveToTrash = await appState.commitMoveToTrashNow(tab, from: window)
+            XCTAssertFalse(didMoveToTrash)
 
             XCTAssertTrue(window.tabs.contains { $0 === tab })
             XCTAssertTrue(tab.document === document)
@@ -1127,8 +1136,8 @@ final class NavigationSessionTests: XCTestCase {
         }
     }
 
-    func testContentViewRendersSidebarEditorAndCommandPalette() throws {
-        try withTemporaryDirectory { folder in
+    func testContentViewRendersSidebarEditorAndCommandPalette() async throws {
+        try await withTemporaryDirectory { folder in
             try Data("# Render smoke test".utf8).write(
                 to: folder.appendingPathComponent("render.md")
             )
@@ -1144,6 +1153,7 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .mostRecent())
             window.connect(to: appState)
+            await waitForReady(window.activeTab)
             window.presentPalette(source: .keyboardShortcut)
 
             let hosting = NSHostingView(
@@ -1207,6 +1217,14 @@ private actor RecordingSearchIndex: SearchIndexing {
 
 @MainActor
 private extension NavigationSessionTests {
+    func waitForReady(_ sessions: EditorSession?...) async {
+        for _ in 0..<250 {
+            if sessions.allSatisfy({ $0?.isReady == true }) { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for background document activation")
+    }
+
     func makeDefaults() -> UserDefaults {
         let name = "ClioNavigationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

@@ -25,13 +25,15 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
     var openingMode: EditorOpeningMode
     var relativePath: String?
     var isFullScreen: Bool
+    var restoration: EditorWindowRestorationState?
 
     static func mostRecent() -> Self {
         Self(
             id: UUID(),
             openingMode: .mostRecent,
             relativePath: nil,
-            isFullScreen: false
+            isFullScreen: false,
+            restoration: nil
         )
     }
 
@@ -40,7 +42,8 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
             id: UUID(),
             openingMode: .newDocument,
             relativePath: nil,
-            isFullScreen: false
+            isFullScreen: false,
+            restoration: nil
         )
     }
 }
@@ -48,18 +51,29 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
 @MainActor
 @Observable
 final class EditorSession: Identifiable {
+    enum SessionError: LocalizedError {
+        case parentFolderAuthorizationRequired
+
+        var errorDescription: String? {
+            "Authorize this document’s parent folder before closing Clio."
+        }
+    }
+
     let id: UUID
     private(set) var openingMode: EditorOpeningMode
 
     private var detachedDraftText = ""
     private var detachedRevision: UInt64 = 0
     private(set) var relativePath = ""
+    private(set) var workspaceID: WorkspaceID?
     private(set) var document: Document?
     private(set) var errorMessage: String?
+    private(set) var isRestorationUnresolved = false
     private(set) var isResolvingConflict = false
     private(set) var pendingCollision: FileCollision?
     private(set) var wordCount = 0
     var isFullScreenEnabled: Bool
+    var viewportState: EditorViewportState
 
     @ObservationIgnored
     private var workspace: Workspace?
@@ -122,22 +136,61 @@ final class EditorSession: Identifiable {
     private var preferredRelativePath: String?
 
     @ObservationIgnored
+    private var preferredWorkspaceID: WorkspaceID?
+
+    @ObservationIgnored
+    private var preferredFilenameForRestoration: String
+
+    @ObservationIgnored
+    private var restoredDocumentID: DocumentID?
+
+    @ObservationIgnored
+    private var externalFileLease: SecurityScopedFileLease?
+
+    @ObservationIgnored
+    private var exactFileWatcher: ExactFileWatcher?
+
+    @ObservationIgnored
+    private var exactFileWatcherTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var preferredExternalFileBookmark: Data?
+
+    @ObservationIgnored
+    private var preferredExternalFileURL: URL?
+
+    @ObservationIgnored
+    private var crashRecoveryJournal: CrashRecoveryJournal?
+
+    @ObservationIgnored
     private var presentedErrorContext: PresentedErrorContext = .general
 
     init(
         id: UUID = UUID(),
         openingMode: EditorOpeningMode = .mostRecent,
         restoredRelativePath: String? = nil,
+        restoredLocator: DocumentLocator? = nil,
+        restoredViewport: EditorViewportState = .zero,
+        restoredPreferredFilename: String = Document.defaultFilename,
+        restoredDocumentID: DocumentID? = nil,
+        restoredExternalFileBookmark: Data? = nil,
+        restoredExternalFileURL: URL? = nil,
         startInFullScreen: Bool = false
     ) {
         self.id = id
         self.openingMode = openingMode
         isFullScreenEnabled = startInFullScreen
-        preferredRelativePath = restoredRelativePath
+        viewportState = restoredViewport
+        preferredFilenameForRestoration = restoredPreferredFilename
+        self.restoredDocumentID = restoredDocumentID
+        preferredWorkspaceID = restoredLocator?.workspaceID
+        preferredRelativePath = restoredLocator?.relativePath ?? restoredRelativePath
+        preferredExternalFileBookmark = restoredExternalFileBookmark
+        preferredExternalFileURL = restoredExternalFileURL?.standardizedFileURL
     }
 
     var isReady: Bool {
-        workspace != nil && document != nil
+        document != nil
     }
 
     var fileURL: URL? {
@@ -145,7 +198,7 @@ final class EditorSession: Identifiable {
     }
 
     var hasPreferredDocument: Bool {
-        preferredRelativePath != nil
+        preferredRelativePath != nil || preferredExternalFileBookmark != nil
     }
 
     func shouldHydrateInitialDocumentInBackground(
@@ -199,9 +252,50 @@ final class EditorSession: Identifiable {
     }
 
     var activeConflict: DocumentConflict? { document?.conflict }
-    var requiresExplicitRestore: Bool { document?.requiresExplicitRestore == true }
+    var requiresExplicitRestore: Bool {
+        isRestorationUnresolved || document?.requiresExplicitRestore == true
+    }
+    var canRestoreAtPreviousLocation: Bool {
+        !isRestorationUnresolved && document?.previousLocator != nil
+    }
     var filename: String { document?.filename ?? Document.defaultFilename }
 
+    var restoredWorkspaceID: WorkspaceID? {
+        preferredWorkspaceID
+    }
+
+    var restoredRelativePath: String? {
+        preferredRelativePath
+    }
+
+    var restoredExternalFileBookmark: Data? { preferredExternalFileBookmark }
+    var restoredExternalFileURL: URL? { preferredExternalFileURL }
+    var hasRetainedExternalFileAccess: Bool { externalFileLease != nil }
+
+    func useCrashRecoveryJournal(_ journal: CrashRecoveryJournal) {
+        crashRecoveryJournal = journal
+    }
+
+    var documentID: DocumentID {
+        document?.id ?? restoredDocumentID ?? DocumentID(rawValue: id)
+    }
+
+    var locator: DocumentLocator? {
+        let resolvedWorkspaceID = workspaceID ?? preferredWorkspaceID
+        let resolvedRelativePath = relativePath.isEmpty
+            ? preferredRelativePath
+            : relativePath
+        guard let resolvedWorkspaceID, let resolvedRelativePath,
+              !resolvedRelativePath.isEmpty else { return nil }
+        return try? DocumentLocator(
+            workspaceID: resolvedWorkspaceID,
+            relativePath: resolvedRelativePath
+        )
+    }
+
+    var displayName: String {
+        document?.filename ?? preferredFilenameForRestoration
+    }
     var wordCountLabel: String {
         let count = wordCount
         return "\(count.formatted()) \(count == 1 ? "word" : "words")"
@@ -220,6 +314,7 @@ final class EditorSession: Identifiable {
 
     func activate(
         in workspace: Workspace,
+        workspaceID: WorkspaceID? = nil,
         documentURLs: [URL],
         registry: DocumentBufferRegistry? = nil,
         conflictResolver: ConflictResolver? = nil,
@@ -227,11 +322,22 @@ final class EditorSession: Identifiable {
     ) {
         activationEpoch &+= 1
         let initialDocument: (document: Document, warning: String?)
-        if openingMode == .newDocument, preferredRelativePath == nil {
-            initialDocument = (Document(), nil)
+        let orderedURLs = orderedInitialURLs(documentURLs, in: workspace)
+        if preferredRelativePath != nil,
+           orderedURLs.first.map(workspace.relativePath) != preferredRelativePath {
+            guard let registry, let conflictResolver, let documentMover else { return }
+            activateUnresolvedRestoration(
+                in: workspace,
+                registry: registry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
+            return
+        } else if openingMode == .newDocument, preferredRelativePath == nil {
+            initialDocument = (makeBlankDocument(), nil)
         } else {
             initialDocument = loadInitialDocument(
-                from: orderedInitialURLs(documentURLs, in: workspace),
+                from: orderedURLs,
                 in: workspace,
                 registry: registry
             )
@@ -239,6 +345,7 @@ final class EditorSession: Identifiable {
         installInitialDocument(
             initialDocument,
             in: workspace,
+            workspaceID: workspaceID ?? workspace.id,
             registry: registry,
             conflictResolver: conflictResolver,
             documentMover: documentMover
@@ -250,6 +357,7 @@ final class EditorSession: Identifiable {
     /// result is discarded before it can alter the current buffer.
     func activateInBackground(
         in workspace: Workspace,
+        workspaceID: WorkspaceID? = nil,
         documentURLs: [URL],
         registry: DocumentBufferRegistry? = nil,
         conflictResolver: ConflictResolver? = nil,
@@ -258,28 +366,287 @@ final class EditorSession: Identifiable {
         activationEpoch &+= 1
         let requestEpoch = activationEpoch
         let initialDocument: (document: Document, warning: String?)
-        if openingMode == .newDocument, preferredRelativePath == nil {
-            initialDocument = (Document(), nil)
+        let orderedURLs = orderedInitialURLs(documentURLs, in: workspace)
+        if preferredRelativePath != nil,
+           orderedURLs.first.map(workspace.relativePath) != preferredRelativePath {
+            guard !Task.isCancelled, activationEpoch == requestEpoch,
+                  let registry, let conflictResolver, let documentMover else { return }
+            activateUnresolvedRestoration(
+                in: workspace,
+                registry: registry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
+            return
+        } else if openingMode == .newDocument, preferredRelativePath == nil {
+            initialDocument = (makeBlankDocument(), nil)
         } else {
             initialDocument = await loadInitialDocumentInBackground(
-                from: orderedInitialURLs(documentURLs, in: workspace),
+                from: orderedURLs,
                 in: workspace,
                 registry: registry
             )
         }
-        guard activationEpoch == requestEpoch else { return }
+        guard !Task.isCancelled, activationEpoch == requestEpoch else { return }
         installInitialDocument(
             initialDocument,
             in: workspace,
+            workspaceID: workspaceID ?? workspace.id,
             registry: registry,
             conflictResolver: conflictResolver,
             documentMover: documentMover
         )
     }
 
+    func activate(
+        documentURL: URL,
+        in workspace: Workspace,
+        workspaceID: WorkspaceID,
+        registry: DocumentBufferRegistry? = nil,
+        conflictResolver: ConflictResolver? = nil,
+        documentMover: DocumentMover? = nil,
+        preferredDocumentID: DocumentID? = nil
+    ) throws {
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        let requestedID = preferredDocumentID ?? restoredDocumentID
+        let loaded = try registry?.open(
+            documentURL,
+            in: workspace,
+            preferredID: requestedID
+        ) ?? workspace.loadDocument(at: documentURL, id: requestedID ?? DocumentID())
+        bind(
+            loaded,
+            to: workspace,
+            workspaceID: workspaceID,
+            exposesWorkspaceLocator: true
+        )
+        preferredWorkspaceID = workspaceID
+        preferredRelativePath = workspace.relativePath(for: documentURL)
+        errorMessage = nil
+        presentedErrorContext = .general
+    }
+
+    func activate(
+        document: Document,
+        in workspace: Workspace,
+        workspaceID: WorkspaceID,
+        registry: DocumentBufferRegistry,
+        conflictResolver: ConflictResolver,
+        documentMover: DocumentMover
+    ) {
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        bind(
+            document,
+            to: workspace,
+            workspaceID: workspaceID,
+            exposesWorkspaceLocator: true
+        )
+        preferredWorkspaceID = workspaceID
+        preferredRelativePath = document.fileURL.map(workspace.relativePath)
+        errorMessage = nil
+        presentedErrorContext = .general
+    }
+
+    /// Opens a Powerbox-authorized file before its parent folder is granted.
+    /// The selected file remains directly writable while Clio asks for the
+    /// broader parent grant used by discovery and restoration.
+    func activateExternal(
+        documentURL: URL,
+        registry: DocumentBufferRegistry? = nil,
+        conflictResolver: ConflictResolver? = nil,
+        documentMover: DocumentMover? = nil
+    ) throws {
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        releaseExternalFileAccess(clearIntent: true)
+        let directWorkspace = try? Workspace(
+            rootURL: documentURL.deletingLastPathComponent(),
+            accessSecurityScopedResource: false
+        )
+        guard let directWorkspace else {
+            throw Workspace.WorkspaceError.rootDoesNotExist(
+                documentURL.deletingLastPathComponent()
+            )
+        }
+        let loaded = try registry?.open(documentURL, in: directWorkspace)
+            ?? Document(contentsOf: documentURL)
+        bind(
+            loaded,
+            to: directWorkspace,
+            workspaceID: nil,
+            exposesWorkspaceLocator: false
+        )
+        relativePath = documentURL.lastPathComponent
+        preferredRelativePath = nil
+        preferredWorkspaceID = nil
+        errorMessage = nil
+        presentedErrorContext = .general
+    }
+
+    /// Powerbox open path for documents that must be hydrated away from the
+    /// main actor before their parent folder has been bookmarked.
+    func activateExternalInBackground(
+        documentURL: URL,
+        accessLease: SecurityScopedFileLease? = nil,
+        reconcile: (@MainActor (WorkspaceEvent, Workspace) async -> Void)? = nil,
+        registry: DocumentBufferRegistry? = nil,
+        conflictResolver: ConflictResolver? = nil,
+        documentMover: DocumentMover? = nil
+    ) async throws {
+        activationEpoch &+= 1
+        let requestEpoch = activationEpoch
+        guard let directWorkspace = try? Workspace(
+            rootURL: documentURL.deletingLastPathComponent(),
+            accessSecurityScopedResource: false,
+            crashRecoveryJournal: crashRecoveryJournal,
+            recoverWorkspaceTransactions: false
+        ) else {
+            throw Workspace.WorkspaceError.rootDoesNotExist(
+                documentURL.deletingLastPathComponent()
+            )
+        }
+        let loaded: Document
+        if let registry {
+            loaded = try await registry.openInBackground(
+                documentURL,
+                in: directWorkspace,
+                preferredID: restoredDocumentID
+            )
+        } else {
+            loaded = try await directWorkspace.loadDocumentInBackground(
+                at: documentURL
+            )
+        }
+        guard !Task.isCancelled, activationEpoch == requestEpoch else {
+            throw CancellationError()
+        }
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        bind(
+            loaded,
+            to: directWorkspace,
+            workspaceID: nil,
+            exposesWorkspaceLocator: false
+        )
+        externalFileLease = accessLease
+        preferredExternalFileBookmark = accessLease?.bookmark
+        preferredExternalFileURL = accessLease?.url ?? documentURL.standardizedFileURL
+        relativePath = documentURL.lastPathComponent
+        preferredRelativePath = nil
+        preferredWorkspaceID = nil
+        errorMessage = nil
+        presentedErrorContext = .general
+        if let reconcile {
+            let watcher = ExactFileWatcher(fileURL: documentURL)
+            exactFileWatcher = watcher
+            exactFileWatcherTask = Task { @MainActor [weak self, watcher] in
+                for await event in watcher.events() {
+                    guard !Task.isCancelled, let self,
+                          self.exactFileWatcher === watcher else { return }
+                    // A revoked or symlink-replaced path is detached without
+                    // reading it, preserving the buffer and stopping autosave.
+                    await reconcile(WorkspaceEvent(workspaceID: directWorkspace.id,
+                        kind: event == .changed ? .modified : .deleted,
+                        fileURL: documentURL), directWorkspace)
+                }
+            }
+        }
+    }
+
+    /// Keeps a failed exact-file restoration visible and editable. The stored
+    /// bookmark remains attached so a later reauthorization can recover the
+    /// original intent instead of substituting another workspace document.
+    func activateUnresolvedExternalRestoration(
+        registry: DocumentBufferRegistry,
+        conflictResolver: ConflictResolver,
+        documentMover: DocumentMover,
+        underlyingError: Error
+    ) {
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        let placeholder = Document(
+            preferredFilename: preferredExternalFileURL?.lastPathComponent
+                ?? preferredFilenameForRestoration,
+            id: restoredDocumentID ?? DocumentID(rawValue: id)
+        )
+        let canonical = registry.registerUnbacked(placeholder)
+        registry.bind(self, to: canonical)
+        document = canonical
+        restoredDocumentID = canonical.id
+        ownsAutosaver = false
+        autosaver = nil
+        detachedDraftText = ""
+        relativePath = preferredExternalFileURL?.lastPathComponent ?? ""
+        isRestorationUnresolved = true
+        refreshWordCount(for: canonical.text, revision: canonical.revision)
+        errorMessage = "Clio couldn’t restore access to \(displayName). The tab remains detached and no other document was substituted.\n\n\(underlyingError.localizedDescription)"
+        presentedErrorContext = .general
+    }
+
+    /// Keeps an exact failed restoration intent visible and editable in memory.
+    /// It must never silently open the newest unrelated document.
+    func activateUnresolvedRestoration(
+        in workspace: Workspace?,
+        registry: DocumentBufferRegistry,
+        conflictResolver: ConflictResolver,
+        documentMover: DocumentMover,
+        underlyingError: Error? = nil
+    ) {
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        releaseExternalFileAccess(clearIntent: true)
+        let placeholder = Document(
+            preferredFilename: preferredFilenameForRestoration,
+            id: restoredDocumentID ?? DocumentID(rawValue: id)
+        )
+        let canonical = registry.registerUnbacked(placeholder)
+        registry.bind(self, to: canonical)
+        self.workspace = workspace
+        workspaceID = preferredWorkspaceID
+        document = canonical
+        restoredDocumentID = canonical.id
+        ownsAutosaver = false
+        autosaver = nil
+        detachedDraftText = ""
+        relativePath = preferredRelativePath ?? ""
+        isRestorationUnresolved = true
+        refreshWordCount(
+            for: canonical.text,
+            revision: canonical.revision,
+            utf8ByteCount: canonical.utf8ByteCount
+        )
+        viewportState = viewportState.clamped(
+            toUTF16Length: (canonical.text as NSString).length
+        )
+        let detail = underlyingError.map { "\n\n\($0.localizedDescription)" } ?? ""
+        errorMessage = "Clio couldn’t find \(preferredRelativePath ?? preferredFilenameForRestoration). The restored tab remains detached; no other document was substituted.\(detail)"
+        presentedErrorContext = .general
+    }
+
     func deactivate() {
         activationEpoch &+= 1
         invalidatePendingEditorEdits()
+        releaseExternalFileAccess(clearIntent: false)
         autosaveErrorMonitor?.cancel()
         wordCountTask?.cancel()
         wordCountRequest = nil
@@ -291,6 +658,7 @@ final class EditorSession: Identifiable {
         conflictResolver = nil
         documentMover = nil
         workspace = nil
+        workspaceID = nil
         document = nil
         detachedDraftText = ""
         detachedRevision = 0
@@ -299,12 +667,16 @@ final class EditorSession: Identifiable {
         errorMessage = nil
         pendingCollision = nil
         pendingRenameFilename = nil
+        isRestorationUnresolved = false
         presentedErrorContext = .general
     }
 
-    func editorTextDidChange(_ newText: String) {
+    func editorTextDidChange(
+        _ newText: String,
+        edit _: EditorTextEdit? = nil
+    ) {
         invalidatePendingEditorEdits()
-        guard let document, let autosaver else { return }
+        guard let document else { return }
 
         publishEditorText(newText, document: document, autosaver: autosaver)
     }
@@ -315,7 +687,7 @@ final class EditorSession: Identifiable {
     /// still current.
     func editorTextDidChange(_ edit: MarkdownTextEdit) {
         guard editorSynchronizationFailure == nil,
-              let document, let autosaver else { return }
+              let document else { return }
 
         let source = document.text
         if document.utf8ByteCount <= Document.maximumSynchronousByteCount,
@@ -348,7 +720,7 @@ final class EditorSession: Identifiable {
             }
 
             guard !pendingEditorEdits.isEmpty else { return }
-            guard let document, autosaver != nil else {
+            guard let document else {
                 editorSynchronizationFailure = .invalidEditorMutation
                 throw EditorSynchronizationError.invalidEditorMutation
             }
@@ -378,7 +750,7 @@ final class EditorSession: Identifiable {
     private func publishEditorText(
         _ newText: String,
         document: Document,
-        autosaver: Autosaver,
+        autosaver: Autosaver?,
         revisionAdvance: UInt64 = 1,
         utf8ByteCount: Int? = nil
     ) {
@@ -393,6 +765,27 @@ final class EditorSession: Identifiable {
             revision: document.revision,
             utf8ByteCount: document.utf8ByteCount
         )
+        guard let autosaver else {
+            // A failed restoration remains an editable, detached canonical
+            // buffer. Journal every accepted edit without inventing a file
+            // path or requiring access to the missing original.
+            if let workspace {
+                workspace.scheduleCrashRecovery(for: document)
+            } else if document.isDirty {
+                crashRecoveryJournal?.schedule(CrashRecoverySnapshot(
+                    documentID: document.id,
+                    generation: BufferGeneration(
+                        bufferID: document.id.rawValue,
+                        revision: document.revision
+                    ),
+                    filename: document.filename,
+                    targetURL: document.fileURL,
+                    reason: .dirtyBuffer,
+                    source: document.text
+                ))
+            }
+            return
+        }
         autosaver.documentDidChange(document)
         refreshRelativePath()
 
@@ -467,7 +860,13 @@ final class EditorSession: Identifiable {
         guard !hasPendingEditorEdits else {
             throw EditorSynchronizationError.editorMaterializationInProgress
         }
-        guard let document, let autosaver else { return }
+        guard let document else { return }
+        guard let autosaver else {
+            if document.isDirty {
+                throw SessionError.parentFolderAuthorizationRequired
+            }
+            return
+        }
         try autosaver.flush(document)
         refreshRelativePath()
         clearPresentedSaveError()
@@ -513,6 +912,29 @@ final class EditorSession: Identifiable {
         guard fileURL == nil else { return }
         openingMode = .newDocument
         preferredRelativePath = nil
+        preferredWorkspaceID = nil
+        releaseExternalFileAccess(clearIntent: true)
+        isRestorationUnresolved = false
+    }
+
+
+    func updateViewport(_ state: EditorViewportState) {
+        viewportState = state.clamped(toUTF16Length: (draftText as NSString).length)
+    }
+
+    func restorationState() -> EditorTabRestorationState {
+        let restoredViewport = document == nil
+            ? viewportState
+            : viewportState.clamped(toUTF16Length: (draftText as NSString).length)
+        return EditorTabRestorationState(
+            id: id,
+            documentID: documentID,
+            locator: locator,
+            preferredFilename: displayName,
+            viewport: restoredViewport,
+            externalFileBookmark: preferredExternalFileBookmark,
+            externalFileURL: preferredExternalFileURL
+        )
     }
 
     func resolveConflict(_ choice: ConflictChoice) {
@@ -651,9 +1073,25 @@ final class EditorSession: Identifiable {
         // cross-workspace move. Retain any accepted deltas; the drain publishes
         // through the current autosaver when background materialization ends.
         self.workspace = workspace
+        workspaceID = workspace.id
+        releaseExternalFileAccess(clearIntent: true)
         self.autosaver = autosaver
         ownsAutosaver = false
+        isRestorationUnresolved = false
         refreshRelativePath()
+        preferredWorkspaceID = workspace.id
+        preferredRelativePath = relativePath.isEmpty ? nil : relativePath
+    }
+
+    func adoptAuthorizedWorkspace(_ workspace: Workspace) {
+        guard let document, let registry else { return }
+        registry.register(document, in: workspace)
+        registry.retarget(document, to: workspace)
+        self.workspace = workspace
+        workspaceID = workspace.id
+        releaseExternalFileAccess(clearIntent: true)
+        preferredWorkspaceID = workspace.id
+        preferredRelativePath = document.fileURL.map(workspace.relativePath)
     }
 
     func rebindServices(
@@ -662,6 +1100,19 @@ final class EditorSession: Identifiable {
     ) {
         self.conflictResolver = conflictResolver
         self.documentMover = documentMover
+    }
+
+    func releaseExternalFileAccess(clearIntent: Bool) {
+        exactFileWatcherTask?.cancel()
+        exactFileWatcherTask = nil
+        exactFileWatcher?.cancel()
+        exactFileWatcher = nil
+        externalFileLease?.release()
+        externalFileLease = nil
+        if clearIntent {
+            preferredExternalFileBookmark = nil
+            preferredExternalFileURL = nil
+        }
     }
 }
 
@@ -711,7 +1162,6 @@ private extension EditorSession {
             guard let self, let document else { return }
             while self.editorEditEpoch == epoch,
                   self.document === document,
-                  self.autosaver != nil,
                   document.id == documentID,
                   !self.pendingEditorEdits.isEmpty {
                 let edits = self.pendingEditorEdits
@@ -731,7 +1181,6 @@ private extension EditorSession {
                       !Task.isCancelled,
                       self.editorEditEpoch == epoch,
                       self.document === document,
-                      let autosaver = self.autosaver,
                       document.revision == baseRevision else {
                     if self.editorEditEpoch == epoch {
                         self.pendingEditorEdits.removeAll(keepingCapacity: true)
@@ -749,7 +1198,7 @@ private extension EditorSession {
                 self.publishEditorText(
                     updated,
                     document: document,
-                    autosaver: autosaver,
+                    autosaver: self.autosaver,
                     revisionAdvance: revisionAdvance,
                     utf8ByteCount: utf8ByteCount
                 )
@@ -774,7 +1223,6 @@ private extension EditorSession {
         saveAfterEditorEdits = false
         editorSynchronizationFailure = nil
     }
-
     func loadInitialDocument(
         from documentURLs: [URL],
         in workspace: Workspace,
@@ -784,15 +1232,24 @@ private extension EditorSession {
 
         for documentURL in documentURLs {
             do {
-                let document = try registry?.open(documentURL, in: workspace)
-                    ?? workspace.loadDocument(at: documentURL)
+                let preferredID = preferredRelativePath == workspace.relativePath(for: documentURL)
+                    ? restoredDocumentID
+                    : nil
+                let document = try registry?.open(
+                    documentURL,
+                    in: workspace,
+                    preferredID: preferredID
+                ) ?? workspace.loadDocument(
+                    at: documentURL,
+                    id: preferredID ?? DocumentID()
+                )
                 return (document, unreadableDocumentWarning(failures))
             } catch {
                 failures.append((documentURL, error))
             }
         }
 
-        return (Document(), unreadableDocumentWarning(failures))
+        return (makeBlankDocument(), unreadableDocumentWarning(failures))
     }
 
     func loadInitialDocumentInBackground(
@@ -804,15 +1261,21 @@ private extension EditorSession {
 
         for documentURL in documentURLs {
             do {
+                let preferredID = preferredRelativePath
+                    == workspace.relativePath(for: documentURL)
+                    ? restoredDocumentID
+                    : nil
                 let document: Document
                 if let registry {
                     document = try await registry.openInBackground(
                         documentURL,
-                        in: workspace
+                        in: workspace,
+                        preferredID: preferredID
                     )
                 } else {
                     document = try await workspace.loadDocumentInBackground(
-                        at: documentURL
+                        at: documentURL,
+                        id: preferredID ?? DocumentID()
                     )
                 }
                 return (document, unreadableDocumentWarning(failures))
@@ -823,7 +1286,7 @@ private extension EditorSession {
             }
         }
 
-        return (Document(), unreadableDocumentWarning(failures))
+        return (makeBlankDocument(), unreadableDocumentWarning(failures))
     }
 
     func orderedInitialURLs(
@@ -845,34 +1308,41 @@ private extension EditorSession {
     func installInitialDocument(
         _ initialDocument: (document: Document, warning: String?),
         in workspace: Workspace,
+        workspaceID: WorkspaceID,
         registry: DocumentBufferRegistry?,
         conflictResolver: ConflictResolver?,
         documentMover: DocumentMover?
     ) {
+        if preferredRelativePath != nil,
+           initialDocument.document.fileURL == nil,
+           let registry, let conflictResolver, let documentMover {
+            activateUnresolvedRestoration(
+                in: workspace,
+                registry: registry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
+            if let warning = initialDocument.warning {
+                errorMessage = warning
+            }
+            return
+        }
+
         invalidatePendingEditorEdits()
         editorMaterializationCount = 0
         editorPublicationCount = 0
-        autosaveErrorMonitor?.cancel()
-        if ownsAutosaver { autosaver?.cancel() }
-        self.registry?.unbind(self)
-        self.registry = registry
-        self.conflictResolver = conflictResolver
-        self.documentMover = documentMover
-        self.workspace = workspace
-        document = initialDocument.document
-        registry?.register(initialDocument.document, in: workspace)
-        registry?.bind(self, to: initialDocument.document)
-        ownsAutosaver = registry == nil
-        autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
-            ?? Autosaver(workspace: workspace)
-        detachedDraftText = ""
-        detachedRevision = 0
-        refreshRelativePath()
-        refreshWordCount(
-            for: initialDocument.document.text,
-            revision: initialDocument.document.revision,
-            utf8ByteCount: initialDocument.document.utf8ByteCount
+        prepareForActivation(
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
         )
+        bind(
+            initialDocument.document,
+            to: workspace,
+            workspaceID: workspaceID,
+            exposesWorkspaceLocator: true
+        )
+        detachedRevision = 0
         errorMessage = initialDocument.warning
         presentedErrorContext = .general
     }
@@ -911,7 +1381,9 @@ private extension EditorSession {
 
             if let error = autosaver.lastError {
                 self.presentError(
-                    "Clio couldn’t autosave this document. Check that the workspace is available and writable, then choose Save.",
+                    self.hasRetainedExternalFileAccess
+                        ? "Clio couldn’t safely save this file with its current access. Authorize its parent folder using Add Folder, then choose Save. Your edits remain in memory and recovery."
+                        : "Clio couldn’t autosave this document. Check that the workspace is available and writable, then choose Save.",
                     underlying: error,
                     context: .save
                 )
@@ -995,5 +1467,75 @@ private extension EditorSession {
         guard presentedErrorContext == .save else { return }
         errorMessage = nil
         presentedErrorContext = .general
+    }
+}
+
+private extension EditorSession {
+    func prepareForActivation(
+        registry: DocumentBufferRegistry?,
+        conflictResolver: ConflictResolver?,
+        documentMover: DocumentMover?
+    ) {
+        activationEpoch &+= 1
+        invalidatePendingEditorEdits()
+        editorMaterializationCount = 0
+        editorPublicationCount = 0
+        wordCountTask?.cancel()
+        autosaveErrorMonitor?.cancel()
+        releaseExternalFileAccess(clearIntent: false)
+        if ownsAutosaver { autosaver?.cancel() }
+        self.registry?.unbind(self)
+        self.registry = registry
+        self.conflictResolver = conflictResolver
+        self.documentMover = documentMover
+        ownsAutosaver = false
+        autosaver = nil
+        isRestorationUnresolved = false
+    }
+
+    func bind(
+        _ proposedDocument: Document,
+        to workspace: Workspace,
+        workspaceID: WorkspaceID?,
+        exposesWorkspaceLocator: Bool
+    ) {
+        let canonical: Document
+        if proposedDocument.fileURL == nil {
+            canonical = registry?.registerUnbacked(proposedDocument) ?? proposedDocument
+        } else {
+            registry?.register(proposedDocument, in: workspace)
+            canonical = registry?.document(withID: proposedDocument.id) ?? proposedDocument
+        }
+        self.workspace = workspace
+        self.workspaceID = exposesWorkspaceLocator ? workspaceID : nil
+        if exposesWorkspaceLocator {
+            releaseExternalFileAccess(clearIntent: true)
+        }
+        document = canonical
+        restoredDocumentID = canonical.id
+        registry?.bind(self, to: canonical)
+        ownsAutosaver = registry == nil
+        autosaver = registry?.autosaver(for: canonical, in: workspace)
+            ?? Autosaver(workspace: workspace)
+        detachedDraftText = ""
+        detachedRevision = 0
+        isRestorationUnresolved = false
+        preferredFilenameForRestoration = canonical.filename
+        refreshWordCount(
+            for: canonical.text,
+            revision: canonical.revision,
+            utf8ByteCount: canonical.utf8ByteCount
+        )
+        viewportState = viewportState.clamped(
+            toUTF16Length: (canonical.text as NSString).length
+        )
+        refreshRelativePath()
+    }
+
+    func makeBlankDocument() -> Document {
+        Document(
+            preferredFilename: preferredFilenameForRestoration,
+            id: restoredDocumentID ?? DocumentID(rawValue: id)
+        )
     }
 }

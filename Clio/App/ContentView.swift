@@ -161,10 +161,8 @@ struct ContentView: View {
     private func editorPane(_ editorSession: EditorSession) -> some View {
         VStack(spacing: 0) {
             EditorView(
-                text: Binding(
-                    get: { editorSession.draftText },
-                    set: { editorSession.draftText = $0 }
-                ),
+                text: editorSession.draftText,
+                contentGeneration: editorSession.bufferGeneration,
                 viewport: Binding(
                     get: { editorSession.viewportState },
                     set: { editorSession.updateViewport($0) }
@@ -179,8 +177,8 @@ struct ContentView: View {
                     isFocusModeEnabled: appState.isFocusModeEnabled,
                     focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
                 ),
-                onTextEdit: { newText, edit in
-                    windowSession.noteEditorChange(to: newText, edit: edit)
+                onTextEdit: { edit in
+                    windowSession.noteEditorEdit(edit)
                 },
                 onSlashCommand: {
                     windowSession.presentInlineSlashPalette()
@@ -248,10 +246,15 @@ private struct DetachedDocumentBanner: View {
 }
 
 private struct ConflictResolutionView: View {
+    private struct Preview {
+        let conflictID: UUID
+        let text: String
+    }
+
     let conflict: DocumentConflict
     let isResolving: Bool
     let resolve: (ConflictChoice) -> Void
-    @State private var preview = "Preparing a bounded preview…"
+    @State private var preview: Preview?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -275,7 +278,11 @@ private struct ConflictResolutionView: View {
             .font(.custom(Typography.family, fixedSize: 12))
 
             ScrollView {
-                Text(preview)
+                Text(
+                    preview?.conflictID == conflict.id
+                        ? preview?.text ?? ""
+                        : "Preparing a bounded preview…"
+                )
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
@@ -298,7 +305,10 @@ private struct ConflictResolutionView: View {
         .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .contain)
         .task(id: conflict.id) {
-            preview = await ConflictPreviewBuilder.preview(for: conflict)
+            let conflictID = conflict.id
+            let text = await ConflictPreviewBuilder.preview(for: conflict)
+            guard !Task.isCancelled, conflict.id == conflictID else { return }
+            preview = Preview(conflictID: conflictID, text: text)
         }
     }
 }

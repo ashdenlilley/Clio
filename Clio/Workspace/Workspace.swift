@@ -119,7 +119,8 @@ final class Workspace {
         accessSecurityScopedResource: Bool = true,
         fileManager: FileManager = .default,
         atomicWriter: any AtomicFileWriting = AtomicFileWriter(),
-        crashRecoveryJournal: CrashRecoveryJournal? = nil
+        crashRecoveryJournal: CrashRecoveryJournal? = nil,
+        recoverWorkspaceTransactions: Bool = true
     ) throws {
         let scopedURL = rootURL.standardizedFileURL
         let didStartSecurityScopedAccess = accessSecurityScopedResource
@@ -159,7 +160,7 @@ final class Workspace {
             )
             isSecurityScopedAccessActive = didStartSecurityScopedAccess
             securityScopedURL = didStartSecurityScopedAccess ? scopedURL : nil
-            if let crashRecoveryJournal {
+            if recoverWorkspaceTransactions, let crashRecoveryJournal {
                 _ = try AtomicWriteTransactions.recoverInterruptedTransactions(
                     in: resolvedURL,
                     journal: crashRecoveryJournal

@@ -1,4 +1,5 @@
 name: Clio
+# Exact-file Powerbox leases and watchers are included through the Clio source tree.
 
 options:
   minimumXcodeGenVersion: 2.46.0

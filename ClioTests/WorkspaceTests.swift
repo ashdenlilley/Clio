@@ -331,8 +331,8 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
-    func testRestoredWindowReopensItsExactRelativePath() throws {
-        try withTemporaryDirectory { directoryURL in
+    func testRestoredWindowReopensItsExactRelativePath() async throws {
+        try await withTemporaryDirectory { directoryURL in
             let recentURL = directoryURL.appendingPathComponent("recent.md")
             let restoredURL = directoryURL.appendingPathComponent("restored.md")
             try Data("recent".utf8).write(to: recentURL)
@@ -344,7 +344,7 @@ final class WorkspaceTests: XCTestCase {
             )
             let session = EditorSession(
                 openingMode: .newDocument,
-                restoredRelativePath: "restored.md"
+                restoredLocator: try DocumentLocator(workspaceID: workspace.id, relativePath: "restored.md")
             )
             let state = AppState(
                 defaults: UserDefaults(
@@ -353,14 +353,15 @@ final class WorkspaceTests: XCTestCase {
                 initialWorkspace: workspace
             )
             state.register(session)
+            try await waitForActivation(session)
 
             XCTAssertEqual(session.fileURL, restoredURL)
             XCTAssertEqual(session.draftText, "restored")
         }
     }
 
-    func testAdditionalWorkspaceWindowChoosesNextMostRecentUnopenedFile() throws {
-        try withTemporaryDirectory { directoryURL in
+    func testAdditionalWorkspaceWindowChoosesNextMostRecentUnopenedFile() async throws {
+        try await withTemporaryDirectory { directoryURL in
             let newestURL = directoryURL.appendingPathComponent("newest.md")
             let nextURL = directoryURL.appendingPathComponent("next.md")
             try Data("newest".utf8).write(to: newestURL)
@@ -386,14 +387,16 @@ final class WorkspaceTests: XCTestCase {
 
             state.register(firstSession)
             state.register(secondSession)
+            try await waitForActivation(firstSession)
+            try await waitForActivation(secondSession)
 
             XCTAssertEqual(firstSession.fileURL, newestURL)
             XCTAssertEqual(secondSession.fileURL, nextURL)
         }
     }
 
-    func testUnregisterFlushesAWindowBeforeReleasingItsSession() throws {
-        try withTemporaryDirectory { directoryURL in
+    func testUnregisterFlushesAWindowBeforeReleasingItsSession() async throws {
+        try await withTemporaryDirectory { directoryURL in
             let fileURL = directoryURL.appendingPathComponent("draft.md")
             try Data("before".utf8).write(to: fileURL)
 
@@ -409,6 +412,7 @@ final class WorkspaceTests: XCTestCase {
             )
             let session = EditorSession(openingMode: .mostRecent)
             state.register(session)
+            try await waitForActivation(session)
             session.editorTextDidChange("after")
 
             state.unregister(session)
@@ -418,8 +422,8 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
-    func testFailedUnregisterFlushRetainsTheWindowSessionUntilRecovery() throws {
-        try withTemporaryDirectory { directoryURL in
+    func testFailedUnregisterFlushRetainsTheWindowSessionUntilRecovery() async throws {
+        try await withTemporaryDirectory { directoryURL in
             let fileURL = directoryURL.appendingPathComponent("draft.md")
             try Data("before".utf8).write(to: fileURL)
 
@@ -435,6 +439,7 @@ final class WorkspaceTests: XCTestCase {
             )
             let session = EditorSession(openingMode: .mostRecent)
             state.register(session)
+            try await waitForActivation(session)
             session.editorTextDidChange("after")
 
             try FileManager.default.removeItem(at: fileURL)
@@ -462,6 +467,14 @@ final class WorkspaceTests: XCTestCase {
 }
 
 private extension WorkspaceTests {
+    func waitForActivation(_ session: EditorSession) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !session.isReady && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(session.isReady)
+    }
+
     func withTemporaryDirectory<T>(
         _ operation: (URL) throws -> T
     ) throws -> T {

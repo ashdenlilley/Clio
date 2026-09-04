@@ -86,6 +86,15 @@ final class AppState: ClioCommandDispatching {
     private var editorSessions: [EditorSession] = []
 
     @ObservationIgnored
+    private var editorActivationTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    @ObservationIgnored
+    private var mostRecentActivationTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var editorActivationRequestIDs: [ObjectIdentifier: UUID] = [:]
+
+    @ObservationIgnored
     let documentRegistry: DocumentBufferRegistry
 
     @ObservationIgnored
@@ -116,13 +125,25 @@ final class AppState: ClioCommandDispatching {
     private let workspaceIndexCoordinator: WorkspaceIndexCoordinator
 
     @ObservationIgnored
+    private let activationScanner: WorkspaceScanner
+
+    @ObservationIgnored
+    private let externalFileAccessController: SecurityScopedFileAccessController
+
+    @ObservationIgnored
+    private let parentFolderSelection: (@MainActor (URL) -> URL?)?
+
+    @ObservationIgnored
+    private let activationWillOpen: (@MainActor (URL) async -> Void)?
+
+    @ObservationIgnored
     private var discoveryTask: Task<Void, Never>?
 
     @ObservationIgnored
     private var legacyWorkspaceDescriptor: WorkspaceDescriptor?
 
     @ObservationIgnored
-    private var pendingExternalDocumentURLs: [URL] = []
+    private var pendingExternalFileLeases: [SecurityScopedFileLease] = []
 
     init(
         defaults: UserDefaults = .standard,
@@ -135,11 +156,17 @@ final class AppState: ClioCommandDispatching {
         searchIndex: (any SearchIndexing)? = nil,
         documentRegistry suppliedDocumentRegistry: DocumentBufferRegistry? = nil,
         conflictResolver suppliedConflictResolver: ConflictResolver? = nil,
-        documentMover suppliedDocumentMover: DocumentMover? = nil
+        documentMover suppliedDocumentMover: DocumentMover? = nil,
+        externalFileAccessController: SecurityScopedFileAccessController = .init(),
+        parentFolderSelection: (@MainActor (URL) -> URL?)? = nil,
+        activationWillOpen: (@MainActor (URL) async -> Void)? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
         self.crashRecoveryJournal = crashRecoveryJournal
+        self.externalFileAccessController = externalFileAccessController
+        self.parentFolderSelection = parentFolderSelection
+        self.activationWillOpen = activationWillOpen
         let activeRecoveryStore = recoveryStore
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
@@ -165,6 +192,10 @@ final class AppState: ClioCommandDispatching {
                 identityStore: documentRegistry.identityStore
             ))
             ?? EmptySearchIndex()
+        activationScanner = WorkspaceScanner(
+            fileManager: fileManager,
+            identityStore: documentRegistry.identityStore
+        )
         workspaceIndexCoordinator = WorkspaceIndexCoordinator(
             catalog: self.workspaceCatalog,
             registry: documentRegistry,
@@ -304,6 +335,7 @@ final class AppState: ClioCommandDispatching {
 
     func register(_ session: EditorSession) {
         guard !editorSessions.contains(where: { $0 === session }) else { return }
+        session.useCrashRecoveryJournal(crashRecoveryJournal)
         editorSessions.append(session)
 
         activate(session)
@@ -320,6 +352,7 @@ final class AppState: ClioCommandDispatching {
             return
         }
 
+        cancelActivation(for: session)
         editorSessions.remove(at: index)
         session.deactivate()
     }
@@ -330,11 +363,11 @@ final class AppState: ClioCommandDispatching {
         for tab in window.tabs {
             register(tab)
         }
-        if !pendingExternalDocumentURLs.isEmpty {
-            let pending = pendingExternalDocumentURLs
-            pendingExternalDocumentURLs.removeAll()
-            for url in pending {
-                openExternalDocumentURL(url, from: window)
+        if !pendingExternalFileLeases.isEmpty {
+            let pending = pendingExternalFileLeases
+            pendingExternalFileLeases.removeAll()
+            for lease in pending {
+                openExternalDocumentLease(lease, from: window)
             }
         }
     }
@@ -346,6 +379,7 @@ final class AppState: ClioCommandDispatching {
         guard window.tabs.allSatisfy({ $0.flushForLifecycleEvent() }) else { return }
         editorWindows.remove(at: index)
         for tab in window.tabs {
+            cancelActivation(for: tab)
             if let tabIndex = editorSessions.firstIndex(where: { $0 === tab }) {
                 editorSessions.remove(at: tabIndex)
             }
@@ -355,6 +389,7 @@ final class AppState: ClioCommandDispatching {
 
     func activateNewDocument(_ session: EditorSession) {
         guard !editorSessions.contains(where: { $0 === session }) else { return }
+        session.useCrashRecoveryJournal(crashRecoveryJournal)
         editorSessions.append(session)
         guard let primaryWorkspace else { return }
         session.activate(
@@ -368,7 +403,16 @@ final class AppState: ClioCommandDispatching {
     }
 
     func release(_ session: EditorSession) {
+        cancelActivation(for: session)
         editorSessions.removeAll { $0 === session }
+        session.releaseExternalFileAccess(clearIntent: false)
+    }
+
+    /// Replaces an in-flight startup request. Reauthorization and tests use
+    /// this generation-guarded entry point so stale hydration cannot win.
+    func retryActivation(_ session: EditorSession) {
+        guard editorSessions.contains(where: { $0 === session }) else { return }
+        activate(session)
     }
 
     @discardableResult
@@ -452,6 +496,9 @@ final class AppState: ClioCommandDispatching {
         do {
             let descriptor = try workspaceCatalog.addAuthorizedFolder(selectedURL)
             defer { selectedURL.stopAccessingSecurityScopedResource() }
+            if let authorizedWorkspace = workspaceCatalog.workspace(id: descriptor.id) {
+                adoptRetainedExternalFiles(in: authorizedWorkspace)
+            }
             if workspace == nil {
                 workspace = workspaceCatalog.workspace(id: descriptor.id)
             }
@@ -466,6 +513,14 @@ final class AppState: ClioCommandDispatching {
                 "Clio couldn’t add that workspace. Choose a readable, writable folder and try again.",
                 underlying: error
             )
+        }
+    }
+
+    func adoptRetainedExternalFiles(in authorizedWorkspace: Workspace) {
+        for session in editorSessions where session.hasRetainedExternalFileAccess {
+            guard let fileURL = session.fileURL,
+                  authorizedWorkspace.contains(fileURL) else { continue }
+            session.adoptAuthorizedWorkspace(authorizedWorkspace)
         }
     }
 
@@ -512,7 +567,7 @@ final class AppState: ClioCommandDispatching {
             do {
                 try await self.workspaceIndexCoordinator.synchronize(
                     policy: policy,
-                    includesIgnored: self.discoverySettings.temporarilyShowsIgnored
+                    includesIgnored: false
                 )
                 try Task.checkCancellation()
                 self.isRefreshingWorkspaces = false
@@ -572,16 +627,23 @@ final class AppState: ClioCommandDispatching {
     }
 
     func enqueueExternalDocumentURLs(_ urls: [URL]) {
-        let supported = urls.filter {
-            ["md", "markdown", "txt"].contains($0.pathExtension.lowercased())
-        }
-        guard !supported.isEmpty else { return }
-        if let window = editorWindows.first {
-            for url in supported {
-                openExternalDocumentURL(url, from: window)
+        for url in urls {
+            guard ["md", "markdown", "txt"].contains(
+                url.pathExtension.lowercased()
+            ) else {
+                externalFileAccessController.releaseIncomingSelection(at: url)
+                continue
             }
-        } else {
-            pendingExternalDocumentURLs.append(contentsOf: supported)
+            do {
+                let lease = try externalFileAccessController.acquireSelectedFile(at: url)
+                if let window = editorWindows.first {
+                    openExternalDocumentLease(lease, from: window)
+                } else {
+                    pendingExternalFileLeases.append(lease)
+                }
+            } catch {
+                presentError("Clio couldn’t retain access to that document.", underlying: error)
+            }
         }
     }
 
@@ -589,17 +651,49 @@ final class AppState: ClioCommandDispatching {
         _ fileURL: URL,
         from window: EditorWindowSession
     ) {
-        let didStartAccess = fileURL.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccess {
-                fileURL.stopAccessingSecurityScopedResource()
-            }
+        do {
+            let lease = try externalFileAccessController.acquireSelectedFile(at: fileURL)
+            openExternalDocumentLease(lease, from: window)
+        } catch {
+            presentError("Clio couldn’t retain access to that document.", underlying: error)
         }
+    }
 
+    func openExternalDocumentLease(
+        _ lease: SecurityScopedFileLease,
+        from window: EditorWindowSession
+    ) {
+        Task { @MainActor [weak self, weak window] in
+            guard let self, let window else {
+                lease.release()
+                return
+            }
+            await self.openExternalDocumentLeaseNow(lease, from: window)
+        }
+    }
+
+    func openExternalDocumentURLNow(
+        _ fileURL: URL,
+        from window: EditorWindowSession
+    ) async {
+        do {
+            let lease = try externalFileAccessController.acquireSelectedFile(at: fileURL)
+            await openExternalDocumentLeaseNow(lease, from: window)
+        } catch {
+            presentError("Clio couldn’t retain access to that document.", underlying: error)
+        }
+    }
+
+    func openExternalDocumentLeaseNow(
+        _ lease: SecurityScopedFileLease,
+        from window: EditorWindowSession
+    ) async {
+        let fileURL = lease.url
         if let descriptor = descriptor(containing: fileURL),
            let authorizedWorkspace = workspace(for: descriptor.id) {
+            defer { lease.release() }
             do {
-                try openDocument(
+                try await openDocumentInBackground(
                     at: fileURL,
                     workspace: authorizedWorkspace,
                     descriptor: descriptor,
@@ -615,19 +709,37 @@ final class AppState: ClioCommandDispatching {
             return
         }
 
-        if routeToExistingDocument(at: fileURL) != nil { return }
+        if routeToExistingDocument(at: fileURL) != nil {
+            lease.release()
+            return
+        }
         let tab = EditorSession(openingMode: .newDocument)
+        tab.useCrashRecoveryJournal(crashRecoveryJournal)
         do {
-            try tab.activateExternal(
+            try await tab.activateExternalInBackground(
                 documentURL: fileURL,
+                accessLease: lease,
+                reconcile: { [weak self] event, workspace in
+                    await self?.handleWorkspaceEvent(event, in: workspace)
+                },
                 registry: documentRegistry,
                 conflictResolver: conflictResolver,
                 documentMover: documentMover
             )
+            guard editorWindows.contains(where: { $0 === window }) else {
+                tab.deactivate()
+                return
+            }
+            if let existing = routeToExistingDocument(documentID: tab.documentID) {
+                tab.deactivate()
+                existing.updateViewport(tab.viewportState)
+                return
+            }
             editorSessions.append(tab)
             window.append(tab)
             authorizeParentFolder(of: fileURL, for: tab)
         } catch {
+            tab.deactivate()
             presentError("Clio couldn’t open that document.", underlying: error)
         }
     }
@@ -636,9 +748,26 @@ final class AppState: ClioCommandDispatching {
         _ result: WorkspaceSearchResult,
         from window: EditorWindowSession
     ) {
-        guard let descriptor = workspaceDescriptors.first(where: { $0.id == result.workspaceID }),
-              let workspace = workspace(for: descriptor.id) else { return }
-        let fileURL = descriptor.rootURL.appendingPathComponent(result.relativePath)
+        Task { @MainActor [weak self, weak window] in
+            guard let self, let window else { return }
+            do {
+                _ = try await self.openSearchResultNow(result, from: window)
+            } catch {
+                self.presentError("Clio couldn’t open that search result.", underlying: error)
+            }
+        }
+    }
+
+    @discardableResult
+    func openSearchResultNow(
+        _ result: WorkspaceSearchResult,
+        from window: EditorWindowSession
+    ) async throws -> EditorSession {
+        guard let descriptor = workspaceDescriptors.first(where: {
+            $0.id == result.workspaceID
+        }), let workspace = workspace(for: descriptor.id) else {
+            throw WorkspaceCatalog.CatalogError.workspaceUnavailable(result.workspaceID)
+        }
         let matchViewport = result.documentMatchRange.map {
             EditorViewportState(
                 selection: $0,
@@ -646,19 +775,34 @@ final class AppState: ClioCommandDispatching {
                 fractionalYOffset: 0
             )
         }
-        do {
-            let tab = try openDocument(
-                at: fileURL,
-                workspace: workspace,
-                descriptor: descriptor,
-                documentID: result.documentID,
-                applying: matchViewport,
-                in: window
+        let document: Document
+        if workspaceCatalog.workspace(id: result.workspaceID) != nil {
+            document = try await workspaceCatalog.openDocumentInBackground(
+                for: result,
+                registry: documentRegistry
             )
-            if let matchViewport { tab.updateViewport(matchViewport) }
-        } catch {
-            presentError("Clio couldn’t open that search result.", underlying: error)
+        } else {
+            let locator = try DocumentLocator(
+                workspaceID: result.workspaceID,
+                relativePath: result.relativePath
+            )
+            let fileURL = try workspace.fileURL(for: locator)
+            document = try await documentRegistry.openInBackground(
+                fileURL,
+                in: workspace,
+                preferredID: result.documentID
+            )
         }
+        guard editorWindows.contains(where: { $0 === window }) else {
+            throw CancellationError()
+        }
+        return presentOpenedDocument(
+            document,
+            workspace: workspace,
+            descriptor: descriptor,
+            applying: matchViewport,
+            in: window
+        )
     }
 
     func openWorkspaceFile(
@@ -667,20 +811,68 @@ final class AppState: ClioCommandDispatching {
         relativePath: String,
         from window: EditorWindowSession
     ) {
-        guard let descriptor = workspaceDescriptors.first(where: { $0.id == workspaceID }),
-              let workspace = workspace(for: workspaceID) else { return }
-        let fileURL = descriptor.rootURL.appendingPathComponent(relativePath)
-        do {
-            try openDocument(
-                at: fileURL,
-                workspace: workspace,
-                descriptor: descriptor,
-                documentID: documentID,
-                in: window
-            )
-        } catch {
-            presentError("Clio couldn’t open that document.", underlying: error)
+        Task { @MainActor [weak self, weak window] in
+            guard let self, let window else { return }
+            do {
+                _ = try await self.openWorkspaceFileNow(
+                    documentID: documentID,
+                    workspaceID: workspaceID,
+                    relativePath: relativePath,
+                    from: window
+                )
+            } catch {
+                self.presentError("Clio couldn’t open that document.", underlying: error)
+            }
         }
+    }
+
+    @discardableResult
+    func openWorkspaceFileNow(
+        documentID: DocumentID,
+        workspaceID: WorkspaceID,
+        relativePath: String,
+        from window: EditorWindowSession
+    ) async throws -> EditorSession {
+        guard let descriptor = workspaceDescriptors.first(where: {
+            $0.id == workspaceID
+        }), let workspace = workspace(for: workspaceID) else {
+            throw WorkspaceCatalog.CatalogError.workspaceUnavailable(workspaceID)
+        }
+        let locator = try DocumentLocator(
+            workspaceID: workspaceID,
+            relativePath: relativePath
+        )
+        let document: Document
+        if let file = workspaceTrees[workspaceID]?.files.first(where: {
+            $0.documentID == documentID && $0.locator == locator
+        }), workspaceCatalog.workspace(id: workspaceID) != nil {
+            document = try await workspaceCatalog.openDocumentInBackground(
+                for: file,
+                registry: documentRegistry
+            )
+        } else if workspaceCatalog.workspace(id: workspaceID) != nil {
+            document = try await workspaceCatalog.openDocumentInBackground(
+                at: locator,
+                preferredID: documentID,
+                registry: documentRegistry
+            )
+        } else {
+            let fileURL = try workspace.fileURL(for: locator)
+            document = try await documentRegistry.openInBackground(
+                fileURL,
+                in: workspace,
+                preferredID: documentID
+            )
+        }
+        guard editorWindows.contains(where: { $0 === window }) else {
+            throw CancellationError()
+        }
+        return presentOpenedDocument(
+            document,
+            workspace: workspace,
+            descriptor: descriptor,
+            in: window
+        )
     }
 
     func dragPayload(
@@ -729,7 +921,7 @@ final class AppState: ClioCommandDispatching {
             guard let self else { return }
             do {
                 let sourceURL = try sourceWorkspace.fileURL(for: payload.locator)
-                let document = try self.documentRegistry.open(
+                let document = try await self.documentRegistry.openInBackground(
                     sourceURL,
                     in: sourceWorkspace,
                     preferredID: payload.documentID
@@ -857,39 +1049,44 @@ final class AppState: ClioCommandDispatching {
         }
     }
 
-    /// Commits the already-confirmed Trash action. Kept separate from the
-    /// alert so the data-safety boundary is deterministic and testable.
-    @discardableResult
+    /// Starts the already-confirmed user command without blocking AppKit while
+    /// pending editor deltas and durable writes settle.
     func commitMoveToTrash(
         _ tab: EditorSession,
         from window: EditorWindowSession
-    ) -> Bool {
+    ) {
+        Task { @MainActor [weak self, weak tab, weak window] in
+            guard let self, let tab, let window else { return }
+            _ = await self.commitMoveToTrashNow(tab, from: window)
+        }
+    }
+
+    @discardableResult
+    func commitMoveToTrashNow(
+        _ tab: EditorSession,
+        from window: EditorWindowSession
+    ) async -> Bool {
         let priorLocator = tab.locator
         let priorURL = tab.fileURL
         do {
-            // DocumentMover flushes first and only detaches the canonical
-            // buffer after the Trash operation succeeds.
-            try tab.moveToTrash()
+            try await tab.moveToTrashNow()
             window.closeAfterSuccessfulFileMutation(tabID: tab.id)
             if let priorLocator, let priorURL {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    do {
-                        try await self.workspaceIndexCoordinator.apply([
-                            WorkspaceEvent(
-                                workspaceID: priorLocator.workspaceID,
-                                kind: .deleted,
-                                fileURL: priorURL,
-                                origin: .clio
-                            ),
-                        ])
-                    } catch {
-                        self.presentError(
-                            "The document is in Trash, but Clio couldn’t update navigation immediately.",
-                            underlying: error
-                        )
-                        self.refreshWorkspaceDiscovery()
-                    }
+                do {
+                    try await workspaceIndexCoordinator.apply([
+                        WorkspaceEvent(
+                            workspaceID: priorLocator.workspaceID,
+                            kind: .deleted,
+                            fileURL: priorURL,
+                            origin: .clio
+                        ),
+                    ])
+                } catch {
+                    presentError(
+                        "The document is in Trash, but Clio couldn’t update navigation immediately.",
+                        underlying: error
+                    )
+                    refreshWorkspaceDiscovery()
                 }
             }
             return true
@@ -1046,11 +1243,110 @@ private extension AppState {
     }
 
     func activate(_ session: EditorSession) {
+        guard editorSessions.contains(where: { $0 === session }) else { return }
+        if !session.hasPreferredDocument, session.openingMode == .newDocument {
+            cancelActivation(for: session)
+            guard let primaryWorkspace else { return }
+            session.activate(
+                in: primaryWorkspace.workspace,
+                workspaceID: primaryWorkspace.descriptor.id,
+                documentURLs: [],
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
+            return
+        }
+
+        let key = ObjectIdentifier(session)
+        editorActivationTasks[key]?.cancel()
+        let requestID = UUID()
+        editorActivationRequestIDs[key] = requestID
+        let choosesMostRecent = !session.hasPreferredDocument && session.openingMode == .mostRecent
+        let predecessor = choosesMostRecent ? mostRecentActivationTask : nil
+        editorActivationTasks[key] = Task { @MainActor [weak self, weak session] in
+            await predecessor?.value
+            guard let self, let session else { return }
+            defer {
+                if self.editorActivationRequestIDs[key] == requestID {
+                    self.editorActivationTasks[key] = nil
+                    self.editorActivationRequestIDs[key] = nil
+                }
+            }
+            await self.activateInBackground(session, requestID: requestID)
+        }
+        if choosesMostRecent { mostRecentActivationTask = editorActivationTasks[key] }
+    }
+
+    func cancelActivation(for session: EditorSession) {
+        let key = ObjectIdentifier(session)
+        editorActivationTasks[key]?.cancel()
+        editorActivationTasks[key] = nil
+        editorActivationRequestIDs[key] = nil
+    }
+
+    func isCurrentActivation(
+        _ session: EditorSession,
+        key: ObjectIdentifier,
+        requestID: UUID
+    ) -> Bool {
+        !Task.isCancelled
+            && editorActivationRequestIDs[key] == requestID
+            && editorSessions.contains(where: { $0 === session })
+    }
+
+    func activateInBackground(
+        _ session: EditorSession,
+        requestID: UUID
+    ) async {
+        let key = ObjectIdentifier(session)
+        if let bookmark = session.restoredExternalFileBookmark {
+            do {
+                let lease = try externalFileAccessController.acquireRestoredFile(
+                    from: bookmark
+                )
+                if let activationWillOpen { await activationWillOpen(lease.url) }
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    lease.release()
+                    return
+                }
+                try await session.activateExternalInBackground(
+                    documentURL: lease.url,
+                    accessLease: lease,
+                    reconcile: { [weak self] event, workspace in
+                        await self?.handleWorkspaceEvent(event, in: workspace)
+                    },
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover
+                )
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    session.deactivate()
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
+                session.activateUnresolvedExternalRestoration(
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover,
+                    underlyingError: error
+                )
+            }
+            return
+        }
         if session.hasPreferredDocument {
             let requestedWorkspace = session.restoredWorkspaceID.flatMap(workspace(for:))
             guard let requestedWorkspaceID = session.restoredWorkspaceID,
                   let requestedPath = session.restoredRelativePath,
                   let requestedWorkspace else {
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
                 session.activateUnresolvedRestoration(
                     in: requestedWorkspace,
                     registry: documentRegistry,
@@ -1059,31 +1355,48 @@ private extension AppState {
                 )
                 return
             }
+
             do {
                 let locator = try DocumentLocator(
                     workspaceID: requestedWorkspaceID,
                     relativePath: requestedPath
                 )
                 let requestedURL = try requestedWorkspace.fileURL(for: locator)
-                guard fileManager.fileExists(atPath: requestedURL.path) else {
-                    session.activateUnresolvedRestoration(
-                        in: requestedWorkspace,
-                        registry: documentRegistry,
-                        conflictResolver: conflictResolver,
-                        documentMover: documentMover
-                    )
+                if let activationWillOpen { await activationWillOpen(requestedURL) }
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
                     return
                 }
-                try session.activate(
-                    documentURL: requestedURL,
+                let document: Document
+                if workspaceCatalog.workspace(id: requestedWorkspaceID) != nil {
+                    document = try await workspaceCatalog.openDocumentInBackground(
+                        at: locator,
+                        preferredID: session.documentID,
+                        registry: documentRegistry
+                    )
+                } else {
+                    document = try await documentRegistry.openInBackground(
+                        requestedURL,
+                        in: requestedWorkspace,
+                        preferredID: session.documentID
+                    )
+                }
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
+                session.activate(
+                    document: document,
                     in: requestedWorkspace,
                     workspaceID: requestedWorkspaceID,
                     registry: documentRegistry,
                     conflictResolver: conflictResolver,
-                    documentMover: documentMover,
-                    preferredDocumentID: session.documentID
+                    documentMover: documentMover
                 )
+            } catch is CancellationError {
+                return
             } catch {
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
                 session.activateUnresolvedRestoration(
                     in: requestedWorkspace,
                     registry: documentRegistry,
@@ -1095,109 +1408,165 @@ private extension AppState {
             return
         }
 
-        guard let primaryWorkspace else { return }
+        await activateMostRecentInBackground(
+            session,
+            key: key,
+            requestID: requestID
+        )
+    }
 
-        if session.openingMode == .newDocument {
-            session.activate(
-                in: primaryWorkspace.workspace,
-                workspaceID: primaryWorkspace.descriptor.id,
-                documentURLs: [],
-                registry: documentRegistry,
-                conflictResolver: conflictResolver,
-                documentMover: documentMover
-            )
-            return
+    func activateMostRecentInBackground(
+        _ session: EditorSession,
+        key: ObjectIdentifier,
+        requestID: UUID
+    ) async {
+        guard let primaryWorkspace else { return }
+        let policy = discoverySettings.policy
+        var candidates: [(WorkspaceFile, Workspace)] = []
+        var firstFailure: Error?
+
+        for descriptor in workspaceDescriptors {
+            guard isCurrentActivation(session, key: key, requestID: requestID),
+                  let candidateWorkspace = workspace(for: descriptor.id) else {
+                return
+            }
+            do {
+                let snapshot: WorkspaceTreeSnapshot
+                if let cached = workspaceTrees[descriptor.id], cached.isComplete {
+                    snapshot = cached
+                } else {
+                    snapshot = try await activationScanner.scan(
+                        workspace: descriptor,
+                        policy: policy,
+                        includesIgnored: false
+                    )
+                }
+                candidates.append(contentsOf: snapshot.files.map {
+                    ($0, candidateWorkspace)
+                })
+            } catch is CancellationError {
+                return
+            } catch {
+                firstFailure = firstFailure ?? error
+            }
         }
 
-        do {
-            let openDocumentIDs = Set(
-                editorSessions
-                    .filter { $0 !== session }
-                    .compactMap(\.document?.id)
-            )
-            let candidates = try workspaceDescriptors.flatMap { descriptor -> [(URL, WorkspaceDescriptor, Workspace)] in
-                guard let candidateWorkspace = workspace(for: descriptor.id) else { return [] }
-                return try candidateWorkspace.documentURLs().map {
-                    ($0, descriptor, candidateWorkspace)
-                }
-            }.sorted {
-                let left = (try? $0.0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                    ?? .distantPast
-                let right = (try? $1.0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                    ?? .distantPast
-                if left != right { return left > right }
-                return $0.0.path.localizedStandardCompare($1.0.path) == .orderedAscending
+        candidates.sort {
+            if $0.0.modificationDate != $1.0.modificationDate {
+                return $0.0.modificationDate > $1.0.modificationDate
             }
+            return $0.0.relativePath.localizedStandardCompare($1.0.relativePath)
+                == .orderedAscending
+        }
 
-            var didActivate = false
-            for candidate in candidates {
-                let document = try documentRegistry.open(
-                    candidate.0,
-                    in: candidate.2,
-                    preferredID: discoveredDocumentID(
-                        workspaceID: candidate.1.id,
-                        relativePath: candidate.2.relativePath(for: candidate.0)
+        for (file, candidateWorkspace) in candidates {
+            guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                return
+            }
+            do {
+                let candidateURL = try candidateWorkspace.fileURL(for: file.locator)
+                if let activationWillOpen { await activationWillOpen(candidateURL) }
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
+                let document: Document
+                if workspaceCatalog.workspace(id: file.locator.workspaceID) != nil {
+                    document = try await workspaceCatalog.openDocumentInBackground(
+                        for: file,
+                        registry: documentRegistry
                     )
-                )
-                guard !openDocumentIDs.contains(document.id) else { continue }
+                } else {
+                    document = try await documentRegistry.openInBackground(
+                        candidateURL,
+                        in: candidateWorkspace,
+                        preferredID: file.documentID
+                    )
+                }
+                guard isCurrentActivation(session, key: key, requestID: requestID) else {
+                    return
+                }
+                let isAlreadyOpen = editorSessions.contains {
+                    $0 !== session && $0.document?.id == document.id
+                }
+                guard !isAlreadyOpen else { continue }
                 session.activate(
                     document: document,
-                    in: candidate.2,
-                    workspaceID: candidate.1.id,
+                    in: candidateWorkspace,
+                    workspaceID: file.locator.workspaceID,
                     registry: documentRegistry,
                     conflictResolver: conflictResolver,
                     documentMover: documentMover
                 )
-                didActivate = true
-                break
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                firstFailure = firstFailure ?? error
             }
-            if !didActivate {
-                session.activate(
-                    in: primaryWorkspace.workspace,
-                    workspaceID: primaryWorkspace.descriptor.id,
-                    documentURLs: [],
-                    registry: documentRegistry,
-                    conflictResolver: conflictResolver,
-                    documentMover: documentMover
-                )
-                session.resolveAsNewDocument()
-            }
-        } catch {
-            session.activate(
-                in: primaryWorkspace.workspace,
-                workspaceID: primaryWorkspace.descriptor.id,
-                documentURLs: [],
-                registry: documentRegistry,
-                conflictResolver: conflictResolver,
-                documentMover: documentMover
-            )
+        }
+
+        guard isCurrentActivation(session, key: key, requestID: requestID) else {
+            return
+        }
+        session.activate(
+            in: primaryWorkspace.workspace,
+            workspaceID: primaryWorkspace.descriptor.id,
+            documentURLs: [],
+            registry: documentRegistry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
+        session.resolveAsNewDocument()
+        if let firstFailure {
             presentError(
                 "Clio still has workspace access, but couldn’t read every document.",
-                underlying: error
+                underlying: firstFailure
             )
         }
     }
 
     func activateUnreadySessions() {
         for session in editorSessions where !session.isReady {
-            activate(session)
+            if editorActivationTasks[ObjectIdentifier(session)] == nil {
+                activate(session)
+            }
         }
     }
 
     @discardableResult
-    func openDocument(
+    func openDocumentInBackground(
         at fileURL: URL,
         workspace: Workspace,
         descriptor: WorkspaceDescriptor,
         documentID: DocumentID? = nil,
         applying viewport: EditorViewportState? = nil,
         in window: EditorWindowSession
-    ) throws -> EditorSession {
-        let document = try documentRegistry.open(
+    ) async throws -> EditorSession {
+        let document = try await documentRegistry.openInBackground(
             fileURL,
             in: workspace,
             preferredID: documentID
         )
+        guard editorWindows.contains(where: { $0 === window }) else {
+            throw CancellationError()
+        }
+        return presentOpenedDocument(
+            document,
+            workspace: workspace,
+            descriptor: descriptor,
+            applying: viewport,
+            in: window
+        )
+    }
+
+    @discardableResult
+    func presentOpenedDocument(
+        _ document: Document,
+        workspace: Workspace,
+        descriptor: WorkspaceDescriptor,
+        applying viewport: EditorViewportState? = nil,
+        in window: EditorWindowSession
+    ) -> EditorSession {
         if let existing = routeToExistingDocument(
             documentID: document.id,
             applying: viewport
@@ -1267,13 +1636,20 @@ private extension AppState {
 
     func authorizeParentFolder(of fileURL: URL, for tab: EditorSession) {
         let parentURL = fileURL.deletingLastPathComponent()
-        let panel = configuredFolderPanel(
-            title: "Add \(parentURL.lastPathComponent) to Clio?",
-            message: "Clio opened \(fileURL.lastPathComponent). Authorize its parent folder to include nearby documents in search and navigation.",
-            prompt: "Add Parent Folder"
-        )
-        panel.directoryURL = parentURL
-        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+        let selectedURL: URL
+        if let parentFolderSelection {
+            guard let selection = parentFolderSelection(parentURL) else { return }
+            selectedURL = selection
+        } else {
+            let panel = configuredFolderPanel(
+                title: "Add \(parentURL.lastPathComponent) to Clio?",
+                message: "Clio opened \(fileURL.lastPathComponent). Authorize its parent folder to include nearby documents in search and navigation.",
+                prompt: "Add Parent Folder"
+            )
+            panel.directoryURL = parentURL
+            guard panel.runModal() == .OK, let selection = panel.url else { return }
+            selectedURL = selection
+        }
         defer { selectedURL.stopAccessingSecurityScopedResource() }
 
         do {
@@ -1284,7 +1660,7 @@ private extension AppState {
             guard let authorizedWorkspace = workspaceCatalog.workspace(id: descriptor.id) else {
                 throw Workspace.WorkspaceError.fileOutsideWorkspace(fileURL)
             }
-            tab.adoptAuthorizedWorkspace(authorizedWorkspace)
+            adoptRetainedExternalFiles(in: authorizedWorkspace)
             if workspace == nil {
                 workspace = authorizedWorkspace
             }

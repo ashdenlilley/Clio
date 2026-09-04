@@ -538,8 +538,8 @@ final class CrashSafetyTests: XCTestCase {
     }
   }
 
-  func testApplicationTerminationFlushesNewestScheduledGeneration() throws {
-    try withRoots { workspaceURL, journalURL, recoveryURL in
+  func testApplicationTerminationFlushesNewestScheduledGeneration() async throws {
+    try await withRootsAsync { workspaceURL, journalURL, recoveryURL in
       let fileURL = workspaceURL.appendingPathComponent("draft.md")
       try Data("base".utf8).write(to: fileURL)
       let journal = CrashRecoveryJournal(rootURL: journalURL)
@@ -556,6 +556,7 @@ final class CrashSafetyTests: XCTestCase {
       )
       let session = EditorSession()
       state.register(session)
+      try await waitUntil { session.document != nil }
       session.editorTextDidChange("newest before termination")
       let delegate = ClioApplicationDelegate(appState: state)
 

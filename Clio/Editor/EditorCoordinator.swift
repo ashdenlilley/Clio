@@ -1,9 +1,12 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class EditorCoordinator: NSObject, NSTextViewDelegate {
+    private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
+    private var onSlashCommand: (@MainActor () -> Void)?
     private weak var surface: EditorContainerView?
 
     private let typewriterScroller = TypewriterScroller()
@@ -26,13 +29,29 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var pendingEditorRevisionAdvances: UInt64 = 0
     private(set) var externalBufferReplacementCount = 0
     private(set) var acceptedEditorMutationCount = 0
+    private var hasRestoredViewport = false
+    private var isApplyingViewport = false
+    private var lastKnownViewport: EditorViewportState?
+    private var boundsObserver: NSObjectProtocol?
 
     init(
         configuration: EditorConfiguration,
-        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
+        viewport: Binding<EditorViewportState>? = nil,
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
+        onSlashCommand: (@MainActor () -> Void)? = nil
     ) {
+        self.viewport = viewport
         self.configuration = configuration
         self.onTextEdit = onTextEdit
+        self.onSlashCommand = onSlashCommand
+    }
+
+    deinit {
+        markdownTask?.cancel()
+        markdownEditTask?.cancel()
+        if let boundsObserver {
+            NotificationCenter.default.removeObserver(boundsObserver)
+        }
     }
 
     func attach(to surface: EditorContainerView) {
@@ -40,6 +59,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         surface.textView.delegate = self
         surface.textView.onUserScroll = { [weak self] in
             self?.typewriterScroller.suspendUntilNextEdit()
+            self?.captureViewport()
         }
         surface.textView.onKeyEventBegan = { [weak self] in
             self?.isHandlingKeyEvent = true
@@ -59,15 +79,29 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
                 configuration: self.configuration
             )
         }
+        surface.scrollView.contentView.postsBoundsChangedNotifications = true
+        boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: surface.scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.captureViewport()
+            }
+        }
     }
 
     func update(
         text: String,
         contentGeneration: BufferGeneration,
         configuration: EditorConfiguration,
-        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
+        viewport: Binding<EditorViewportState>? = nil,
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
+        onSlashCommand: (@MainActor () -> Void)? = nil
     ) {
         self.onTextEdit = onTextEdit
+        self.viewport = viewport
+        self.onSlashCommand = onSlashCommand
         guard let surface else { return }
 
         let configurationChanged = self.configuration != configuration
@@ -108,6 +142,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
         typewriterScroller.updateViewportInsets(in: surface, configuration: configuration)
         focusDimmer.apply(to: surface.textView, configuration: configuration)
+        applyBoundViewportIfNeeded()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -136,6 +171,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             )
         }
         isChangingText = false
+        captureViewport()
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -149,6 +185,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             configuration: configuration,
             animated: isHandlingKeyEvent && !isChangingText
         )
+        captureViewport()
     }
 
     func textView(
@@ -156,6 +193,21 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         shouldChangeTextIn affectedCharRange: NSRange,
         replacementString: String?
     ) -> Bool {
+        let replacement = replacementString ?? ""
+        if Self.isInlineSlashTrigger(
+            in: textView.string,
+            range: affectedCharRange,
+            replacement: replacement,
+            hasMarkedText: textView.hasMarkedText()
+        ) {
+            pendingMarkdownEdit = nil
+            isChangingText = false
+            DispatchQueue.main.async { [weak self] in
+                self?.onSlashCommand?()
+            }
+            return false
+        }
+
         isChangingText = true
         focusDimmer.clear(in: textView)
         pendingMarkdownEdit = MarkdownTextEdit(
@@ -163,6 +215,22 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             replacement: replacementString ?? ""
         )
         return true
+    }
+
+    static func isInlineSlashTrigger(
+        in source: String,
+        range: NSRange,
+        replacement: String,
+        hasMarkedText: Bool = false
+    ) -> Bool {
+        guard !hasMarkedText,
+              replacement == "/",
+              range.length == 0 else { return false }
+        let source = source as NSString
+        guard range.location >= 0, range.location <= source.length else { return false }
+        guard range.location > 0 else { return true }
+        let preceding = source.character(at: range.location - 1)
+        return preceding == 0x0A || preceding == 0x0D
     }
 
     private func replaceEditorText(with newText: String, in textView: EditorTextView) {
@@ -323,9 +391,90 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         isApplyingHighlight = false
     }
 
-    deinit {
-        markdownTask?.cancel()
-        markdownEditTask?.cancel()
+    private func applyBoundViewportIfNeeded() {
+        guard let surface,
+              let state = viewport?.wrappedValue else { return }
+        if hasRestoredViewport, state == lastKnownViewport { return }
+        hasRestoredViewport = true
+        isApplyingViewport = true
+
+        let length = (surface.textView.string as NSString).length
+        let clamped = state.clamped(toUTF16Length: length)
+        lastKnownViewport = clamped
+        surface.textView.setSelectedRange(
+            NSRange(
+                location: clamped.selection.location,
+                length: clamped.selection.length
+            )
+        )
+        surface.textView.scrollRangeToVisible(
+            NSRange(location: clamped.topVisibleUTF16Offset, length: 0)
+        )
+
+        DispatchQueue.main.async { [weak self, weak surface] in
+            guard let self, let surface else { return }
+            if clamped.fractionalYOffset > 0 {
+                let font = surface.textView.font
+                    ?? Typography.font(size: self.configuration.resolvedFontSize)
+                let lineHeight = surface.textView.layoutManager?
+                    .defaultLineHeight(for: font)
+                    ?? font.boundingRectForFont.height
+                var point = surface.scrollView.contentView.bounds.origin
+                point.y += lineHeight * clamped.fractionalYOffset
+                surface.scrollView.contentView.scroll(to: point)
+                surface.scrollView.reflectScrolledClipView(
+                    surface.scrollView.contentView
+                )
+            }
+            self.isApplyingViewport = false
+            self.captureViewport()
+        }
+    }
+
+    private func captureViewport() {
+        guard !isApplyingViewport,
+              !isApplyingExternalUpdate,
+              let surface,
+              let viewport else { return }
+        let textView = surface.textView
+        let length = (textView.string as NSString).length
+        let selection = textView.selectedRange()
+        let visibleRect = surface.scrollView.documentVisibleRect
+        let insertionPoint = NSPoint(
+            x: textView.textContainerInset.width,
+            y: visibleRect.minY + textView.textContainerInset.height
+        )
+        let topOffset = min(
+            max(0, textView.characterIndexForInsertion(at: insertionPoint)),
+            length
+        )
+        let font = textView.font
+            ?? Typography.font(size: configuration.resolvedFontSize)
+        let lineHeight = max(
+            1,
+            textView.layoutManager?.defaultLineHeight(for: font)
+                ?? font.boundingRectForFont.height
+        )
+        let clippedLineHeight = visibleRect.minY
+            .truncatingRemainder(dividingBy: lineHeight)
+        let fractionalOffset = min(
+            max(0, Double(clippedLineHeight / lineHeight)),
+            1
+        )
+        let next = EditorViewportState(
+            selection: UTF16Range(
+                location: min(selection.location, length),
+                length: min(selection.length, max(0, length - min(selection.location, length)))
+            ),
+            topVisibleUTF16Offset: topOffset,
+            fractionalYOffset: fractionalOffset
+        )
+        if viewport.wrappedValue != next {
+            lastKnownViewport = next
+            viewport.wrappedValue = next
+        } else {
+            lastKnownViewport = next
+        }
     }
 }
 
