@@ -38,11 +38,13 @@ final class EditorSession: Identifiable {
     private(set) var openingMode: EditorOpeningMode
 
     private var detachedDraftText = ""
+    private var detachedRevision: UInt64 = 0
     private(set) var relativePath = ""
     private(set) var document: Document?
     private(set) var errorMessage: String?
     private(set) var isResolvingConflict = false
     private(set) var pendingCollision: FileCollision?
+    private(set) var wordCount = 0
     var isFullScreenEnabled: Bool
 
     @ObservationIgnored
@@ -68,6 +70,33 @@ final class EditorSession: Identifiable {
 
     @ObservationIgnored
     private var autosaveErrorMonitor: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var wordCountTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var editorEditTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var editorEditEpoch: UInt64 = 0
+
+    @ObservationIgnored
+    private var pendingEditorEdits: [MarkdownTextEdit] = []
+
+    @ObservationIgnored
+    private var pendingEditorRevisionAdvance: UInt64 = 0
+
+    @ObservationIgnored
+    private var saveAfterEditorEdits = false
+
+    @ObservationIgnored
+    private(set) var editorMaterializationCount = 0
+
+    @ObservationIgnored
+    private(set) var editorPublicationCount = 0
+
+    @ObservationIgnored
+    private var wordCountRequest: (documentID: DocumentID?, revision: UInt64)?
 
     @ObservationIgnored
     private var preferredRelativePath: String?
@@ -102,25 +131,44 @@ final class EditorSession: Identifiable {
     var draftText: String {
         get { document?.text ?? detachedDraftText }
         set {
+            invalidatePendingEditorEdits()
             if let document {
                 document.replaceText(with: newValue)
+                refreshWordCount(for: newValue, revision: document.revision)
             } else {
+                guard newValue != detachedDraftText else { return }
                 detachedDraftText = newValue
+                detachedRevision &+= 1
+                refreshWordCount(for: newValue, revision: detachedRevision)
             }
         }
+    }
+
+    var contentRevision: UInt64 {
+        document?.revision ?? detachedRevision
+    }
+
+    var bufferGeneration: BufferGeneration {
+        BufferGeneration(
+            bufferID: document?.id.rawValue ?? id,
+            revision: contentRevision
+        )
     }
 
     var activeConflict: DocumentConflict? { document?.conflict }
     var requiresExplicitRestore: Bool { document?.requiresExplicitRestore == true }
     var filename: String { document?.filename ?? Document.defaultFilename }
 
-    var wordCount: Int {
-        draftText.split(whereSeparator: { $0.isWhitespace }).count
-    }
-
     var wordCountLabel: String {
         let count = wordCount
         return "\(count.formatted()) \(count == 1 ? "word" : "words")"
+    }
+
+    /// Refreshes status derived from document bytes after a clean outside
+    /// reload. Normal editor changes schedule this directly; the view calls it
+    /// when an observed document generation changes through another service.
+    func refreshDerivedStateForCurrentRevision() {
+        refreshWordCount(for: draftText, revision: contentRevision)
     }
 
     func activate(
@@ -130,6 +178,9 @@ final class EditorSession: Identifiable {
         conflictResolver: ConflictResolver? = nil,
         documentMover: DocumentMover? = nil
     ) {
+        invalidatePendingEditorEdits()
+        editorMaterializationCount = 0
+        editorPublicationCount = 0
         autosaveErrorMonitor?.cancel()
         if ownsAutosaver { autosaver?.cancel() }
         self.registry?.unbind(self)
@@ -169,13 +220,21 @@ final class EditorSession: Identifiable {
         autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
             ?? Autosaver(workspace: workspace)
         detachedDraftText = ""
+        detachedRevision = 0
         refreshRelativePath()
+        refreshWordCount(
+            for: initialDocument.document.text,
+            revision: initialDocument.document.revision
+        )
         errorMessage = initialDocument.warning
         presentedErrorContext = .general
     }
 
     func deactivate() {
+        invalidatePendingEditorEdits()
         autosaveErrorMonitor?.cancel()
+        wordCountTask?.cancel()
+        wordCountRequest = nil
         if ownsAutosaver { autosaver?.cancel() }
         registry?.unbind(self)
         autosaver = nil
@@ -186,6 +245,8 @@ final class EditorSession: Identifiable {
         workspace = nil
         document = nil
         detachedDraftText = ""
+        detachedRevision = 0
+        wordCount = 0
         relativePath = ""
         errorMessage = nil
         pendingCollision = nil
@@ -194,9 +255,46 @@ final class EditorSession: Identifiable {
     }
 
     func editorTextDidChange(_ newText: String) {
+        invalidatePendingEditorEdits()
         guard let document, let autosaver else { return }
 
-        document.replaceText(with: newText)
+        publishEditorText(newText, document: document, autosaver: autosaver)
+    }
+
+    /// Receives the UTF-16 mutation already supplied by NSTextView. Small
+    /// documents update synchronously; large document materialization runs
+    /// away from the main actor and publishes only if its base generation is
+    /// still current.
+    func editorTextDidChange(_ edit: MarkdownTextEdit) {
+        guard let document, let autosaver else { return }
+
+        let source = document.text
+        if source.utf8.count <= 256 * 1_024,
+           editorEditTask == nil,
+           pendingEditorEdits.isEmpty {
+            guard let updated = MarkdownTextEditApplier.applying(edit, to: source) else {
+                return
+            }
+            publishEditorText(updated, document: document, autosaver: autosaver)
+            return
+        }
+
+        enqueueEditorEdit(edit)
+        startEditorEditDrain(document: document, autosaver: autosaver)
+    }
+
+    private func publishEditorText(
+        _ newText: String,
+        document: Document,
+        autosaver: Autosaver,
+        revisionAdvance: UInt64 = 1
+    ) {
+
+        document.replaceTextFromEditor(
+            with: newText,
+            revisionAdvance: revisionAdvance
+        )
+        refreshWordCount(for: newText, revision: document.revision)
         autosaver.documentDidChange(document)
         refreshRelativePath()
 
@@ -214,6 +312,10 @@ final class EditorSession: Identifiable {
     }
 
     func saveNow() {
+        guard !hasPendingEditorEdits else {
+            saveAfterEditorEdits = true
+            return
+        }
         do {
             guard let document, let autosaver else { return }
             try autosaver.flush(
@@ -232,6 +334,9 @@ final class EditorSession: Identifiable {
     }
 
     func flush() throws {
+        guard !hasPendingEditorEdits else {
+            throw EditorSynchronizationError.editorMaterializationInProgress
+        }
         guard let document, let autosaver else { return }
         try autosaver.flush(document)
         refreshRelativePath()
@@ -240,6 +345,12 @@ final class EditorSession: Identifiable {
 
     @discardableResult
     func flushForLifecycleEvent() -> Bool {
+        guard !hasPendingEditorEdits else {
+            errorMessage = EditorSynchronizationError
+                .editorMaterializationInProgress.localizedDescription
+            presentedErrorContext = .save
+            return false
+        }
         guard document?.isDirty == true else { return true }
 
         do {
@@ -284,6 +395,10 @@ final class EditorSession: Identifiable {
 
     func resolveConflictNow(_ choice: ConflictChoice) async throws {
         guard let document, let workspace, let conflictResolver else { return }
+        if let editorEditTask {
+            await editorEditTask.value
+        }
+        guard self.document === document else { return }
         isResolvingConflict = true
         defer { isResolvingConflict = false }
         _ = try await conflictResolver.resolve(
@@ -292,6 +407,7 @@ final class EditorSession: Identifiable {
             workspace: workspace,
             registry: registry
         )
+        refreshWordCount(for: document.text, revision: document.revision)
         refreshRelativePath()
         clearPresentedSaveError()
     }
@@ -364,6 +480,7 @@ final class EditorSession: Identifiable {
     }
 
     func retargetDocument(to workspace: Workspace, autosaver: Autosaver) {
+        invalidatePendingEditorEdits()
         self.workspace = workspace
         self.autosaver = autosaver
         ownsAutosaver = false
@@ -383,6 +500,119 @@ private extension EditorSession {
     enum PresentedErrorContext {
         case general
         case save
+    }
+
+    enum EditorSynchronizationError: LocalizedError {
+        case editorMaterializationInProgress
+        case invalidEditorMutation
+
+        var errorDescription: String? {
+            switch self {
+            case .editorMaterializationInProgress:
+                "Clio is still applying recent edits. Keep this window open; saving will continue as soon as the document catches up."
+            case .invalidEditorMutation:
+                "Clio couldn’t apply a queued editor change. The on-screen buffer was left open and no stale bytes were saved."
+            }
+        }
+    }
+
+    var hasPendingEditorEdits: Bool {
+        editorEditTask != nil || !pendingEditorEdits.isEmpty
+    }
+
+    func enqueueEditorEdit(_ edit: MarkdownTextEdit) {
+        pendingEditorRevisionAdvance &+= 1
+        if let index = pendingEditorEdits.indices.last {
+            let previous = pendingEditorEdits[index]
+            let previousReplacementLength = (previous.replacement as NSString).length
+            if previous.replacedRange.length == 0,
+               edit.replacedRange.length == 0,
+               edit.replacedRange.location
+                    == previous.replacedRange.location + previousReplacementLength {
+                pendingEditorEdits[index] = MarkdownTextEdit(
+                    replacedRange: previous.replacedRange,
+                    replacement: previous.replacement + edit.replacement
+                )
+                return
+            }
+        }
+        pendingEditorEdits.append(edit)
+    }
+
+    func startEditorEditDrain(document: Document, autosaver: Autosaver) {
+        guard editorEditTask == nil else { return }
+
+        let epoch = editorEditEpoch
+        let documentID = document.id
+        editorEditTask = Task { @MainActor [weak self, weak document, weak autosaver] in
+            do {
+                // Gather key-repeat/burst input before paying for a large
+                // immutable model snapshot.
+                try await Task.sleep(for: .milliseconds(8))
+            } catch {
+                return
+            }
+
+            guard let self, let document, let autosaver else { return }
+            while self.editorEditEpoch == epoch,
+                  self.document === document,
+                  self.autosaver === autosaver,
+                  document.id == documentID,
+                  !self.pendingEditorEdits.isEmpty {
+                let edits = self.pendingEditorEdits
+                let revisionAdvance = self.pendingEditorRevisionAdvance
+                self.pendingEditorEdits.removeAll(keepingCapacity: true)
+                self.pendingEditorRevisionAdvance = 0
+
+                let baseRevision = document.revision
+                let baseSource = document.text
+                self.editorMaterializationCount += 1
+                let worker = Task.detached(priority: .userInitiated) {
+                    MarkdownTextEditApplier.applying(edits, to: baseSource)
+                }
+                guard let updated = await worker.value,
+                      !Task.isCancelled,
+                      self.editorEditEpoch == epoch,
+                      self.document === document,
+                      self.autosaver === autosaver,
+                      document.revision == baseRevision else {
+                    if self.editorEditEpoch == epoch {
+                        self.pendingEditorEdits.removeAll(keepingCapacity: true)
+                        self.pendingEditorRevisionAdvance = 0
+                        self.editorEditTask = nil
+                        self.errorMessage = EditorSynchronizationError
+                            .invalidEditorMutation.localizedDescription
+                        self.presentedErrorContext = .save
+                    }
+                    return
+                }
+
+                self.editorPublicationCount += 1
+                self.publishEditorText(
+                    updated,
+                    document: document,
+                    autosaver: autosaver,
+                    revisionAdvance: revisionAdvance
+                )
+                await Task.yield()
+            }
+
+            guard self.editorEditEpoch == epoch else { return }
+            self.editorEditTask = nil
+            if self.saveAfterEditorEdits {
+                self.saveAfterEditorEdits = false
+                self.saveNow()
+            }
+        }
+    }
+
+    func invalidatePendingEditorEdits() {
+        editorEditEpoch &+= 1
+        editorEditTask?.cancel()
+        editorEditTask = nil
+        pendingEditorEdits.removeAll(keepingCapacity: true)
+        pendingEditorRevisionAdvance = 0
+        saveAfterEditorEdits = false
     }
 
     func loadInitialDocument(
@@ -446,6 +676,62 @@ private extension EditorSession {
                 self.clearPresentedSaveError()
             }
         }
+    }
+
+    func refreshWordCount(for source: String, revision: UInt64) {
+        let request = (documentID: document?.id, revision: revision)
+        guard wordCountRequest?.documentID != request.documentID
+                || wordCountRequest?.revision != request.revision else { return }
+        wordCountRequest = request
+        wordCountTask?.cancel()
+
+        if source.utf8.count <= 256 * 1_024 {
+            wordCount = Self.countWords(in: source)
+            return
+        }
+
+        wordCountTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            let worker = Task.detached(priority: .utility) {
+                Self.countWords(in: source, checkingCancellation: true)
+            }
+            let count = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self,
+                  self.wordCountRequest?.documentID == request.documentID,
+                  self.wordCountRequest?.revision == request.revision else { return }
+            self.wordCount = count
+        }
+    }
+
+    nonisolated static func countWords(
+        in source: String,
+        checkingCancellation: Bool = false
+    ) -> Int {
+        var count = 0
+        var isInsideWord = false
+        var scanned = 0
+        for scalar in source.unicodeScalars {
+            if scalar.properties.isWhitespace {
+                isInsideWord = false
+            } else if !isInsideWord {
+                count += 1
+                isInsideWord = true
+            }
+            scanned += scalar.utf8.count
+            if checkingCancellation, scanned >= 65_536 {
+                if Task.isCancelled { return count }
+                scanned = 0
+            }
+        }
+        return count
     }
 
     func presentError(

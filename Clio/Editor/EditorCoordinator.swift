@@ -1,15 +1,14 @@
 import AppKit
-import SwiftUI
 
 @MainActor
 final class EditorCoordinator: NSObject, NSTextViewDelegate {
-    private var text: Binding<String>
     private var configuration: EditorConfiguration
+    private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private weak var surface: EditorContainerView?
 
     private let typewriterScroller = TypewriterScroller()
     private let focusDimmer = FocusDimmer()
-    private let markdownEngine = IncrementalMarkdownHighlighter()
+    private var markdownEngine = IncrementalMarkdownHighlighter()
     private let markdownHighlighter = MarkdownTextKitHighlighter()
     private let markdownEditingController = MarkdownEditingController()
     private var isApplyingExternalUpdate = false
@@ -19,11 +18,21 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var hasAppliedConfiguration = false
     private var pendingMarkdownEdit: MarkdownTextEdit?
     private var markdownTask: Task<Void, Never>?
+    private var markdownEditTask: Task<Void, Never>?
+    private var pendingHighlightEdits: [MarkdownTextEdit] = []
+    private var markdownEngineEpoch: UInt64 = 0
     private var markdownRequestSequence: UInt64 = 0
+    private var renderedContentGeneration: BufferGeneration?
+    private var pendingEditorRevisionAdvances: UInt64 = 0
+    private(set) var externalBufferReplacementCount = 0
+    private(set) var acceptedEditorMutationCount = 0
 
-    init(text: Binding<String>, configuration: EditorConfiguration) {
-        self.text = text
+    init(
+        configuration: EditorConfiguration,
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
+    ) {
         self.configuration = configuration
+        self.onTextEdit = onTextEdit
     }
 
     func attach(to surface: EditorContainerView) {
@@ -52,8 +61,13 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
     }
 
-    func update(text: Binding<String>, configuration: EditorConfiguration) {
-        self.text = text
+    func update(
+        text: String,
+        contentGeneration: BufferGeneration,
+        configuration: EditorConfiguration,
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
+    ) {
+        self.onTextEdit = onTextEdit
         guard let surface else { return }
 
         let configurationChanged = self.configuration != configuration
@@ -72,9 +86,25 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             }
         }
 
-        replaceEditorTextIfNeeded(with: text.wrappedValue, in: surface.textView)
-        if markdownHighlighter.lastUpdate == nil {
-            scheduleMarkdownUpdate(source: surface.textView.string, edit: nil)
+        if let renderedContentGeneration {
+            if contentGeneration != renderedContentGeneration {
+                let expectedEditorRevision = renderedContentGeneration.revision
+                    &+ pendingEditorRevisionAdvances
+                if contentGeneration.bufferID == renderedContentGeneration.bufferID,
+                   pendingEditorRevisionAdvances > 0,
+                   contentGeneration.revision > renderedContentGeneration.revision,
+                   contentGeneration.revision <= expectedEditorRevision {
+                    pendingEditorRevisionAdvances -= contentGeneration.revision
+                        - renderedContentGeneration.revision
+                } else {
+                    replaceEditorText(with: text, in: surface.textView)
+                    pendingEditorRevisionAdvances = 0
+                }
+                self.renderedContentGeneration = contentGeneration
+            }
+        } else {
+            replaceEditorText(with: text, in: surface.textView)
+            renderedContentGeneration = contentGeneration
         }
         typewriterScroller.updateViewportInsets(in: surface, configuration: configuration)
         focusDimmer.apply(to: surface.textView, configuration: configuration)
@@ -84,13 +114,17 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         guard !isApplyingExternalUpdate, !isApplyingHighlight,
               let textView = notification.object as? NSTextView else { return }
 
-        let newText = textView.string
-        if text.wrappedValue != newText {
-            text.wrappedValue = newText
+        guard let edit = pendingMarkdownEdit else {
+            // NSTextView character mutations are preceded by
+            // shouldChangeTextIn. Refuse an untracked mutation rather than
+            // synchronously snapshotting a potentially 50 MiB buffer.
+            return
         }
-        let edit = pendingMarkdownEdit
         pendingMarkdownEdit = nil
-        scheduleMarkdownUpdate(source: newText, edit: edit)
+        pendingEditorRevisionAdvances &+= 1
+        acceptedEditorMutationCount += 1
+        onTextEdit(edit)
+        scheduleMarkdownEdit(edit)
 
         typewriterScroller.resumeAfterEdit()
         focusDimmer.apply(to: textView, configuration: configuration)
@@ -131,9 +165,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         return true
     }
 
-    private func replaceEditorTextIfNeeded(with newText: String, in textView: EditorTextView) {
-        guard textView.string != newText else { return }
-
+    private func replaceEditorText(with newText: String, in textView: EditorTextView) {
+        externalBufferReplacementCount += 1
         let selection = textView.selectedRange()
         let visibleOrigin = textView.enclosingScrollView?.contentView.bounds.origin
         let undoWasEnabled = textView.allowsUndo
@@ -151,7 +184,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
         textView.applyBaseAttributes(for: configuration)
 
-        let length = (newText as NSString).length
+        let length = textView.textStorage?.length ?? (newText as NSString).length
         let location = min(selection.location, length)
         let selectedLength = min(selection.length, length - location)
         textView.setSelectedRange(NSRange(location: location, length: selectedLength))
@@ -164,51 +197,135 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
         isApplyingExternalUpdate = false
         pendingMarkdownEdit = nil
-        scheduleMarkdownUpdate(source: newText, edit: nil)
+        scheduleMarkdownReplacement(source: newText)
     }
 
-    private func scheduleMarkdownUpdate(source: String, edit: MarkdownTextEdit?) {
+    private func scheduleMarkdownReplacement(source: String) {
         markdownTask?.cancel()
+        markdownEditTask?.cancel()
+        markdownEditTask = nil
+        pendingHighlightEdits.removeAll(keepingCapacity: true)
+        markdownEngineEpoch &+= 1
+        markdownEngine = IncrementalMarkdownHighlighter()
         markdownRequestSequence &+= 1
         let requestSequence = markdownRequestSequence
         let engine = markdownEngine
         markdownTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(18))
-                let update = try await engine.update(source: source, edit: edit)
+                let update = try await engine.update(source: source)
                 try Task.checkCancellation()
-                guard let self, let surface = self.surface,
-                      self.markdownRequestSequence == requestSequence,
-                      (surface.textView.string as NSString).length == update.sourceUTF16Length else {
-                    return
-                }
-                self.isApplyingHighlight = true
-                self.markdownHighlighter.apply(
-                    update,
-                    to: surface.textView,
-                    configuration: self.configuration
-                )
-                self.isApplyingHighlight = false
-                self.focusDimmer.apply(
-                    to: surface.textView,
-                    configuration: self.configuration
-                )
+                self?.applyMarkdownUpdate(update, requestSequence: requestSequence)
             } catch is CancellationError {
                 return
             } catch {
-                guard let self, let surface = self.surface else { return }
-                self.isApplyingHighlight = true
-                self.markdownHighlighter.clear(
-                    in: surface.textView,
-                    configuration: self.configuration
-                )
-                self.isApplyingHighlight = false
+                self?.clearMarkdownHighlighting(requestSequence: requestSequence)
             }
         }
     }
 
+    /// Local edits form a serial delta stream. Older highlights may be stale
+    /// and are not painted, but every delta is applied to the actor-owned
+    /// source mirror in order, so rapid typing never requires a fresh full
+    /// NSTextView snapshot.
+    private func scheduleMarkdownEdit(_ edit: MarkdownTextEdit) {
+        enqueueHighlightEdit(edit)
+        markdownRequestSequence &+= 1
+        guard markdownEditTask == nil else { return }
+
+        let predecessor = markdownTask
+        let engineEpoch = markdownEngineEpoch
+        let engine = markdownEngine
+        markdownEditTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(8))
+            } catch {
+                return
+            }
+            await predecessor?.value
+
+            guard let self else { return }
+            while self.markdownEngineEpoch == engineEpoch,
+                  !self.pendingHighlightEdits.isEmpty {
+                let edits = self.pendingHighlightEdits
+                self.pendingHighlightEdits.removeAll(keepingCapacity: true)
+                let requestSequence = self.markdownRequestSequence
+                do {
+                    try Task.checkCancellation()
+                    let update = try await engine.update(edits: edits)
+                    try Task.checkCancellation()
+                    self.applyMarkdownUpdate(
+                        update,
+                        requestSequence: requestSequence
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    if self.markdownEngineEpoch == engineEpoch {
+                        self.pendingHighlightEdits.removeAll(keepingCapacity: true)
+                        self.markdownEditTask = nil
+                        self.clearMarkdownHighlighting(
+                            requestSequence: self.markdownRequestSequence
+                        )
+                    }
+                    return
+                }
+                await Task.yield()
+            }
+            guard self.markdownEngineEpoch == engineEpoch else { return }
+            self.markdownEditTask = nil
+        }
+    }
+
+    private func enqueueHighlightEdit(_ edit: MarkdownTextEdit) {
+        if let index = pendingHighlightEdits.indices.last {
+            let previous = pendingHighlightEdits[index]
+            let previousReplacementLength = (previous.replacement as NSString).length
+            if previous.replacedRange.length == 0,
+               edit.replacedRange.length == 0,
+               edit.replacedRange.location
+                    == previous.replacedRange.location + previousReplacementLength {
+                pendingHighlightEdits[index] = MarkdownTextEdit(
+                    replacedRange: previous.replacedRange,
+                    replacement: previous.replacement + edit.replacement
+                )
+                return
+            }
+        }
+        pendingHighlightEdits.append(edit)
+    }
+
+    private func applyMarkdownUpdate(
+        _ update: MarkdownHighlightUpdate,
+        requestSequence: UInt64
+    ) {
+        guard let surface,
+              markdownRequestSequence == requestSequence,
+              surface.textView.textStorage?.length == update.sourceUTF16Length else {
+            return
+        }
+        isApplyingHighlight = true
+        markdownHighlighter.apply(
+            update,
+            to: surface.textView,
+            configuration: configuration
+        )
+        isApplyingHighlight = false
+        focusDimmer.apply(to: surface.textView, configuration: configuration)
+    }
+
+    private func clearMarkdownHighlighting(requestSequence: UInt64) {
+        guard markdownRequestSequence == requestSequence, let surface else { return }
+        isApplyingHighlight = true
+        markdownHighlighter.clear(
+            in: surface.textView,
+            configuration: configuration
+        )
+        isApplyingHighlight = false
+    }
+
     deinit {
         markdownTask?.cancel()
+        markdownEditTask?.cancel()
     }
 }
 

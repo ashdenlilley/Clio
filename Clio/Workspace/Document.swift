@@ -83,8 +83,17 @@ final class Document: Identifiable {
 
     func replaceText(with newText: String) {
         guard newText != text else { return }
+        replaceTextFromEditor(with: newText)
+    }
+
+    /// NSTextView only reports `textDidChange` for a real character mutation,
+    /// so the editor path can avoid a second whole-buffer equality scan.
+    func replaceTextFromEditor(
+        with newText: String,
+        revisionAdvance: UInt64 = 1
+    ) {
         text = newText
-        revision &+= 1
+        revision &+= max(1, revisionAdvance)
         isDirty = true
         if conflict == nil {
             syncState = .dirty(base: expectedDiskRevision)

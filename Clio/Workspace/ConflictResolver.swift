@@ -227,26 +227,10 @@ private extension ConflictResolver {
 
 extension DocumentConflict {
     var conciseDiff: String {
-        let localLines = clio.source.split(separator: "\n", omittingEmptySubsequences: false)
-        let externalLines = external.source.split(separator: "\n", omittingEmptySubsequences: false)
-        let maximum = max(localLines.count, externalLines.count)
-        var removed: [String] = []
-        var added: [String] = []
-
-        for index in 0..<maximum {
-            let local = index < localLines.count ? String(localLines[index]) : nil
-            let outside = index < externalLines.count ? String(externalLines[index]) : nil
-            guard local != outside else { continue }
-            if let local, removed.count < 3 { removed.append("− \(local)") }
-            if let outside, added.count < 3 { added.append("+ \(outside)") }
-        }
-
-        let changed = (0..<maximum).reduce(into: 0) { count, index in
-            let local = index < localLines.count ? localLines[index] : nil
-            let outside = index < externalLines.count ? externalLines[index] : nil
-            if local != outside { count += 1 }
-        }
-        let preview = (removed + added).joined(separator: "\n")
-        return changed > 6 ? "\(preview)\n… \(changed - 6) more changed lines" : preview
+        let preview = ConflictPreviewBuilder.makePreview(
+            local: clio.data,
+            external: external.data
+        )
+        return preview == "The text is identical." ? "" : preview
     }
 }

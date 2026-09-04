@@ -28,7 +28,7 @@ final class MarkdownIncrementalTests: XCTestCase {
         let changed = NSMutableString(string: source)
         changed.replaceCharacters(in: oldRange, with: "world")
         let newSource = changed as String
-        let incremental = try await engine.update(source: newSource, edit: edit)
+        let incremental = try await engine.update(edit: edit)
         let full = try await SourcePreservingMarkdownParser.parse(source: newSource)
 
         XCTAssertLessThan(incremental.parsedUTF16Length, (newSource as NSString).length)

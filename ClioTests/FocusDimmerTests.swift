@@ -53,4 +53,22 @@ final class FocusDimmerTests: XCTestCase {
 
         XCTAssertEqual(range, source.range(of: "- one\n  continuation\n- two\n"))
     }
+
+    func testLargeDocumentFocusDiscoveryIsBoundedNearCaret() {
+        let prefix = String(repeating: "paragraph\n\n", count: 900_000)
+        let text = prefix + "tail thought\ncontinues\n"
+        let source = text as NSString
+        let caret = source.range(of: "tail thought", options: .backwards).location
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        let range = FocusDimmer.focusRange(
+            in: source,
+            selection: NSRange(location: caret, length: 0)
+        )
+
+        XCTAssertEqual(range, source.range(of: "tail thought\ncontinues\n", options: .backwards))
+        XCTAssertLessThan(started.duration(to: clock.now), .milliseconds(500))
+        XCTAssertLessThan(FocusDimmer.maximumSynchronousScanLength, source.length)
+    }
 }

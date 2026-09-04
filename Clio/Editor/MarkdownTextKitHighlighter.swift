@@ -28,7 +28,7 @@ final class MarkdownTextKitHighlighter {
 
         storage.beginEditing()
         if invalidated.length > 0 { storage.addAttributes(base, range: invalidated) }
-        for span in update.spans where span.range.intersects(update.invalidatedRange) {
+        for span in update.applicationSpans {
             let range = span.range.clamped(toUTF16Length: storage.length).nsRange
             guard range.length > 0 else { continue }
             let currentFont = storage.attribute(
@@ -78,6 +78,7 @@ final class MarkdownTextKitHighlighter {
                 length: (textView.string as NSString).length
             ),
             spans: lastUpdate.spans,
+            applicationSpans: lastUpdate.spans,
             parsedUTF16Length: lastUpdate.parsedUTF16Length
         ), to: textView, configuration: configuration)
     }

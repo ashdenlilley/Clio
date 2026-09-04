@@ -39,31 +39,50 @@ struct EditorConfiguration: Equatable {
 }
 
 struct EditorView: NSViewRepresentable {
-    @Binding private var text: String
+    private var text: String
+    private var contentGeneration: BufferGeneration
     private var configuration: EditorConfiguration
+    private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
 
     init(
-        text: Binding<String>,
-        configuration: EditorConfiguration = EditorConfiguration()
+        text: String,
+        contentGeneration: BufferGeneration,
+        configuration: EditorConfiguration = EditorConfiguration(),
+        onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void
     ) {
-        _text = text
+        self.text = text
+        self.contentGeneration = contentGeneration
         self.configuration = configuration
+        self.onTextEdit = onTextEdit
     }
 
     func makeCoordinator() -> EditorCoordinator {
-        EditorCoordinator(text: $text, configuration: configuration)
+        EditorCoordinator(
+            configuration: configuration,
+            onTextEdit: onTextEdit
+        )
     }
 
     func makeNSView(context: Context) -> EditorContainerView {
         let textView = EditorTextView.makeTextKit2TextView()
         let surface = EditorContainerView(textView: textView)
         context.coordinator.attach(to: surface)
-        context.coordinator.update(text: $text, configuration: configuration)
+        context.coordinator.update(
+            text: text,
+            contentGeneration: contentGeneration,
+            configuration: configuration,
+            onTextEdit: onTextEdit
+        )
         return surface
     }
 
     func updateNSView(_ nsView: EditorContainerView, context: Context) {
-        context.coordinator.update(text: $text, configuration: configuration)
+        context.coordinator.update(
+            text: text,
+            contentGeneration: contentGeneration,
+            configuration: configuration,
+            onTextEdit: onTextEdit
+        )
     }
 }
 

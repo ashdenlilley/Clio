@@ -34,10 +34,8 @@ struct ContentView: View {
             if appState.isWorkspaceReady, editorSession.isReady {
                 VStack(spacing: 0) {
                     EditorView(
-                        text: Binding(
-                            get: { editorSession.draftText },
-                            set: { editorSession.editorTextDidChange($0) }
-                        ),
+                        text: editorSession.draftText,
+                        contentGeneration: editorSession.bufferGeneration,
                         configuration: EditorConfiguration(
                             fontSize: CGFloat(appState.fontSize),
                             measure: appState.measure,
@@ -47,7 +45,8 @@ struct ContentView: View {
                             typewriterAnchor: CGFloat(appState.typewriterAnchor),
                             isFocusModeEnabled: appState.isFocusModeEnabled,
                             focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
-                        )
+                        ),
+                        onTextEdit: editorSession.editorTextDidChange
                     )
 
                     StatusLine(
@@ -56,6 +55,9 @@ struct ContentView: View {
                         fontSize: appState.fontSize,
                         accent: appState.accent
                     )
+                }
+                .task(id: editorSession.contentRevision) {
+                    editorSession.refreshDerivedStateForCurrentRevision()
                 }
                 .overlay(alignment: .top) {
                     if editorSession.requiresExplicitRestore {
@@ -173,6 +175,7 @@ private struct ConflictResolutionView: View {
     let conflict: DocumentConflict
     let isResolving: Bool
     let resolve: (ConflictChoice) -> Void
+    @State private var preview = "Preparing a bounded preview…"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -196,7 +199,7 @@ private struct ConflictResolutionView: View {
             .font(.custom(Typography.family, fixedSize: 12))
 
             ScrollView {
-                Text(conflict.conciseDiff.isEmpty ? "The text is identical." : conflict.conciseDiff)
+                Text(preview)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
@@ -218,6 +221,9 @@ private struct ConflictResolutionView: View {
         .frame(width: 560)
         .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .contain)
+        .task(id: conflict.id) {
+            preview = await ConflictPreviewBuilder.preview(for: conflict)
+        }
     }
 }
 

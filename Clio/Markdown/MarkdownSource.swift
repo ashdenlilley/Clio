@@ -10,6 +10,32 @@ struct MarkdownTextEdit: Equatable, Sendable {
     }
 }
 
+/// Applies AppKit's UTF-16 edit contract without asking NSTextView to
+/// materialize its complete buffer. Callers choose the executor: live editor
+/// model synchronization uses a background task for large buffers, while the
+/// Markdown actor uses it to keep its own source mirror current.
+enum MarkdownTextEditApplier {
+    static func applying(_ edit: MarkdownTextEdit, to source: String) -> String? {
+        applying([edit], to: source)
+    }
+
+    static func applying(_ edits: [MarkdownTextEdit], to source: String) -> String? {
+        let mutable = NSMutableString(string: source)
+        for edit in edits {
+            let range = edit.replacedRange
+            guard range.location <= mutable.length,
+                  range.length <= mutable.length - range.location else {
+                return nil
+            }
+            mutable.replaceCharacters(
+                in: NSRange(location: range.location, length: range.length),
+                with: edit.replacement
+            )
+        }
+        return (mutable.copy() as! NSString) as String
+    }
+}
+
 struct MarkdownInvalidation: Equatable, Sendable {
     let oldRange: UTF16Range
     let newRange: UTF16Range
@@ -31,12 +57,32 @@ enum MarkdownInvalidationPlanner {
         let mutable = NSMutableString(string: source)
         mutable.replaceCharacters(in: oldRange, with: edit.replacement)
         let newSource = mutable as String
+        return ranges(
+            for: edit,
+            oldSource: source,
+            newSource: newSource
+        )
+    }
+
+    static func ranges(
+        for edit: MarkdownTextEdit,
+        oldSource: String,
+        newSource: String
+    ) -> MarkdownInvalidation {
+        let oldText = oldSource as NSString
+        let oldRange = NSRange(
+            location: min(edit.replacedRange.location, oldText.length),
+            length: min(
+                edit.replacedRange.length,
+                max(0, oldText.length - min(edit.replacedRange.location, oldText.length))
+            )
+        )
         let insertedLength = (edit.replacement as NSString).length
 
         return MarkdownInvalidation(
             oldRange: expandedBlockRange(
                 around: oldRange,
-                in: source
+                in: oldSource
             ),
             newRange: expandedBlockRange(
                 around: NSRange(location: oldRange.location, length: insertedLength),

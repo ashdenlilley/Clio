@@ -4,20 +4,46 @@ import AppKit
 /// attributed source remains untouched, so syntax highlighting and copied text
 /// retain their own attributes and exact characters.
 final class FocusDimmer {
-    func apply(to textView: NSTextView, configuration: EditorConfiguration) {
-        clear(in: textView)
-        guard configuration.isFocusModeEnabled,
-              let focusRange = Self.focusRange(
-                in: textView.string,
-                selection: textView.selectedRange()
-              ),
-              let contentStorage = textView.textContentStorage,
-              let layoutManager = textView.textLayoutManager else { return }
+    /// Bounds synchronous structural discovery when a pathological document has
+    /// no nearby paragraph boundary. Full Markdown parsing remains off-main.
+    static let maximumSynchronousScanLength = 64 * 1_024
 
-        let sourceLength = (textView.string as NSString).length
-        let dimmedColor = Palette.foreground.withAlphaComponent(
-            configuration.resolvedFocusDimmingOpacity
-        )
+    private var renderedRanges: [NSTextRange] = []
+    private var lastFocusRange: NSRange?
+    private var lastDocumentLength = -1
+    private var lastOpacity: CGFloat = -1
+
+    func apply(to textView: NSTextView, configuration: EditorConfiguration) {
+        guard configuration.isFocusModeEnabled,
+              let storage = textView.textStorage,
+              let contentStorage = textView.textContentStorage,
+              let layoutManager = textView.textLayoutManager else {
+            clear(in: textView)
+            return
+        }
+
+        let sourceLength = storage.length
+        let opacity = configuration.resolvedFocusDimmingOpacity
+        let selection = textView.selectedRange()
+        if let lastFocusRange,
+           sourceLength == lastDocumentLength,
+           opacity == lastOpacity,
+           selection.location >= lastFocusRange.location,
+           selection.location < NSMaxRange(lastFocusRange),
+           NSMaxRange(selection) <= NSMaxRange(lastFocusRange) {
+            return
+        }
+        guard let focusRange = Self.focusRange(
+            in: storage.mutableString,
+            selection: selection
+        ) else {
+            clear(in: textView)
+            return
+        }
+
+        clearRenderingRanges(using: layoutManager)
+        let dimmedColor = Palette.foreground.withAlphaComponent(opacity)
+        var nextRenderedRanges: [NSTextRange] = []
 
         if focusRange.location > 0,
            let leadingRange = Self.textRange(
@@ -29,6 +55,7 @@ final class FocusDimmer {
                 [.foregroundColor: dimmedColor],
                 for: leadingRange
             )
+            nextRenderedRanges.append(leadingRange)
         }
 
         let focusEnd = NSMaxRange(focusRange)
@@ -42,119 +69,155 @@ final class FocusDimmer {
                 [.foregroundColor: dimmedColor],
                 for: trailingRange
             )
+            nextRenderedRanges.append(trailingRange)
         }
+
+        renderedRanges = nextRenderedRanges
+        lastFocusRange = focusRange
+        lastDocumentLength = sourceLength
+        lastOpacity = opacity
     }
 
     func clear(in textView: NSTextView) {
-        guard let contentStorage = textView.textContentStorage,
-              let layoutManager = textView.textLayoutManager else { return }
-        layoutManager.invalidateRenderingAttributes(for: contentStorage.documentRange)
+        if let layoutManager = textView.textLayoutManager {
+            clearRenderingRanges(using: layoutManager)
+        }
+        lastFocusRange = nil
+        lastDocumentLength = -1
+        lastOpacity = -1
     }
 
     /// Returns the current unit of thought, or `nil` when a selection crosses
     /// units and focus mode should be suppressed.
     static func focusRange(in string: String, selection: NSRange) -> NSRange? {
-        let source = string as NSString
-        let lines = Line.records(in: source)
-        guard !lines.isEmpty else { return NSRange(location: 0, length: 0) }
+        focusRange(in: string as NSString, selection: selection)
+    }
 
-        let sourceLength = source.length
-        let startOffset = min(selection.location, sourceLength)
-        let endOffset: Int
-        if selection.length == 0 {
-            endOffset = startOffset
-        } else {
-            endOffset = min(max(startOffset, NSMaxRange(selection) - 1), sourceLength)
-        }
-
-        guard let startIndex = Line.index(containing: startOffset, in: lines),
-              let endIndex = Line.index(containing: endOffset, in: lines) else {
-            return NSRange(location: 0, length: sourceLength)
-        }
-
-        let firstUnit = unitRange(containing: startIndex, lines: lines)
-        let lastUnit = unitRange(containing: endIndex, lines: lines)
+    static func focusRange(in source: NSString, selection: NSRange) -> NSRange? {
+        guard source.length > 0 else { return NSRange(location: 0, length: 0) }
+        let startOffset = min(selection.location, source.length)
+        let endOffset = selection.length == 0
+            ? startOffset
+            : min(max(startOffset, NSMaxRange(selection) - 1), source.length)
+        let firstUnit = unitRange(containing: startOffset, in: source)
+        let lastUnit = unitRange(containing: endOffset, in: source)
         guard firstUnit == lastUnit else { return nil }
         return firstUnit
     }
 
-    private static func unitRange(containing index: Int, lines: [Line]) -> NSRange {
-        if let fencedRange = fencedBlock(containing: index, lines: lines) {
+    private func clearRenderingRanges(using layoutManager: NSTextLayoutManager) {
+        for range in renderedRanges {
+            layoutManager.invalidateRenderingAttributes(for: range)
+        }
+        renderedRanges.removeAll(keepingCapacity: true)
+    }
+
+    private static func unitRange(containing offset: Int, in source: NSString) -> NSRange {
+        if let fencedRange = fencedBlock(containing: offset, in: source) {
             return fencedRange
         }
 
-        let current = lines[index]
-        if current.isBlank {
+        let current = Line(at: offset, in: source)
+        if current.isBlank || current.isHeading || current.isThematicBreak
+            || current.fenceMarker != nil {
             return current.range
         }
-
         if current.isListItem {
-            return contiguousRange(containing: index, lines: lines) { line in
-                !line.isBlank && (line.isListItem || line.isIndentedContinuation)
+            return contiguousRange(around: current, in: source) {
+                !$0.isBlank && ($0.isListItem || $0.isIndentedContinuation)
             }
         }
-
         if current.isBlockquote {
-            return contiguousRange(containing: index, lines: lines) { line in
-                line.isBlockquote
-            }
+            return contiguousRange(around: current, in: source) { $0.isBlockquote }
         }
-
-        if current.isHeading || current.isThematicBreak || current.fenceMarker != nil {
-            return current.range
-        }
-
-        return contiguousRange(containing: index, lines: lines) { line in
-            !line.isBlank
-                && !line.isListItem
-                && !line.isBlockquote
-                && !line.isHeading
-                && !line.isThematicBreak
-                && line.fenceMarker == nil
+        return contiguousRange(around: current, in: source) {
+            !$0.isBlank
+                && !$0.isListItem
+                && !$0.isBlockquote
+                && !$0.isHeading
+                && !$0.isThematicBreak
+                && $0.fenceMarker == nil
         }
     }
 
-    private static func fencedBlock(containing index: Int, lines: [Line]) -> NSRange? {
-        var opening: (index: Int, marker: FenceMarker)?
+    private static func fencedBlock(containing offset: Int, in source: NSString) -> NSRange? {
+        let target = Line(at: offset, in: source)
+        let scanStart = max(0, target.range.location - maximumSynchronousScanLength)
+        var cursor = scanStart == 0
+            ? 0
+            : source.lineRange(for: NSRange(location: scanStart, length: 0)).location
+        var opening: (line: Line, marker: FenceMarker)?
 
-        for lineIndex in lines.indices {
-            guard let marker = lines[lineIndex].fenceMarker else { continue }
-
-            if let active = opening {
-                guard marker.character == active.marker.character,
-                      marker.count >= active.marker.count else { continue }
-                if index >= active.index && index <= lineIndex {
-                    return union(lines[active.index].range, lines[lineIndex].range)
+        while cursor <= target.range.location, cursor < source.length {
+            let line = Line(at: cursor, in: source)
+            if let marker = line.fenceMarker {
+                if let active = opening,
+                   marker.character == active.marker.character,
+                   marker.count >= active.marker.count,
+                   marker.hasInfoString == false {
+                    if target.range.location <= line.range.location {
+                        return union(active.line.range, line.range)
+                    }
+                    opening = nil
+                } else if opening == nil {
+                    opening = (line, marker)
                 }
-                opening = nil
-            } else {
-                opening = (lineIndex, marker)
             }
+            let next = NSMaxRange(line.range)
+            guard next > cursor else { break }
+            cursor = next
         }
 
-        if let active = opening, index >= active.index {
-            return union(lines[active.index].range, lines[lines.count - 1].range)
+        guard let active = opening,
+              target.range.location >= active.line.range.location else { return nil }
+        let scanEnd = min(source.length, target.range.location + maximumSynchronousScanLength)
+        cursor = max(NSMaxRange(target.range), NSMaxRange(active.line.range))
+        while cursor < scanEnd {
+            let line = Line(at: cursor, in: source)
+            if let marker = line.fenceMarker,
+               marker.character == active.marker.character,
+               marker.count >= active.marker.count,
+               marker.hasInfoString == false {
+                return union(active.line.range, line.range)
+            }
+            let next = NSMaxRange(line.range)
+            guard next > cursor else { break }
+            cursor = next
         }
-        return nil
+        let boundedEnd = min(source.length, max(NSMaxRange(target.range), scanEnd))
+        return NSRange(
+            location: active.line.range.location,
+            length: boundedEnd - active.line.range.location
+        )
     }
 
     private static func contiguousRange(
-        containing index: Int,
-        lines: [Line],
+        around current: Line,
+        in source: NSString,
         includes: (Line) -> Bool
     ) -> NSRange {
-        var lower = index
-        var upper = index
-        while lower > 0, includes(lines[lower - 1]) { lower -= 1 }
-        while upper + 1 < lines.count, includes(lines[upper + 1]) { upper += 1 }
-        return union(lines[lower].range, lines[upper].range)
+        let lowerBound = max(0, current.range.location - maximumSynchronousScanLength)
+        let upperBound = min(source.length, NSMaxRange(current.range) + maximumSynchronousScanLength)
+        var lower = current.range.location
+        var upper = NSMaxRange(current.range)
+
+        while lower > lowerBound {
+            let previous = Line(at: lower - 1, in: source)
+            guard includes(previous) else { break }
+            lower = previous.range.location
+        }
+        while upper < upperBound {
+            let next = Line(at: upper, in: source)
+            guard includes(next) else { break }
+            let nextUpper = NSMaxRange(next.range)
+            guard nextUpper > upper else { break }
+            upper = nextUpper
+        }
+        return NSRange(location: lower, length: upper - lower)
     }
 
     private static func union(_ first: NSRange, _ last: NSRange) -> NSRange {
-        NSRange(
-            location: first.location,
-            length: NSMaxRange(last) - first.location
-        )
+        NSRange(location: first.location, length: NSMaxRange(last) - first.location)
     }
 
     private static func textRange(
@@ -178,16 +241,41 @@ final class FocusDimmer {
 private struct FenceMarker {
     let character: Character
     let count: Int
+    let hasInfoString: Bool
 }
 
 private struct Line {
     let range: NSRange
     let content: String
 
-    var trimmed: String {
-        content.trimmingCharacters(in: .whitespaces)
+    init(at offset: Int, in source: NSString) {
+        if source.length == 0 {
+            range = NSRange(location: 0, length: 0)
+            content = ""
+            return
+        }
+        if offset >= source.length {
+            range = NSRange(location: source.length, length: 0)
+            content = ""
+            return
+        }
+        range = source.lineRange(for: NSRange(
+            location: min(max(0, offset), source.length - 1),
+            length: 0
+        ))
+        var contentEnd = NSMaxRange(range)
+        while contentEnd > range.location {
+            let scalar = source.character(at: contentEnd - 1)
+            guard scalar == 0x0A || scalar == 0x0D else { break }
+            contentEnd -= 1
+        }
+        content = source.substring(with: NSRange(
+            location: range.location,
+            length: contentEnd - range.location
+        ))
     }
 
+    var trimmed: String { content.trimmingCharacters(in: .whitespaces) }
     var isBlank: Bool { trimmed.isEmpty }
 
     var isListItem: Bool {
@@ -198,8 +286,7 @@ private struct Line {
     }
 
     var isIndentedContinuation: Bool {
-        guard !isBlank else { return false }
-        return content.hasPrefix("  ") || content.hasPrefix("\t")
+        !isBlank && (content.hasPrefix("  ") || content.hasPrefix("\t"))
     }
 
     var isBlockquote: Bool {
@@ -224,50 +311,11 @@ private struct Line {
               first == "`" || first == "~" else { return nil }
         let count = candidate.prefix(while: { $0 == first }).count
         guard count >= 3 else { return nil }
-        return FenceMarker(character: first, count: count)
-    }
-
-    static func records(in source: NSString) -> [Line] {
-        guard source.length > 0 else {
-            return [Line(range: NSRange(location: 0, length: 0), content: "")]
-        }
-
-        var result: [Line] = []
-        var location = 0
-        while location < source.length {
-            let range = source.lineRange(for: NSRange(location: location, length: 0))
-            var contentEnd = NSMaxRange(range)
-            while contentEnd > range.location {
-                let scalar = source.character(at: contentEnd - 1)
-                guard scalar == 0x0A || scalar == 0x0D else { break }
-                contentEnd -= 1
-            }
-            let contentRange = NSRange(
-                location: range.location,
-                length: contentEnd - range.location
-            )
-            result.append(Line(range: range, content: source.substring(with: contentRange)))
-            location = NSMaxRange(range)
-        }
-
-        let finalScalar = source.character(at: source.length - 1)
-        if finalScalar == 0x0A || finalScalar == 0x0D {
-            result.append(
-                Line(
-                    range: NSRange(location: source.length, length: 0),
-                    content: ""
-                )
-            )
-        }
-        return result
-    }
-
-    static func index(containing offset: Int, in lines: [Line]) -> Int? {
-        for index in lines.indices {
-            let range = lines[index].range
-            if range.length == 0, offset == range.location { return index }
-            if offset >= range.location, offset < NSMaxRange(range) { return index }
-        }
-        return lines.indices.last
+        return FenceMarker(
+            character: first,
+            count: count,
+            hasInfoString: candidate.dropFirst(count)
+                .contains(where: { !$0.isWhitespace })
+        )
     }
 }

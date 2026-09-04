@@ -91,17 +91,17 @@ final class MarkdownPerformanceTests: XCTestCase {
         _ = try await engine.update(source: source)
         let oldRange = (source as NSString).range(of: "needle")
         let edit = MarkdownTextEdit(replacedRange: oldRange.utf16, replacement: "thread")
-        let changed = NSMutableString(string: source)
-        changed.replaceCharacters(in: oldRange, with: "thread")
 
         let clock = ContinuousClock()
         let start = clock.now
-        let update = try await engine.update(source: changed as String, edit: edit)
+        let update = try await engine.update(edit: edit)
         let elapsed = start.duration(to: clock.now)
 
         XCTAssertLessThan(update.parsedUTF16Length, 512)
         XCTAssertLessThan(elapsed, .seconds(1))
         XCTAssertTrue(update.spans.contains { $0.kind == .emphasis })
+        XCTAssertLessThan(update.applicationSpans.count, 32)
+        XCTAssertLessThan(update.applicationSpans.count, update.spans.count)
     }
 
     func testCancelledParseDoesNotPublishPartialResult() async {

@@ -6,6 +6,9 @@ struct MarkdownHighlightUpdate: Equatable, Sendable {
     let mode: MarkdownHighlightingMode
     let invalidatedRange: UTF16Range
     let spans: [MarkdownSpan]
+    /// Pre-filtered on the Markdown actor so TextKit never scans every span on
+    /// the main actor for a single-block edit.
+    let applicationSpans: [MarkdownSpan]
     let parsedUTF16Length: Int
 }
 
@@ -23,6 +26,26 @@ actor IncrementalMarkdownHighlighter {
 
     init(documentID: DocumentID = DocumentID()) {
         self.documentID = documentID
+    }
+
+    /// Applies a captured NSTextView delta to the actor-owned mirror. No full
+    /// editor snapshot crosses the main actor for a normal keystroke.
+    func update(edit: MarkdownTextEdit) async throws -> MarkdownHighlightUpdate {
+        try await update(edits: [edit])
+    }
+
+    /// Materializes a queued burst once. A single/coalesced edit retains the
+    /// incremental island path; disjoint edits conservatively reparse the one
+    /// final snapshot rather than copying the whole source per keystroke.
+    func update(edits: [MarkdownTextEdit]) async throws -> MarkdownHighlightUpdate {
+        guard !edits.isEmpty,
+              let newSource = MarkdownTextEditApplier.applying(edits, to: source) else {
+            throw MarkdownIncrementalError.invalidEdit
+        }
+        return try await update(
+            source: newSource,
+            edit: edits.count == 1 ? edits[0] : nil
+        )
     }
 
     func update(source newSource: String, edit: MarkdownTextEdit? = nil) async throws -> MarkdownHighlightUpdate {
@@ -57,6 +80,7 @@ actor IncrementalMarkdownHighlighter {
                 mode: newMode,
                 invalidatedRange: UTF16Range(location: 0, length: newText.length),
                 spans: [],
+                applicationSpans: [],
                 parsedUTF16Length: 0
             )
         }
@@ -94,11 +118,16 @@ actor IncrementalMarkdownHighlighter {
                 mode: newMode,
                 invalidatedRange: UTF16Range(location: 0, length: newText.length),
                 spans: spans,
+                applicationSpans: spans,
                 parsedUTF16Length: parsedLength
             )
         }
 
-        let invalidation = MarkdownInvalidationPlanner.ranges(for: edit, in: source)
+        let invalidation = MarkdownInvalidationPlanner.ranges(
+            for: edit,
+            oldSource: source,
+            newSource: newSource
+        )
         let replacedLength = edit.replacedRange.length
         let delta = (edit.replacement as NSString).length - replacedLength
         let mappedOld = UTF16Range(
@@ -151,6 +180,9 @@ actor IncrementalMarkdownHighlighter {
         // sorted and non-overlapping, so concatenation preserves canonical
         // order without a whole-document Set/sort on every keystroke.
         let retained = prefixSpans + mappedFragment + suffixSpans
+        let applicationSpans = retained.filter {
+            $0.range.intersects(fragmentRange)
+        }
         source = newSource
         sourceUTF8ByteCount = newByteCount
         spans = retained
@@ -162,6 +194,7 @@ actor IncrementalMarkdownHighlighter {
             mode: newMode,
             invalidatedRange: fragmentRange,
             spans: retained,
+            applicationSpans: applicationSpans,
             parsedUTF16Length: fragmentRange.length
         )
     }
@@ -185,6 +218,10 @@ actor IncrementalMarkdownHighlighter {
     }
 }
 
+private enum MarkdownIncrementalError: Error {
+    case invalidEdit
+}
+
 private extension UTF16Range {
     var nsRange: NSRange { NSRange(location: location, length: length) }
 
@@ -192,5 +229,9 @@ private extension UTF16Range {
         let lower = min(location, other.location)
         let upper = max(upperBound, other.upperBound)
         return UTF16Range(location: lower, length: upper - lower)
+    }
+
+    func intersects(_ other: UTF16Range) -> Bool {
+        location < other.upperBound && other.location < upperBound
     }
 }
