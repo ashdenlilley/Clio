@@ -222,6 +222,9 @@ final class DocumentExportPresentation {
     private let panelPresenter: any ExportPanelPresenting
 
     @ObservationIgnored
+    private let recoveryCatalog: any ExportRecoveryCataloging
+
+    @ObservationIgnored
     private var snapshotProvider: (@MainActor () async throws -> DocumentTextSnapshot)?
 
     @ObservationIgnored
@@ -243,18 +246,21 @@ final class DocumentExportPresentation {
         self.init(
             coordinator: DocumentExportCoordinator(),
             printSettingsStore: PDFPrintSettingsStore(),
-            panelPresenter: NativeExportPanelPresenter()
+            panelPresenter: NativeExportPanelPresenter(),
+            recoveryCatalog: ExportRecoveryCatalog.shared
         )
     }
 
     init(
         coordinator: DocumentExportCoordinator,
         printSettingsStore: PDFPrintSettingsStore,
-        panelPresenter: any ExportPanelPresenting
+        panelPresenter: any ExportPanelPresenting,
+        recoveryCatalog: any ExportRecoveryCataloging
     ) {
         self.coordinator = coordinator
         self.printSettingsStore = printSettingsStore
         self.panelPresenter = panelPresenter
+        self.recoveryCatalog = recoveryCatalog
     }
 
     var phase: DocumentExportPhase { coordinator.phase }
@@ -455,6 +461,9 @@ private extension DocumentExportPresentation {
             ) else { return }
             guard !Task.isCancelled else { return }
             do {
+                try recoveryCatalog.remember(
+                    destinationDirectory: destination.deletingLastPathComponent()
+                )
                 guard let snapshotProvider else {
                     throw ExportPresentationError.noDocument
                 }
