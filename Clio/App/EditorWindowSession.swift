@@ -44,9 +44,11 @@ final class EditorWindowSession: Identifiable {
             if activeTabID != oldValue { exportPresentation.cancel() }
         }
     }
-    let exportPresentation = DocumentExportPresentation()
+    private(set) var exportPresentation = DocumentExportPresentation()
     var isSidebarVisible: Bool
     var isSidebarPinned: Bool
+    let motion: WindowMotionAdapter
+    var isSettingsPresented = false
     var isFullScreenEnabled: Bool
     private(set) var isSidebarInteractionActive = false
 
@@ -68,9 +70,6 @@ final class EditorWindowSession: Identifiable {
     private weak var appState: AppState?
 
     @ObservationIgnored
-    private var sidebarTimer: Task<Void, Never>?
-
-    @ObservationIgnored
     private var searchTask: Task<Void, Never>?
 
     @ObservationIgnored
@@ -82,18 +81,16 @@ final class EditorWindowSession: Identifiable {
     @ObservationIgnored
     private var isSidebarFocused = false
 
-    @ObservationIgnored
-    private var deferredSidebarDismissal: SidebarDismissal?
-
-    @ObservationIgnored
-    private var activeSidebarDismissal: SidebarDismissal?
-
     init(request: EditorWindowRequest) {
         id = request.id
         isFullScreenEnabled = request.restoration?.isFullScreen
             ?? request.isFullScreen
         isSidebarVisible = request.restoration?.isSidebarVisible ?? true
         isSidebarPinned = request.restoration?.isSidebarPinned ?? false
+        motion = WindowMotionAdapter(
+            sidebarVisible: request.restoration?.isSidebarVisible ?? true,
+            pinned: request.restoration?.isSidebarPinned ?? false
+        )
 
         var restoration = request.restoration
         restoration?.normalize()
@@ -126,10 +123,13 @@ final class EditorWindowSession: Identifiable {
             activeTabID = tab.id
         }
         exportPresentation.attach(to: self)
+        motion.sidebarIntentChanged = { [weak self] visible in
+            if self?.isSidebarVisible != visible { self?.isSidebarVisible = visible }
+        }
+        motion.documentIdentity = { [weak self] in self?.activeTabID }
     }
 
     deinit {
-        sidebarTimer?.cancel()
         searchTask?.cancel()
     }
 
@@ -171,6 +171,11 @@ final class EditorWindowSession: Identifiable {
     }
 
     func connect(to appState: AppState) {
+        if self.appState !== appState {
+            exportPresentation.cancel()
+            exportPresentation = appState.makeWindowExportPresentation()
+            exportPresentation.attach(to: self)
+        }
         self.appState = appState
         appState.register(self)
     }
@@ -250,14 +255,14 @@ final class EditorWindowSession: Identifiable {
 
     func noteEditorChange(to newText: String, edit: EditorTextEdit? = nil) {
         activeTab?.editorTextDidChange(newText, edit: edit)
-        scheduleWritingCollapse()
+        motion.update { $0.noteTyping() }
     }
 
     /// Production editor mutations arrive as bounded UTF-16 deltas so typing
     /// never snapshots a multi-megabyte NSTextView on the main actor.
     func noteEditorEdit(_ edit: MarkdownTextEdit) {
         activeTab?.editorTextDidChange(edit)
-        scheduleWritingCollapse()
+        motion.update { $0.noteTyping() }
     }
 
     func presentInlineSlashPalette() {
@@ -265,47 +270,32 @@ final class EditorWindowSession: Identifiable {
     }
 
     func toggleSidebar() {
-        sidebarTimer?.cancel()
-        sidebarTimer = nil
-        deferredSidebarDismissal = nil
-        activeSidebarDismissal = nil
-        isSidebarVisible.toggle()
-        if !isSidebarVisible { clearSidebarInteraction() }
+        motion.update { $0.toggleSidebar() }
     }
 
     func setSidebarPinned(_ pinned: Bool) {
         isSidebarPinned = pinned
-        sidebarTimer?.cancel()
-        sidebarTimer = nil
-        deferredSidebarDismissal = nil
-        activeSidebarDismissal = nil
-        if !pinned, isSidebarVisible {
-            scheduleTemporarySidebarDismissal(after: Self.temporarySidebarDelay)
-        }
+        motion.update { $0.setSidebarPinned(pinned) }
     }
 
     func revealSidebarTemporarily() {
-        isSidebarVisible = true
-        scheduleTemporarySidebarDismissal(after: Self.temporarySidebarDelay)
+        motion.update { $0.revealSidebarTemporarily() }
     }
 
     func hideSidebar() {
-        sidebarTimer?.cancel()
-        sidebarTimer = nil
-        deferredSidebarDismissal = nil
-        activeSidebarDismissal = nil
-        isSidebarVisible = false
-        clearSidebarInteraction()
+        motion.update { $0.hideSidebar() }
     }
 
     func setSidebarHovered(_ hovered: Bool) {
         isSidebarHovered = hovered
-        sidebarInteractionDidChange()
+        isSidebarInteractionActive = isSidebarHovered || isSidebarFocused
+        motion.update { $0.setSidebarHovered(hovered) }
     }
 
     func setSidebarFocused(_ focused: Bool) {
         isSidebarFocused = focused
-        sidebarInteractionDidChange()
+        isSidebarInteractionActive = isSidebarHovered || isSidebarFocused
+        motion.update { $0.setSidebarFocused(focused) }
     }
 
     func handleHorizontalGesture(deltaX: CGFloat, phaseEnded: Bool) {
@@ -334,6 +324,7 @@ final class EditorWindowSession: Identifiable {
         paletteErrorMessage = nil
         paletteSelectionIndex = 0
         palettePointerAtPresentation = NSEvent.mouseLocation
+        motion.synchronizeSurface(.palette, presented: true, viewport: activeTab?.viewportState ?? .zero)
         isPalettePresented = true
         if mode == .search {
             updateSearch()
@@ -343,9 +334,9 @@ final class EditorWindowSession: Identifiable {
     func dismissPalette() {
         searchTask?.cancel()
         isPalettePresented = false
+        motion.synchronizeSurface(.palette, presented: false, viewport: activeTab?.viewportState ?? .zero)
         paletteErrorMessage = nil
         isSearching = false
-        focusRestorationGeneration &+= 1
     }
 
     func updatePaletteQuery(_ query: String) {
@@ -438,85 +429,6 @@ final class EditorWindowSession: Identifiable {
 }
 
 private extension EditorWindowSession {
-    enum SidebarDismissal {
-        case writing
-        case temporary
-    }
-
-    func sidebarInteractionDidChange() {
-        let isActive = isSidebarHovered || isSidebarFocused
-        guard isSidebarInteractionActive != isActive else { return }
-        isSidebarInteractionActive = isActive
-        if isActive {
-            if let activeSidebarDismissal {
-                deferredSidebarDismissal = activeSidebarDismissal
-            }
-            sidebarTimer?.cancel()
-            sidebarTimer = nil
-            activeSidebarDismissal = nil
-        } else if let deferredSidebarDismissal {
-            self.deferredSidebarDismissal = nil
-            switch deferredSidebarDismissal {
-            case .writing:
-                scheduleWritingCollapse()
-            case .temporary:
-                scheduleTemporarySidebarDismissal(after: Self.temporarySidebarDelay)
-            }
-        }
-    }
-
-    func clearSidebarInteraction() {
-        isSidebarHovered = false
-        isSidebarFocused = false
-        isSidebarInteractionActive = false
-    }
-
-    func scheduleWritingCollapse() {
-        guard isSidebarVisible, !isSidebarPinned else { return }
-        guard !isSidebarInteractionActive else {
-            deferredSidebarDismissal = .writing
-            return
-        }
-        guard sidebarTimer == nil else { return }
-        activeSidebarDismissal = .writing
-        sidebarTimer = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: Self.writingCollapseDelay)
-            } catch {
-                return
-            }
-            guard let self,
-                  !self.isSidebarPinned,
-                  !self.isSidebarInteractionActive else { return }
-            self.isSidebarVisible = false
-            self.sidebarTimer = nil
-            self.activeSidebarDismissal = nil
-        }
-    }
-
-    func scheduleTemporarySidebarDismissal(after duration: Duration) {
-        guard !isSidebarPinned else { return }
-        guard !isSidebarInteractionActive else {
-            deferredSidebarDismissal = .temporary
-            return
-        }
-        sidebarTimer?.cancel()
-        activeSidebarDismissal = .temporary
-        sidebarTimer = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: duration)
-            } catch {
-                return
-            }
-            guard let self,
-                  !self.isSidebarPinned,
-                  !self.isSidebarInteractionActive else { return }
-            self.isSidebarVisible = false
-            self.sidebarTimer = nil
-            self.activeSidebarDismissal = nil
-        }
-    }
-
     func updateSearch() {
         searchTask?.cancel()
         searchResults = []

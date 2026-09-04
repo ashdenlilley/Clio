@@ -72,7 +72,7 @@ final class TypewriterScroller {
 
         guard abs(clipView.bounds.origin.y - targetY) > 0.5 else { return }
 
-        if animated {
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.09
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)

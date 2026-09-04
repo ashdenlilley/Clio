@@ -235,7 +235,7 @@ final class EditorPerformanceTests: XCTestCase {
         let defaultsName = "ClioExternalHeartbeat.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: defaultsName)!
         defer { defaults.removePersistentDomain(forName: defaultsName) }
-        let state = AppState(
+        let state = isolatedAppState(
             defaults: defaults,
             initialWorkspace: workspace,
             recoveryStore: RecoveryStore(rootURL: recoveryURL),
@@ -556,7 +556,7 @@ final class EditorPerformanceTests: XCTestCase {
             rootURL: directoryURL,
             accessSecurityScopedResource: false
         )
-        let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
         let mover = DocumentMover(
             recoveryStore: RecoveryStore(rootURL: recoveryURL)
         )
@@ -621,7 +621,7 @@ final class EditorPerformanceTests: XCTestCase {
             rootURL: destinationRoot,
             accessSecurityScopedResource: false
         )
-        let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
         let mover = DocumentMover(
             recoveryStore: RecoveryStore(rootURL: recoveryURL)
         )
@@ -754,7 +754,7 @@ final class EditorPerformanceTests: XCTestCase {
         let defaultsName = "ClioEditorExternal.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: defaultsName)!
         defer { defaults.removePersistentDomain(forName: defaultsName) }
-        let state = AppState(
+        let state = isolatedAppState(
             defaults: defaults,
             initialWorkspace: workspace,
             recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -806,7 +806,7 @@ final class EditorPerformanceTests: XCTestCase {
             rootURL: directoryURL,
             accessSecurityScopedResource: false
         )
-        let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
         let mover = DocumentMover(
             recoveryStore: RecoveryStore(rootURL: recoveryURL),
             trashOperation: { _ in XCTFail("Trash must not run"); return nil }

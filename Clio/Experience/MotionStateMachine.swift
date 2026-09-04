@@ -272,6 +272,10 @@ struct ReversibleMotionStateMachine: Equatable, Sendable {
     ) -> MotionTransition? {
         _ = advance(to: time)
         let destination = Self.clamp(newTarget)
+        let recipe = sourceRecipe.resolved(for: preferences)
+        // Repeated input with unchanged intent must not keep restarting the
+        // restoration clock; its first deadline remains authoritative.
+        if destination == target, transition?.recipe == recipe { return nil }
         generation &+= 1
         target = destination
 
@@ -282,7 +286,6 @@ struct ReversibleMotionStateMachine: Equatable, Sendable {
             return nil
         }
 
-        let recipe = sourceRecipe.resolved(for: preferences)
         let next = MotionTransition(
             generation: generation,
             from: presentation,

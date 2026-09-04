@@ -122,6 +122,8 @@ schemes:
     test:
       config: Debug
       gatherCoverageData: true
+      environmentVariables:
+        CLIO_UI_TESTING: "1"
       targets:
         - ClioTests
         - ClioUITests

@@ -33,6 +33,11 @@ struct ClioCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { editorWindowSession?.isSettingsPresented = true }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(editorWindowSession == nil)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Document") {
                 if let editorWindowSession {

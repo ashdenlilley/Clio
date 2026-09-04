@@ -7,14 +7,6 @@ struct WorkspaceSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                SidebarToggleButton()
-                Spacer()
-            }
-            .frame(height: 38)
-            .padding(.leading, 76)
-            .padding(.trailing, 10)
-
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     openDocuments
@@ -99,6 +91,9 @@ struct WorkspaceSidebar: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color(nsColor: Palette.muted))
                     .accessibilityLabel("Close \(tab.displayName)")
+                    .opacity(windowSession.motion.contextProgress)
+                    .allowsHitTesting(windowSession.motion.contextProgress > 0.001)
+                    .accessibilityHidden(windowSession.motion.contextProgress <= 0.001)
                 }
                 .font(.custom(Typography.family, fixedSize: 12))
                 .foregroundStyle(tab.id == windowSession.activeTabID
@@ -115,25 +110,6 @@ struct WorkspaceSidebar: View {
                 .padding(.horizontal, 5)
             }
         }
-    }
-}
-
-struct SidebarToggleButton: View {
-    @Environment(EditorWindowSession.self) private var windowSession
-
-    var body: some View {
-        Button {
-            windowSession.toggleSidebar()
-        } label: {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 24, height: 24)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color(nsColor: Palette.foreground))
-        .help(windowSession.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-        .accessibilityLabel(windowSession.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-        .accessibilityIdentifier("sidebar.toggle")
     }
 }
 
@@ -178,7 +154,8 @@ private struct WorkspaceTreeSection: View {
                         .accessibilityIdentifier("sidebar.workspace.file")
                         .modifier(SidebarSelectedTrait(isSelected: isSelected))
                         .onDrag {
-                            NSItemProvider(
+                            windowSession.motion.update { $0.setSidebarFileDragged(true) }
+                            return NSItemProvider(
                                 object: (appState.dragPayload(
                                     documentID: documentID,
                                     workspaceID: workspace.id,

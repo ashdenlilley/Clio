@@ -25,6 +25,13 @@ protocol ExportTransactionRecoveryCataloging: AnyObject, Sendable {
     func discard(_ item: ExportRecoveryItem) async throws
 }
 
+/// Conservative authority when a fixture supplies transaction recovery only.
+final class CheckpointOnlyExportRecoveryCatalog: ExportRecoveryCataloging {
+    func recoveryStrategy(for destinationURL: URL) async -> ExportRecoveryStrategy {
+        .appContainerCheckpoint
+    }
+}
+
 /// Export destinations may sit outside every searchable workspace. This
 /// app-owned catalog retains only their parent grants, allowing startup to
 /// recover crash-safe atomic transactions without broadly scanning the user's

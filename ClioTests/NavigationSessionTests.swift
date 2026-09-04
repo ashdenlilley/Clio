@@ -135,8 +135,9 @@ final class NavigationSessionTests: XCTestCase {
                 workspaceID: descriptor.id,
                 relativePath: "shared.md"
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil
             )
@@ -216,8 +217,9 @@ final class NavigationSessionTests: XCTestCase {
                 isSidebarPinned: false,
                 isFullScreen: false
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil
             )
@@ -268,8 +270,9 @@ final class NavigationSessionTests: XCTestCase {
                 isSidebarPinned: false,
                 isFullScreen: false
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil
             )
@@ -510,8 +513,9 @@ final class NavigationSessionTests: XCTestCase {
                 let catalog = makeCatalog(defaults: defaults)
                 _ = try catalog.addAuthorizedFolder(firstFolder)
                 _ = try catalog.addAuthorizedFolder(secondFolder)
-                let appState = AppState(
+                let appState = isolatedAppState(
                     defaults: defaults,
+                    recoveryStore: isolatedRecoveryStore(),
                     workspaceCatalog: catalog,
                     searchIndex: nil
                 )
@@ -535,8 +539,9 @@ final class NavigationSessionTests: XCTestCase {
             let defaults = makeDefaults()
             let catalog = makeCatalog(defaults: defaults)
             let descriptor = try catalog.addAuthorizedFolder(folder)
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil
             )
@@ -564,8 +569,9 @@ final class NavigationSessionTests: XCTestCase {
             let defaults = makeDefaults()
             let catalog = makeCatalog(defaults: defaults)
             let descriptor = try catalog.addAuthorizedFolder(folder)
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil
             )
@@ -695,8 +701,9 @@ final class NavigationSessionTests: XCTestCase {
     func testSearchDefaultsGlobalAndPassesOptionalFolderFilter() async throws {
         let index = RecordingSearchIndex()
         let defaults = makeDefaults()
-        let appState = AppState(
+        let appState = isolatedAppState(
             defaults: defaults,
+            recoveryStore: isolatedRecoveryStore(),
             workspaceCatalog: makeCatalog(defaults: defaults),
             searchIndex: index
         )
@@ -724,8 +731,9 @@ final class NavigationSessionTests: XCTestCase {
             let descriptor = try catalog.addAuthorizedFolder(folder)
             let discovery = WorkspaceDiscoverySettings(defaults: defaults)
             discovery.temporarilyShowsIgnored = true
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 discoverySettings: discovery,
                 searchIndex: RecordingSearchIndex()
@@ -752,8 +760,9 @@ final class NavigationSessionTests: XCTestCase {
                 let sourceWorkspace = try catalog.addAuthorizedFolder(sourceFolder)
                 let destinationWorkspace = try catalog.addAuthorizedFolder(destinationFolder)
                 let index = RecordingSearchIndex()
-                let appState = AppState(
+                let appState = isolatedAppState(
                     defaults: defaults,
+                    recoveryStore: isolatedRecoveryStore(),
                     workspaceCatalog: catalog,
                     searchIndex: index
                 )
@@ -845,7 +854,7 @@ final class NavigationSessionTests: XCTestCase {
             let descriptor = try catalog.addAuthorizedFolder(folder)
             let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
             let index = RecordingSearchIndex()
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
                 recoveryStore: RecoveryStore(
                     rootURL: folder.appendingPathComponent("Recovery")
@@ -963,8 +972,9 @@ final class NavigationSessionTests: XCTestCase {
                     return nil
                 }
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil,
                 documentMover: mover
@@ -996,8 +1006,9 @@ final class NavigationSessionTests: XCTestCase {
                 recoveryStore: RecoveryStore(rootURL: folder.appendingPathComponent("Recovery")),
                 trashOperation: { _ in throw NavigationTrashFailure() }
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
+                recoveryStore: isolatedRecoveryStore(),
                 workspaceCatalog: catalog,
                 searchIndex: nil,
                 documentMover: mover
@@ -1052,9 +1063,10 @@ final class NavigationSessionTests: XCTestCase {
                 rootURL: folder,
                 accessSecurityScopedResource: false
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
                 initialWorkspace: workspace,
+                recoveryStore: isolatedRecoveryStore(),
                 searchIndex: nil
             )
             let window = EditorWindowSession(request: .newDocument())
@@ -1105,9 +1117,10 @@ final class NavigationSessionTests: XCTestCase {
                 rootURL: folder,
                 accessSecurityScopedResource: false
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
                 initialWorkspace: workspace,
+                recoveryStore: isolatedRecoveryStore(),
                 searchIndex: nil
             )
             let window = EditorWindowSession(request: .newDocument())
@@ -1144,9 +1157,10 @@ final class NavigationSessionTests: XCTestCase {
                 rootURL: folder,
                 accessSecurityScopedResource: false
             )
-            let appState = AppState(
+            let appState = isolatedAppState(
                 defaults: defaults,
                 initialWorkspace: workspace,
+                recoveryStore: isolatedRecoveryStore(),
                 searchIndex: RecordingSearchIndex()
             )
             let window = EditorWindowSession(request: .mostRecent())
@@ -1215,6 +1229,13 @@ private actor RecordingSearchIndex: SearchIndexing {
 
 @MainActor
 private extension NavigationSessionTests {
+    func isolatedRecoveryStore() -> RecoveryStore {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioNavigationRecovery-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return RecoveryStore(rootURL: root)
+    }
+
     func waitForReady(_ sessions: EditorSession?...) async {
         for _ in 0..<250 {
             if sessions.allSatisfy({ $0?.isReady == true }) { return }
@@ -1241,6 +1262,7 @@ private extension NavigationSessionTests {
                     isStale: false
                 )
             },
+            crashRecoveryJournal: CrashRecoveryJournal(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("ClioNavigationCatalog-\(UUID())")),
             workspaceFactory: { id, url, journal in
                 try Workspace(
                     id: id,

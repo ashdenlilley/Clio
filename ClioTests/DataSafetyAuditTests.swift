@@ -67,7 +67,7 @@ final class DataSafetyAuditTests: XCTestCase {
                 rootURL: sourceRoot,
                 accessSecurityScopedResource: false
             )
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: isolatedDefaults(),
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryRoot)
@@ -101,7 +101,7 @@ final class DataSafetyAuditTests: XCTestCase {
                 rootURL: sourceRoot,
                 accessSecurityScopedResource: false
             )
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: isolatedDefaults(),
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryRoot)
@@ -127,7 +127,7 @@ final class DataSafetyAuditTests: XCTestCase {
                 rootURL: sourceRoot,
                 accessSecurityScopedResource: false
             )
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let document = try registry.open(fileURL, in: workspace)
             let autosaver = registry.autosaver(for: document, in: workspace)
             let mover = DocumentMover(
@@ -295,7 +295,7 @@ extension DataSafetyAuditTests {
             XCTAssertEqual(document.conflict?.external.source, "v3")
             XCTAssertEqual(document.conflict?.additionalExternalVersions?.count, 2)
             try FileManager.default.removeItem(at: fileURL)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             registry.register(document, in: workspace)
             let resolver = ConflictResolver(
                 recoveryStore: RecoveryStore(rootURL: recoveryRoot)
@@ -562,7 +562,7 @@ extension DataSafetyAuditTests {
                 rootURL: destinationRoot,
                 accessSecurityScopedResource: false
             )
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let recovery = RecoveryStore(rootURL: recoveryRoot)
             let resolver = ConflictResolver(recoveryStore: recovery)
             let mover = DocumentMover(recoveryStore: recovery)
@@ -605,7 +605,7 @@ extension DataSafetyAuditTests {
             try Data("occupied".utf8).write(to: destinationURL)
             let source = try Workspace(rootURL: sourceRoot, accessSecurityScopedResource: false)
             let destination = try Workspace(rootURL: destinationRoot, accessSecurityScopedResource: false)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let suspended = SuspendedRecoveryStore()
             let mover = DocumentMover(recoveryStore: suspended)
             let resolver = ConflictResolver(recoveryStore: suspended)

@@ -18,9 +18,9 @@ enum Palette {
     static let dimmed = NSColor(clioHex: 0x3A3A3A)
 
     // Meaning
-    static let literal = NSColor(clioHex: 0x3FB950)
-    static let reference = NSColor(clioHex: 0x79B8FF)
-    static let meta = NSColor(clioHex: 0xBC8CFF)
+    static let literal = NSColor.systemGreen
+    static let reference = NSColor.systemBlue
+    static let meta = NSColor.systemPurple
 
     // Interaction
     static let selection = NSColor(clioHex: 0x1F2937)

@@ -25,39 +25,29 @@ func isClioEditorWindow(_ window: NSWindow) -> Bool {
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @Environment(EditorWindowSession.self) private var windowSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var displayedConflict: DocumentConflict?
+    @State private var conflictEditorSession: EditorSession?
+    @FocusState private var settingsDoneFocused: Bool
+
+    private var motion: WindowMotionAdapter { windowSession.motion }
 
     var body: some View {
-        Group {
+        ZStack {
+          Group {
             if let editorSession = windowSession.activeTab, editorSession.isReady {
-                HStack(spacing: 0) {
-                    if windowSession.isSidebarVisible {
+                editorPane(editorSession)
+                .overlay(alignment: .leading) {
+                    if motion.sidebarProgress > 0 || windowSession.isSidebarVisible {
                         WorkspaceSidebar()
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                    }
-
-                    editorPane(editorSession)
-                }
-                .overlay(alignment: .topLeading) {
-                    if !windowSession.isSidebarVisible {
-                        SidebarToggleButton()
-                            .padding(.leading, 76)
-                            .padding(.top, 7)
+                            .offset(x: reduceMotion ? 0 : -252 * (1 - motion.sidebarProgress))
+                            .opacity(reduceMotion ? motion.sidebarProgress : 1)
+                            .allowsHitTesting(motion.chrome.sidebarAllowsHitTesting)
+                            .accessibilityHidden(!motion.chrome.sidebarAllowsHitTesting)
                     }
                 }
-                .overlay {
-                    if windowSession.isPalettePresented {
-                        ZStack(alignment: .top) {
-                            Color.black.opacity(0.38)
-                                .ignoresSafeArea()
-                                .contentShape(Rectangle())
-                                .onTapGesture { windowSession.dismissPalette() }
-
-                            CommandPaletteView()
-                                .padding(.top, 58)
-                        }
-                        .transition(.opacity)
-                    }
-                }
+                .clipped()
                 .task(id: editorSession.contentRevision) {
                     editorSession.refreshDerivedStateForCurrentRevision()
                 }
@@ -90,6 +80,10 @@ struct ContentView: View {
             } else {
                 WorkspaceSetupView()
             }
+          }
+          .allowsHitTesting(motion.surfaceState.activeSurfaces.isEmpty)
+          .accessibilityHidden(!motion.surfaceState.activeSurfaces.isEmpty)
+          transientSurfaces
         }
         .frame(
             minWidth: Metrics.minimumWindowWidth,
@@ -102,21 +96,20 @@ struct ContentView: View {
                 editorSession: windowSession.activeTab
             )
         )
-        .sheet(
-            isPresented: Binding(
-                get: { windowSession.activeTab?.activeConflict != nil },
-                set: { _ in }
-            )
-        ) {
-            if let editorSession = windowSession.activeTab,
-               let conflict = editorSession.activeConflict {
-                ConflictResolutionView(
-                    conflict: conflict,
-                    isResolving: editorSession.isResolvingConflict,
-                    resolve: editorSession.resolveConflict
-                )
-                .interactiveDismissDisabled()
-            }
+        .transaction { $0.animation = nil }
+        .onChange(of: reduceMotion, initial: true) { _, _ in updateMotionPreferences() }
+        .onChange(of: reduceTransparency) { _, _ in updateMotionPreferences() }
+        .onChange(of: appState.isChromeFadeEnabled, initial: true) { _, enabled in
+            motion.update { $0.setChromeFadeEnabled(enabled) }
+        }
+        .onChange(of: windowSession.isSettingsPresented) { _, presented in
+            motion.synchronizeSurface(.settings, presented: presented, viewport: windowSession.activeTab?.viewportState ?? .zero)
+        }
+        .onChange(of: windowSession.activeTab?.activeConflict?.id, initial: true) { _, id in
+            synchronizeConflict()
+        }
+        .onChange(of: conflictEditorSession?.activeConflict?.id) { _, id in
+            synchronizeConflict()
         }
         .alert(
             "A file already exists",
@@ -200,8 +193,102 @@ struct ContentView: View {
                 fontSize: appState.fontSize,
                 accent: appState.accent
             )
+            .opacity(motion.contextProgress)
+            .allowsHitTesting(motion.contextProgress > 0.001)
+            .accessibilityHidden(motion.contextProgress <= 0.001)
         }
         .background(Color(nsColor: Palette.background))
+    }
+
+    private func updateMotionPreferences() {
+        motion.setPreferences(MotionPreferences(reduceMotion: reduceMotion, reduceTransparency: reduceTransparency))
+    }
+
+    private func synchronizeConflict() {
+        if let conflict = conflictEditorSession?.activeConflict {
+            displayedConflict = conflict
+            return
+        }
+        motion.synchronizeSurface(.conflict, presented: false, viewport: conflictEditorSession?.viewportState ?? .zero)
+        guard let session = windowSession.activeTab, let conflict = session.activeConflict else { return }
+        conflictEditorSession = session
+        displayedConflict = conflict
+        motion.synchronizeSurface(.conflict, presented: true, viewport: session.viewportState)
+    }
+
+    private var transientSurfaces: some View {
+        GeometryReader { geometry in
+          let state = motion.surfaceState
+          ZStack {
+            if state.conflictBanner.presentation > 0 {
+                VStack {
+                    Label("Outside changes need your decision. Autosave is paused.", systemImage: "exclamationmark.triangle")
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(Color(nsColor: Palette.backgroundRaised))
+                        .modifier(SurfacePresentation(progress: state.conflictBanner.presentation, y: -8, scale: 1, reduceMotion: reduceMotion))
+                    Spacer()
+                }
+            }
+            if state.overlay.presentation > 0 {
+                Color.black.opacity((reduceTransparency ? 0.85 : 0.38) * state.overlay.presentation)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if state.activeSurfaceStack.last == .palette { windowSession.dismissPalette() }
+                        if state.activeSurfaceStack.last == .settings { windowSession.isSettingsPresented = false }
+                    }
+                    .allowsHitTesting(!state.activeSurfaces.isEmpty)
+                    .accessibilityHidden(true)
+            }
+            ForEach(state.visualSurfaceStack, id: \.self) { surface in
+                surfaceView(surface, availableSize: geometry.size)
+                    .allowsHitTesting(state.activeSurfaceStack.last == surface)
+                    .accessibilityHidden(state.activeSurfaceStack.last != surface)
+                    .accessibilityAddTraits(.isModal)
+            }
+          }
+          .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+    }
+
+    @ViewBuilder private func surfaceView(_ surface: TransientSurface, availableSize: CGSize) -> some View {
+        let state = motion.surfaceState
+        switch surface {
+        case .palette:
+            VStack {
+                CommandPaletteView(maximumWidth: min(620, availableSize.width - 32), maximumResultsHeight: min(360, max(100, availableSize.height - 140)))
+                    .modifier(SurfacePresentation(progress: state.palette.presentation, y: -6, scale: 0.985, reduceMotion: reduceMotion))
+                    .padding(.top, 58)
+                Spacer(minLength: 0)
+            }
+        case .settings:
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Settings").font(.headline)
+                    Spacer()
+                    Button("Done") { windowSession.isSettingsPresented = false }
+                        .keyboardShortcut(.cancelAction)
+                        .focused($settingsDoneFocused)
+                }.padding(16)
+                SettingsView()
+            }
+            .frame(width: min(500, availableSize.width - 32), height: min(650, availableSize.height - 32))
+            .background(Color(nsColor: Palette.background))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .modifier(SurfacePresentation(progress: state.settings.presentation, y: 8, scale: 0.99, reduceMotion: reduceMotion))
+            .onAppear { settingsDoneFocused = true }
+            .onChange(of: windowSession.isSettingsPresented) { _, presented in settingsDoneFocused = presented }
+        case .conflict:
+            if let conflict = displayedConflict, let editorSession = conflictEditorSession {
+                ScrollView {
+                    ConflictResolutionView(conflict: conflict, isResolving: editorSession.isResolvingConflict, resolve: editorSession.resolveConflict)
+                }
+                    .frame(width: min(560, availableSize.width - 32), height: min(520, availableSize.height - 32))
+                    .background(Color(nsColor: Palette.background))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .modifier(SurfacePresentation(progress: state.conflict.presentation, y: 8, scale: 0.99, reduceMotion: reduceMotion))
+            }
+        }
     }
 
     private func restoreEditorFocus() {
@@ -326,6 +413,7 @@ private struct ConflictResolutionView: View {
     let isResolving: Bool
     let resolve: (ConflictChoice) -> Void
     @State private var preview: Preview?
+    @FocusState private var decisionFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -368,14 +456,16 @@ private struct ConflictResolutionView: View {
                 Spacer()
                 Button("Keep Clio") { resolve(.keepClio) }
                     .keyboardShortcut(.defaultAction)
+                    .focused($decisionFocused)
             }
             .disabled(isResolving)
         }
         .padding(24)
-        .frame(width: 560)
+        .frame(maxWidth: .infinity)
         .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .contain)
         .task(id: conflict.id) {
+            decisionFocused = true
             let conflictID = conflict.id
             let text = await ConflictPreviewBuilder.preview(for: conflict)
             guard !Task.isCancelled, conflict.id == conflictID else { return }
@@ -490,6 +580,10 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
     private var hasAppliedInitialState = false
     private var forwardedWindowDelegate: NSWindowDelegate?
     private var scrollMonitor: Any?
+    private var dragEndMonitor: Any?
+    private var titlebarAccessory: NSTitlebarAccessoryViewController?
+    private var sidebarButton: NSButton?
+    private var pointerIsHidden = false
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -528,6 +622,9 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         }
 
         installScrollMonitor(for: window)
+        installTitlebarControl(in: window)
+        windowSession.motion.window = window
+        windowSession.motion.applyNativeChrome = { [weak self] in self?.updateNativeChrome() }
         guard !hasAppliedInitialState else { return }
         hasAppliedInitialState = true
 
@@ -552,16 +649,33 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        restorePointer()
+        windowSession?.motion.update { $0.endWritingBurst(); $0.setSidebarFileDragged(false) }
         windowSession?.flushForLifecycleEvent()
         forwardedWindowDelegate?.windowDidResignKey?(notification)
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        windowSession?.motion.update { $0.noteIntentionalInteraction() }
+        forwardedWindowDelegate?.windowDidBecomeKey?(notification)
+    }
+
     func detachFromWindow() {
+        restorePointer()
+        windowSession?.motion.stop()
         if let scrollMonitor {
             NSEvent.removeMonitor(scrollMonitor)
             self.scrollMonitor = nil
         }
+        if let dragEndMonitor {
+            NSEvent.removeMonitor(dragEndMonitor)
+            self.dragEndMonitor = nil
+        }
         if let window {
+            if let accessory = titlebarAccessory,
+               let index = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
             if window.delegate === self {
                 window.delegate = forwardedWindowDelegate
             }
@@ -575,6 +689,8 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
             }
         }
         forwardedWindowDelegate = nil
+        titlebarAccessory = nil
+        sidebarButton = nil
     }
 
     override func responds(to selector: Selector!) -> Bool {
@@ -591,24 +707,76 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
 
     private func installScrollMonitor(for window: NSWindow) {
         guard scrollMonitor == nil else { return }
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+        window.acceptsMouseMovedEvents = true
+        dragEndMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+            self?.windowSession?.motion.update { $0.setSidebarFileDragged(false) }
+        }
+        windowSession?.motion.chrome.seedPointerLocation(.init(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) {
             [weak self, weak window] event in
-            guard let self, event.window === window,
-                  event.hasPreciseScrollingDeltas,
-                  abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.25 else {
-                return event
+            guard let self, (event.window ?? NSApplication.shared.keyWindow) === window,
+                  let motion = self.windowSession?.motion else { return event }
+            if event.type == .scrollWheel {
+                if motion.handleScroll(event) { return nil }
+            } else if event.type == .mouseMoved {
+                let location = NSEvent.mouseLocation
+                motion.update { $0.pointerMoved(to: .init(x: location.x, y: location.y)) }
+            } else if event.type == .leftMouseDown || event.type == .leftMouseDragged || event.type == .leftMouseUp {
+                motion.update { $0.noteIntentionalInteraction() }
+                if event.locationInWindow.x < 252, motion.chrome.isSidebarIntendedVisible {
+                    motion.update { $0.recordSidebarInteraction() }
+                    if event.type == .leftMouseDragged { motion.update { $0.setSidebarFileDragged(true) } }
+                }
+                if event.type == .leftMouseUp { motion.update { $0.setSidebarFileDragged(false) } }
+            } else if event.type == .keyDown,
+                      event.modifierFlags.contains(.command) || [53, 123, 124, 125, 126].contains(event.keyCode) {
+                motion.update { $0.noteIntentionalInteraction() }
+                if event.keyCode == 53 { motion.update { $0.setSidebarFileDragged(false) } }
             }
-            let physicalDeltaX = event.isDirectionInvertedFromDevice
-                ? -event.scrollingDeltaX
-                : event.scrollingDeltaX
-            self.windowSession?.handleHorizontalGesture(
-                // AppKit reports a physical rightward swipe as a negative X
-                // delta. The model uses positive values for reveal progress.
-                deltaX: -physicalDeltaX,
-                phaseEnded: event.phase == .ended || event.momentumPhase == .ended
-            )
             return event
         }
+    }
+
+    private func installTitlebarControl(in window: NSWindow) {
+        guard titlebarAccessory == nil else { updateNativeChrome(); return }
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .left
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
+        let button = NSButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")!, target: self, action: #selector(toggleSidebar))
+        button.frame = NSRect(x: 4, y: 2, width: 30, height: 24)
+        button.bezelStyle = .texturedRounded
+        button.isBordered = false
+        button.refusesFirstResponder = true
+        button.setAccessibilityIdentifier("sidebar.toggle")
+        button.setAccessibilityRole(.button)
+        container.addSubview(button)
+        accessory.view = container
+        window.addTitlebarAccessoryViewController(accessory)
+        titlebarAccessory = accessory
+        sidebarButton = button
+        updateNativeChrome()
+    }
+
+    @objc private func toggleSidebar() { windowSession?.toggleSidebar() }
+
+    private func updateNativeChrome() {
+        guard let window, let session = windowSession else { return }
+        let progress = session.motion.chrome.titlebar.presentation
+        for button in [window.standardWindowButton(.closeButton), window.standardWindowButton(.miniaturizeButton), window.standardWindowButton(.zoomButton), sidebarButton].compactMap({ $0 }) {
+            button.alphaValue = progress
+            button.isEnabled = progress > 0.001
+            button.isHidden = progress <= 0.001
+        }
+        sidebarButton?.toolTip = session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+        sidebarButton?.setAccessibilityLabel(session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        if session.motion.chrome.pointer.target == 0,
+           session.motion.chrome.pointer.presentation <= 0.001, window.isKeyWindow {
+            if !pointerIsHidden { NSCursor.hide(); pointerIsHidden = true }
+        } else { restorePointer() }
+    }
+
+    private func restorePointer() {
+        if pointerIsHidden { NSCursor.unhide(); pointerIsHidden = false }
     }
 }
 
@@ -618,9 +786,21 @@ extension AppState.AccentPreset {
         case .green:
             Color(nsColor: Palette.literal)
         case .amber:
-            Color(red: 0.922, green: 0.647, blue: 0.220)
+            Color(nsColor: .systemOrange)
         case .cyan:
-            Color(red: 0.337, green: 0.776, blue: 0.851)
+            Color(nsColor: .systemCyan)
         }
+    }
+}
+
+private struct SurfacePresentation: ViewModifier {
+    let progress: Double
+    let y: Double
+    let scale: Double
+    let reduceMotion: Bool
+    func body(content: Content) -> some View {
+        content.opacity(progress)
+            .offset(y: reduceMotion ? 0 : y * (1 - progress))
+            .scaleEffect(reduceMotion ? 1 : scale + (1 - scale) * progress)
     }
 }

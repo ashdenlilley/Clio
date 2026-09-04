@@ -12,7 +12,7 @@ final class DataSafetyTests: XCTestCase {
                 rootURL: workspaceURL,
                 accessSecurityScopedResource: false
             )
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
 
             let first = try registry.open(fileURL, in: workspace)
             let second = try registry.open(
@@ -33,7 +33,7 @@ final class DataSafetyTests: XCTestCase {
                 rootURL: workspaceURL,
                 accessSecurityScopedResource: false
             )
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let recovery = RecoveryStore(rootURL: recoveryURL)
             let resolver = ConflictResolver(recoveryStore: recovery)
             let mover = DocumentMover(recoveryStore: recovery)
@@ -66,7 +66,7 @@ final class DataSafetyTests: XCTestCase {
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let recovery = RecoveryStore(rootURL: recoveryURL)
             let resolver = ConflictResolver(recoveryStore: recovery)
             let mover = DocumentMover(recoveryStore: recovery)
@@ -104,7 +104,7 @@ final class DataSafetyTests: XCTestCase {
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("shared".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(suiteName: "ClioTests.\(UUID().uuidString)")!,
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -131,7 +131,7 @@ final class DataSafetyTests: XCTestCase {
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(suiteName: "ClioTests.\(UUID().uuidString)")!,
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -155,7 +155,7 @@ final class DataSafetyTests: XCTestCase {
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(suiteName: "ClioTests.\(UUID().uuidString)")!,
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -178,7 +178,7 @@ final class DataSafetyTests: XCTestCase {
             let fileURL = workspaceURL.appendingPathComponent("draft.md")
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(suiteName: "ClioTests.\(UUID().uuidString)")!,
                 initialWorkspace: workspace,
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -513,7 +513,7 @@ final class DataSafetyTests: XCTestCase {
             let source = try Workspace(rootURL: sourceURL, accessSecurityScopedResource: false)
             let destination = try Workspace(rootURL: destinationURL, accessSecurityScopedResource: false)
             let document = try source.loadDocument(at: sourceFile)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             registry.register(document, in: source)
             let mover = DocumentMover(
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
@@ -559,7 +559,7 @@ final class DataSafetyTests: XCTestCase {
             try Data("occupied".utf8).write(to: occupied)
             let source = try Workspace(rootURL: sourceURL, accessSecurityScopedResource: false)
             let destination = try Workspace(rootURL: destinationURL, accessSecurityScopedResource: false)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             let moving = try registry.open(sourceFile, in: source)
             let displaced = try registry.open(occupied, in: destination)
             displaced.replaceText(with: "unsaved occupied")
@@ -606,7 +606,7 @@ final class DataSafetyTests: XCTestCase {
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
             let document = try workspace.loadDocument(at: fileURL)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             registry.register(document, in: workspace)
             document.replaceText(with: "latest")
             var movedBytes: String?
@@ -635,7 +635,7 @@ final class DataSafetyTests: XCTestCase {
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
             let document = try workspace.loadDocument(at: fileURL)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             registry.register(document, in: workspace)
             document.replaceText(with: "latest")
             let mover = DocumentMover(
@@ -659,7 +659,7 @@ final class DataSafetyTests: XCTestCase {
             try Data("base".utf8).write(to: fileURL)
             let workspace = try Workspace(rootURL: workspaceURL, accessSecurityScopedResource: false)
             let document = try workspace.loadDocument(at: fileURL)
-            let registry = DocumentBufferRegistry()
+            let registry = DocumentBufferRegistry(identityStore: DocumentIdentityStore(storageURL: nil))
             registry.register(document, in: workspace)
             let autosaver = Autosaver(
                 workspace: workspace,

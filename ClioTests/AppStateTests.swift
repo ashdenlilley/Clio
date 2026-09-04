@@ -5,7 +5,7 @@ import XCTest
 final class AppStateTests: XCTestCase {
     func testFreshStateUsesSpecificationDefaults() {
         let defaults = makeDefaults()
-        let state = AppState(defaults: defaults)
+        let state = isolatedAppState(defaults: defaults)
 
         XCTAssertEqual(state.fontSize, 14)
         XCTAssertEqual(state.measure, 72)
@@ -21,14 +21,14 @@ final class AppStateTests: XCTestCase {
 
     func testPreferencesRoundTripThroughDefaults() {
         let defaults = makeDefaults()
-        let state = AppState(defaults: defaults)
+        let state = isolatedAppState(defaults: defaults)
 
         state.fontSize = 18
         state.measure = 84
         state.isFocusModeEnabled = false
         state.accent = .cyan
 
-        let restored = AppState(defaults: defaults)
+        let restored = isolatedAppState(defaults: defaults)
         XCTAssertEqual(restored.fontSize, 18)
         XCTAssertEqual(restored.measure, 84)
         XCTAssertFalse(restored.isFocusModeEnabled)
@@ -57,7 +57,7 @@ final class AppStateTests: XCTestCase {
 
     func testDockMenuExposesNativeDocumentAndWindowActions() throws {
         let delegate = ClioApplicationDelegate(
-            appState: AppState(defaults: makeDefaults())
+            appState: isolatedAppState(defaults: makeDefaults())
         )
         let menu = try XCTUnwrap(delegate.applicationDockMenu(.shared))
 

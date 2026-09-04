@@ -86,6 +86,18 @@ final class AppState: ClioCommandDispatching {
     @ObservationIgnored
     private let exportRecoveryCatalog: any ExportTransactionRecoveryCataloging
 
+    /// Window exports share this app's storage authority, including isolated
+    /// fixtures. A transaction-only test catalog cannot grant parent access.
+    func makeWindowExportPresentation() -> DocumentExportPresentation {
+        DocumentExportPresentation(
+            coordinator: DocumentExportCoordinator(recoveryCheckpointStore: exportRecoveryCheckpointStore),
+            printSettingsStore: PDFPrintSettingsStore(defaults: defaults),
+            panelPresenter: NativeExportPanelPresenter(),
+            recoveryCatalog: (exportRecoveryCatalog as? any ExportRecoveryCataloging)
+                ?? CheckpointOnlyExportRecoveryCatalog()
+        )
+    }
+
     @ObservationIgnored
     private var recoveryStore: any RecoveryPersisting
 
@@ -1038,11 +1050,7 @@ final class AppState: ClioCommandDispatching {
         case .sidebar:
             window?.toggleSidebar()
         case .settings:
-            NSApplication.shared.sendAction(
-                Selector(("showSettingsWindow:")),
-                to: nil,
-                from: nil
-            )
+            window?.isSettingsPresented = true
         }
     }
 

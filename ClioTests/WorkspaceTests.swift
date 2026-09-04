@@ -346,11 +346,12 @@ final class WorkspaceTests: XCTestCase {
                 openingMode: .newDocument,
                 restoredLocator: try DocumentLocator(workspaceID: workspace.id, relativePath: "restored.md")
             )
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(
                     suiteName: "ClioTests.\(UUID().uuidString)"
                 )!,
-                initialWorkspace: workspace
+                initialWorkspace: workspace,
+                recoveryStore: RecoveryStore(rootURL: directoryURL.appendingPathComponent(".test-recovery"))
             )
             state.register(session)
             try await waitForActivation(session)
@@ -378,9 +379,10 @@ final class WorkspaceTests: XCTestCase {
             let defaults = UserDefaults(
                 suiteName: "ClioTests.\(UUID().uuidString)"
             )!
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: defaults,
-                initialWorkspace: workspace
+                initialWorkspace: workspace,
+                recoveryStore: RecoveryStore(rootURL: directoryURL.appendingPathComponent(".test-recovery"))
             )
             let firstSession = EditorSession(openingMode: .mostRecent)
             let secondSession = EditorSession(openingMode: .mostRecent)
@@ -404,11 +406,12 @@ final class WorkspaceTests: XCTestCase {
                 rootURL: directoryURL,
                 accessSecurityScopedResource: false
             )
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(
                     suiteName: "ClioTests.\(UUID().uuidString)"
                 )!,
-                initialWorkspace: workspace
+                initialWorkspace: workspace,
+                recoveryStore: RecoveryStore(rootURL: directoryURL.appendingPathComponent(".test-recovery"))
             )
             let session = EditorSession(openingMode: .mostRecent)
             state.register(session)
@@ -431,11 +434,12 @@ final class WorkspaceTests: XCTestCase {
                 rootURL: directoryURL,
                 accessSecurityScopedResource: false
             )
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: UserDefaults(
                     suiteName: "ClioTests.\(UUID().uuidString)"
                 )!,
-                initialWorkspace: workspace
+                initialWorkspace: workspace,
+                recoveryStore: RecoveryStore(rootURL: directoryURL.appendingPathComponent(".test-recovery"))
             )
             let session = EditorSession(openingMode: .mostRecent)
             state.register(session)

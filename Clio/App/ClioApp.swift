@@ -27,11 +27,6 @@ struct ClioApp: App {
             ClioCommands(appState: applicationDelegate.appState)
         }
 
-        Settings {
-            SettingsView()
-                .environment(applicationDelegate.appState)
-                .preferredColorScheme(.dark)
-        }
     }
 }
 
@@ -58,6 +53,24 @@ private struct EditorWindowRoot: View {
             .focusedSceneValue(\.documentExportPresentation, windowSession.exportPresentation)
             .onAppear {
                 windowSession.connect(to: appState)
+            }
+            .task {
+                // Opt-in profiling fixture: no AX queries or screenshot work
+                // during the measured sequence, and never real user storage.
+                let environment = ProcessInfo.processInfo.environment
+                guard environment["CLIO_UI_TESTING"] == "1",
+                      environment["CLIO_UI_TEST_MOTION_TRACE"] == "1" else { return }
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                    for _ in 0..<40 {
+                        windowSession.toggleSidebar()
+                        try await Task.sleep(for: .milliseconds(95))
+                    }
+                    for _ in 0..<8 {
+                        windowSession.toggleSidebar()
+                        try await Task.sleep(for: .milliseconds(350))
+                    }
+                } catch { /* Window closure cancels the fixture. */ }
             }
             .onDisappear {
                 windowSession.disconnect()

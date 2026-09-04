@@ -18,14 +18,7 @@ struct ClioLaunchConfiguration {
         do {
             return try uiTestConfiguration(environment: environment)
         } catch {
-            assertionFailure("Unable to prepare the UI-test workspace: \(error)")
-            let defaults = UserDefaults(
-                suiteName: "olympus.clio.mac.ui-tests.fallback"
-            ) ?? .standard
-            return Self(
-                appState: AppState(defaults: defaults, searchIndex: nil),
-                initialWindowRequest: .newDocument()
-            )
+            preconditionFailure("Unable to prepare isolated test storage: \(error)")
         }
     }
 }
@@ -36,7 +29,9 @@ private extension ClioLaunchConfiguration {
     ) throws -> Self {
         let identifier = environment["CLIO_UI_TEST_ID"] ?? UUID().uuidString
         let defaultsName = "olympus.clio.mac.ui-tests.\(identifier)"
-        let defaults = UserDefaults(suiteName: defaultsName) ?? .standard
+        guard let defaults = UserDefaults(suiteName: defaultsName) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClioUITests-\(identifier)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -46,6 +41,9 @@ private extension ClioLaunchConfiguration {
         let seedURL = rootURL.appendingPathComponent("seed.md")
         let seedText = "Alpha beta gamma\nSecond line\n"
         try seedText.write(to: seedURL, atomically: true, encoding: .utf8)
+        let journal = CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".crash-recovery"))
+        let identities = DocumentIdentityStore(storageURL: rootURL.appendingPathComponent(".identities.json"))
+        let index = try SQLiteSearchIndex(databaseURL: rootURL.appendingPathComponent(".index.sqlite"), identityStore: identities)
 
         let catalog = WorkspaceCatalog(
             defaults: defaults,
@@ -58,6 +56,7 @@ private extension ClioLaunchConfiguration {
                     isStale: false
                 )
             },
+            crashRecoveryJournal: journal,
             workspaceFactory: { id, url, journal in
                 try Workspace(
                     id: id,
@@ -70,8 +69,13 @@ private extension ClioLaunchConfiguration {
         let descriptor = try catalog.addAuthorizedFolder(rootURL)
         let appState = AppState(
             defaults: defaults,
+            recoveryStore: RecoveryStore(rootURL: rootURL.appendingPathComponent(".document-recovery")),
+            crashRecoveryJournal: journal,
             workspaceCatalog: catalog,
-            searchIndex: nil
+            searchIndex: index,
+            documentRegistry: DocumentBufferRegistry(identityStore: identities),
+            exportRecoveryCheckpointStore: ExportRecoveryCheckpointStore(rootURL: rootURL.appendingPathComponent(".export-checkpoints")),
+            exportRecoveryCatalog: ExportRecoveryCatalog(rootURL: rootURL.appendingPathComponent(".export-recovery"))
         )
 
         switch environment["CLIO_UI_TEST_SCENARIO"] {

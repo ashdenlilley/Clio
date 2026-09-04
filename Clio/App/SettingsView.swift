@@ -157,7 +157,8 @@ struct SettingsView: View {
                 LabeledContent("Additional Git patterns") {
                     TextEditor(text: $discovery.additionalPatternsText)
                         .font(.system(.caption, design: .monospaced))
-                        .frame(width: 260, height: 66)
+                        .frame(minWidth: 140, maxWidth: 260)
+                        .frame(height: 66)
                         .overlay {
                             RoundedRectangle(cornerRadius: 5)
                                 .stroke(Color(nsColor: Palette.hairline))
@@ -169,7 +170,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .tint(appState.accent.color)
-        .frame(width: 500, height: 590)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: Palette.background))
         .onChange(of: discovery.policy) { _, _ in
             appState.discoveryPolicyDidChange()
@@ -188,7 +189,7 @@ private struct SliderRow: View {
         LabeledContent(title) {
             HStack(spacing: 12) {
                 Slider(value: $value, in: range, step: step)
-                    .frame(width: 220)
+                    .frame(minWidth: 100, maxWidth: 220)
 
                 Text(valueLabel)
                     .foregroundStyle(.secondary)
@@ -216,7 +217,7 @@ private struct IntegerSliderRow: View {
                     in: Double(range.lowerBound)...Double(range.upperBound),
                     step: 1
                 )
-                .frame(width: 220)
+                .frame(minWidth: 100, maxWidth: 220)
 
                 Text(valueLabel)
                     .foregroundStyle(.secondary)

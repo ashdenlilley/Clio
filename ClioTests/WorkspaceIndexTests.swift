@@ -100,7 +100,7 @@ final class WorkspaceIndexTests: XCTestCase {
             )
 
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
-            let scanner = WorkspaceScanner()
+            let scanner = WorkspaceScanner(identityStore: DocumentIdentityStore(storageURL: nil))
             let normal = try await scanner.scan(
                 workspace: workspace,
                 policy: .default
@@ -133,7 +133,7 @@ final class WorkspaceIndexTests: XCTestCase {
             policy.includesTextFiles = false
             policy.includesHiddenFiles = true
             policy.enabledBuiltIns.remove(.nodeModules)
-            let snapshot = try await WorkspaceScanner().scan(
+            let snapshot = try await WorkspaceScanner(identityStore: DocumentIdentityStore(storageURL: nil)).scan(
                 workspace: WorkspaceDescriptor(rootURL: rootURL),
                 policy: policy
             )
@@ -157,7 +157,7 @@ final class WorkspaceIndexTests: XCTestCase {
             try handle.close()
 
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
-            let scanner = WorkspaceScanner()
+            let scanner = WorkspaceScanner(identityStore: DocumentIdentityStore(storageURL: nil))
             let oversized = try await scanner.scan(
                 workspace: workspace,
                 policy: .default
@@ -239,7 +239,8 @@ final class WorkspaceIndexTests: XCTestCase {
             try write("nested stale token", to: noteURL)
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("index.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("index.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             try await index.rebuild(workspaces: [workspace], policy: .default)
             try FileManager.default.removeItem(at: folderURL)
@@ -324,7 +325,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 enabledBuiltIns: [],
                 additionalPatterns: []
             )
-            let snapshot = try await WorkspaceScanner().scan(
+            let snapshot = try await WorkspaceScanner(identityStore: DocumentIdentityStore(storageURL: nil)).scan(
                 workspace: WorkspaceDescriptor(rootURL: rootURL),
                 policy: policy,
                 includesIgnored: true
@@ -353,7 +354,10 @@ final class WorkspaceIndexTests: XCTestCase {
 
             let databaseURL = rootURL.appendingPathComponent("index.sqlite3")
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
-            let index = try SQLiteSearchIndex(databaseURL: databaseURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: databaseURL,
+                identityStore: DocumentIdentityStore(storageURL: nil)
+            )
             try await index.rebuild(workspaces: [workspace], policy: .default)
 
             let quick = try await finalBatch(
@@ -434,7 +438,8 @@ final class WorkspaceIndexTests: XCTestCase {
             try write("short lived token", to: documentURL)
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("index.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("index.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             try await index.rebuild(workspaces: [workspace], policy: .default)
             try FileManager.default.removeItem(at: documentURL)
@@ -463,6 +468,7 @@ final class WorkspaceIndexTests: XCTestCase {
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
                 databaseURL: rootURL.appendingPathComponent("growth.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil),
                 documentSnapshot: { url in
                     try mutation.performIfArmed(at: url)
                     return try DocumentRevisionReader.documentSnapshot(at: url)
@@ -509,6 +515,7 @@ final class WorkspaceIndexTests: XCTestCase {
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
                 databaseURL: databaseURL,
+                identityStore: DocumentIdentityStore(storageURL: nil),
                 documentSnapshot: { url in
                     try mutation.performIfArmed(at: url)
                     return try DocumentRevisionReader.documentSnapshot(at: url)
@@ -546,6 +553,7 @@ final class WorkspaceIndexTests: XCTestCase {
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
                 databaseURL: rootURL.appendingPathComponent("repoint.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil),
                 documentSnapshot: { url in
                     try mutation.performIfArmed(at: url)
                     return try DocumentRevisionReader.documentSnapshot(at: url)
@@ -591,7 +599,8 @@ final class WorkspaceIndexTests: XCTestCase {
             try write("one unique needle", to: nestedURL.appendingPathComponent("note.md"))
 
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("overlap.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("overlap.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             let root = WorkspaceDescriptor(rootURL: rootURL)
             let nested = WorkspaceDescriptor(rootURL: nestedURL)
@@ -662,7 +671,8 @@ final class WorkspaceIndexTests: XCTestCase {
                 + String(repeating: "z", count: half - 8)
             try write(source, to: rootURL.appendingPathComponent("large.md"))
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("large-index.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("large-index.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             try await index.rebuild(
                 workspaces: [WorkspaceDescriptor(rootURL: rootURL)],
@@ -684,7 +694,8 @@ final class WorkspaceIndexTests: XCTestCase {
                 to: rootURL.appendingPathComponent("100%_notes.md")
             )
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("queries.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("queries.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             try await index.rebuild(
                 workspaces: [WorkspaceDescriptor(rootURL: rootURL)],
@@ -722,7 +733,8 @@ final class WorkspaceIndexTests: XCTestCase {
             try write("stable previous content", to: rootURL.appendingPathComponent("stable.md"))
             let workspace = WorkspaceDescriptor(rootURL: rootURL)
             let index = try SQLiteSearchIndex(
-                databaseURL: rootURL.appendingPathComponent("concurrent.sqlite3")
+                databaseURL: rootURL.appendingPathComponent("concurrent.sqlite3"),
+                identityStore: DocumentIdentityStore(storageURL: nil)
             )
             try await index.rebuild(workspaces: [workspace], policy: .default)
             for number in 0..<500 {
@@ -795,6 +807,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: resolveBookmark,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             let added = try first.addAuthorizedFolder(rootURL)
@@ -813,6 +826,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: resolveBookmark,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             XCTAssertEqual(Set(restored.descriptors.map(\.id)), [added.id, nested.id])
@@ -830,6 +844,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: resolveBookmark,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             XCTAssertTrue(empty.descriptors.isEmpty)
@@ -850,6 +865,7 @@ final class WorkspaceIndexTests: XCTestCase {
                         isStale: false
                     )
                 },
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: { _, url, _ in
                     try Workspace(
                         id: WorkspaceID(),
@@ -897,6 +913,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: resolve,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             let descriptor = try initial.addAuthorizedFolder(rootURL)
@@ -910,6 +927,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: conditionalResolve,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             XCTAssertEqual(unavailable.authorizationFailures.first?.id, descriptor.id)
@@ -923,6 +941,7 @@ final class WorkspaceIndexTests: XCTestCase {
                 defaults: defaults,
                 bookmarkMaker: makeBookmark,
                 bookmarkResolver: resolve,
+                crashRecoveryJournal: CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".test-journal")),
                 workspaceFactory: makeWorkspace
             )
             XCTAssertEqual(restored.descriptors.first?.id, descriptor.id)
@@ -1770,7 +1789,7 @@ private extension WorkspaceIndexTests {
             storageURL: rootURL.appendingPathComponent("identities.json")
         )
         let registry = DocumentBufferRegistry(identityStore: store)
-        let state = AppState(
+        let state = isolatedAppState(
             defaults: defaults,
             recoveryStore: RecoveryStore(
                 rootURL: rootURL.appendingPathComponent("recovery", isDirectory: true)
@@ -1814,7 +1833,7 @@ private extension WorkspaceIndexTests {
             let destinationWorkspace = try XCTUnwrap(catalog.workspace(id: destinationDescriptor.id))
             let store = DocumentIdentityStore(storageURL: baseURL.appendingPathComponent("ids.json"))
             let registry = DocumentBufferRegistry(identityStore: store)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: defaults,
                 recoveryStore: RecoveryStore(
                     rootURL: baseURL.appendingPathComponent("recovery", isDirectory: true)
@@ -1892,7 +1911,7 @@ private extension WorkspaceIndexTests {
             let nested = try catalog.addAuthorizedFolder(nestedURL)
             let store = DocumentIdentityStore(storageURL: nil)
             let registry = DocumentBufferRegistry(identityStore: store)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: defaults,
                 recoveryStore: RecoveryStore(
                     rootURL: rootURL.appendingPathComponent("recovery", isDirectory: true)
@@ -1962,7 +1981,7 @@ private extension WorkspaceIndexTests {
                 storageURL: rootURL.appendingPathComponent("move-identities.json")
             )
             let registry = DocumentBufferRegistry(identityStore: store)
-            let state = AppState(
+            let state = isolatedAppState(
                 defaults: defaults,
                 recoveryStore: RecoveryStore(
                     rootURL: rootURL.appendingPathComponent("recovery", isDirectory: true)
@@ -2059,6 +2078,8 @@ private extension WorkspaceIndexTests {
                     isStale: false
                 )
             },
+            crashRecoveryJournal: CrashRecoveryJournal(rootURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("ClioIndexJournalTests-\(UUID().uuidString)")),
             workspaceFactory: {
                 try Workspace(
                     id: $0,

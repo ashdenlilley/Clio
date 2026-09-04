@@ -16,6 +16,7 @@ final class ChromeMotionController {
     private(set) var isSidebarHovered = false
     private(set) var isSidebarFocused = false
     private(set) var isSidebarDragged = false
+    private(set) var isSidebarFileDragged = false
     private(set) var isChromeFadeEnabled: Bool
 
     private var writingStartedAt: TimeInterval?
@@ -237,6 +238,15 @@ final class ChromeMotionController {
         recordSidebarInteractionAfterStateChange()
     }
 
+    /// A file drag pauses temporary dismissal independently of swipe tracking.
+    func setSidebarFileDragged(_ dragged: Bool) {
+        tick()
+        guard isSidebarFileDragged != dragged else { return }
+        isSidebarFileDragged = dragged
+        if dragged { restoreChromeAfterIntentionalInteraction(at: clock.now) }
+        recordSidebarInteractionAfterStateChange()
+    }
+
     /// Begins a gesture from the current presentation, including midway through
     /// a programmatic reveal or hide.
     func beginSidebarGesture() {
@@ -379,7 +389,7 @@ final class ChromeMotionController {
             let threshold = writingStartedAt + MotionContract.writingThreshold
             if !didTriggerWritingThreshold, time >= threshold {
                 didTriggerWritingThreshold = true
-                if !isSidebarPinned {
+                if !hasTemporaryDismissalBlocker {
                     if sidebar.target > 0 {
                         wasSidebarCollapsedByWriting = true
                     }
@@ -463,6 +473,7 @@ private extension ChromeMotionController {
             || isSidebarFocused
             || isSidebarPinned
             || isSidebarDragged
+            || isSidebarFileDragged
     }
 
     /// A newer explicit sidebar command wins over any gesture still delivering

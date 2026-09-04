@@ -2,9 +2,12 @@ import AppKit
 import SwiftUI
 
 struct CommandPaletteView: View {
+    var maximumWidth: CGFloat = 620
+    var maximumResultsHeight: CGFloat = 360
     @Environment(AppState.self) private var appState
     @Environment(EditorWindowSession.self) private var windowSession
     @FocusState private var isQueryFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,16 +85,20 @@ struct CommandPaletteView: View {
                     }
                     .padding(6)
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: maximumResultsHeight)
                 .onChange(of: windowSession.selectedPaletteItemAnchor) { _, anchor in
                     guard let anchor else { return }
-                    withAnimation(.easeOut(duration: 0.08)) {
+                    if reduceMotion {
                         proxy.scrollTo(anchor, anchor: .center)
+                    } else {
+                        withAnimation(.easeOut(duration: 0.08)) {
+                            proxy.scrollTo(anchor, anchor: .center)
+                        }
                     }
                 }
             }
         }
-        .frame(width: 620)
+        .frame(width: maximumWidth)
         .background(Color(nsColor: Palette.backgroundRaised))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
@@ -99,7 +106,12 @@ struct CommandPaletteView: View {
                 .stroke(Color(nsColor: Palette.hairline), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.7), radius: 28, y: 12)
-        .task {
+        .task(id: windowSession.isPalettePresented && windowSession.motion.surfaceState.activeSurfaceStack.last == .palette) {
+            guard windowSession.isPalettePresented,
+                  windowSession.motion.surfaceState.activeSurfaceStack.last == .palette else {
+                isQueryFocused = false
+                return
+            }
             // Menu-command presentation must finish its current responder
             // transaction before the palette claims the field editor.
             await Task.yield()
@@ -108,7 +120,7 @@ struct CommandPaletteView: View {
         }
         .onExitCommand { windowSession.dismissPalette() }
         .background(
-            PaletteKeyboardMonitor { key in
+            PaletteKeyboardMonitor(isActive: windowSession.isPalettePresented && windowSession.motion.surfaceState.activeSurfaceStack.last == .palette) { key in
                 switch key {
                 case .up:
                     windowSession.movePaletteSelection(by: -1)
@@ -286,6 +298,7 @@ private enum PaletteNavigationKey {
 /// A window-scoped event monitor lets arrow and paging keys continue to drive
 /// palette selection while the plain TextField remains first responder.
 private struct PaletteKeyboardMonitor: NSViewRepresentable {
+    let isActive: Bool
     let handler: (PaletteNavigationKey) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -294,6 +307,7 @@ private struct PaletteKeyboardMonitor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PaletteKeyboardMonitorView {
         let view = PaletteKeyboardMonitorView(frame: .zero)
+        context.coordinator.isActive = isActive
         context.coordinator.attach(to: view)
         return view
     }
@@ -303,9 +317,11 @@ private struct PaletteKeyboardMonitor: NSViewRepresentable {
         context: Context
     ) {
         context.coordinator.handler = handler
+        context.coordinator.isActive = isActive
     }
 
     final class Coordinator {
+        var isActive = false
         var handler: (PaletteNavigationKey) -> Void
         private weak var view: PaletteKeyboardMonitorView?
         private var monitor: Any?
@@ -329,6 +345,7 @@ private struct PaletteKeyboardMonitor: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
                 [weak self] event in
                 guard let self,
+                      self.isActive,
                       let window = self.view?.window,
                       (event.window ?? NSApp.keyWindow) === window,
                       event.modifierFlags.intersection([.command, .control, .option]).isEmpty,

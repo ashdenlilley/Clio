@@ -17,7 +17,7 @@ final class ExactFileAccessTests: XCTestCase {
         let file = root.appendingPathComponent("selected.md")
         try Data("initial".utf8).write(to: file)
         let calls = AccessCalls()
-        let state = AppState(
+        let state = isolatedAppState(
             defaults: UserDefaults(suiteName: "ExactFileAccess.\(UUID())")!,
             recoveryStore: RecoveryStore(rootURL: root.appendingPathComponent("Recovery")),
             externalFileAccessController: .init(

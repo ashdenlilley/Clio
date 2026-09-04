@@ -467,7 +467,7 @@ final class CrashSafetyTests: XCTestCase {
     try await withRootsAsync { _, journalURL, recoveryURL in
       try Data("not a directory".utf8).write(to: journalURL)
       let journal = CrashRecoveryJournal(rootURL: journalURL)
-      let state = AppState(
+      let state = isolatedAppState(
         defaults: UserDefaults(suiteName: "ClioCrashSafety.\(UUID().uuidString)")!,
         recoveryStore: RecoveryStore(rootURL: recoveryURL),
         crashRecoveryJournal: journal
@@ -519,7 +519,7 @@ final class CrashSafetyTests: XCTestCase {
           reason: .dirtyBuffer,
           data: Data("relaunch bytes".utf8)
         ))
-      let state = AppState(
+      let state = isolatedAppState(
         defaults: UserDefaults(suiteName: "ClioCrashSafety.\(UUID().uuidString)")!,
         recoveryStore: RecoveryStore(rootURL: recoveryURL),
         crashRecoveryJournal: journal
@@ -548,7 +548,7 @@ final class CrashSafetyTests: XCTestCase {
         accessSecurityScopedResource: false,
         crashRecoveryJournal: journal
       )
-      let state = AppState(
+      let state = isolatedAppState(
         defaults: UserDefaults(suiteName: "ClioCrashSafety.\(UUID().uuidString)")!,
         initialWorkspace: workspace,
         recoveryStore: RecoveryStore(rootURL: recoveryURL),
