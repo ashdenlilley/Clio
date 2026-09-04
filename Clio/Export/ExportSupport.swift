@@ -62,6 +62,42 @@ enum ExportDestination {
     }
 }
 
+/// A completely rendered export that has not yet crossed the destination
+/// commit boundary. Rendering actors may be cancelled freely while producing
+/// this value; installation is deliberately kept as one synchronous operation
+/// on the coordinator so success can never be reported as cancellation after
+/// the destination has changed.
+struct StagedDocumentExport: Sendable {
+    let format: ExportFormat
+    let temporaryURL: URL
+    let destinationURL: URL
+    let byteCount: Int64
+    let generation: BufferGeneration
+    let sourceFingerprint: String
+    let replacing: Bool
+
+    func install(fileManager: FileManager = .default) throws -> ExportReceipt {
+        try ExportDestination.install(
+            temporaryURL: temporaryURL,
+            at: destinationURL,
+            replacing: replacing,
+            fileManager: fileManager
+        )
+        return ExportReceipt(
+            format: format,
+            destinationURL: destinationURL,
+            byteCount: byteCount,
+            completedAt: Date(),
+            generation: generation,
+            sourceFingerprint: sourceFingerprint
+        )
+    }
+
+    func discard(fileManager: FileManager = .default) {
+        try? fileManager.removeItem(at: temporaryURL)
+    }
+}
+
 private extension ExportDestination {
     static let maximumCollisionAttempts = 10_000
 
