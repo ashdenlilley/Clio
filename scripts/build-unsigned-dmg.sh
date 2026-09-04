@@ -97,7 +97,7 @@ plutil -insert xcode -string "${XCODE_VERSION}" "${MANIFEST_PATH}"
 plutil -insert architectures -string "${ARCHITECTURES}" "${MANIFEST_PATH}"
 plutil -insert sha256 -string "${SHA256}" "${MANIFEST_PATH}"
 plutil -insert createdAt -string "${CREATED_AT}" "${MANIFEST_PATH}"
-plutil -insert verification -string "hdiutil, layout, identity, version, architectures, unsigned state, licences" "${MANIFEST_PATH}"
+plutil -insert verification -string "hdiutil, layout, identity, version, architectures, unsigned state, dependency linkage, licences" "${MANIFEST_PATH}"
 plutil -convert json -r "${MANIFEST_PATH}"
 plutil -extract artifact raw "${MANIFEST_PATH}" >/dev/null
 
