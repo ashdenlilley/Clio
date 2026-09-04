@@ -1462,7 +1462,13 @@ final class WorkspaceIndexTests: XCTestCase {
                     )
                 )
             }
-            try await Task.sleep(for: .milliseconds(150))
+            // A fixed sleep races the 3,000 MainActor deliveries on CI. Keep
+            // the rebuild suspended until the real queue reaches its bound.
+            await eventually(timeout: .seconds(10)) {
+                coordinator.pendingEvents[descriptor.id]?.contains {
+                    $0.kind == .rescanRequired
+                } == true
+            }
             await index.resumeRebuild()
             try await synchronization.value
             for _ in 0..<100 {

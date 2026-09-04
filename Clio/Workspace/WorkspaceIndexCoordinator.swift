@@ -36,7 +36,9 @@ final class WorkspaceIndexCoordinator {
     @ObservationIgnored private var isSynchronizing = false
     @ObservationIgnored private var activeSynchronizationToken: UUID?
     @ObservationIgnored private var hasCompletedSynchronization = false
-    @ObservationIgnored private var pendingEvents: [WorkspaceID: [WorkspaceEvent]] = [:]
+    // Read-only internally so integration tests can await actual enqueue
+    // progress while an index rebuild is deliberately suspended.
+    @ObservationIgnored private(set) var pendingEvents: [WorkspaceID: [WorkspaceEvent]] = [:]
     @ObservationIgnored private var deferredBufferDeletions: [
         String: (token: UUID, workspaceID: WorkspaceID, task: Task<Void, Never>)
     ] = [:]
