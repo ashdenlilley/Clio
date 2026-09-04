@@ -48,7 +48,16 @@ final class EditorSession: Identifiable {
     let id: UUID
     private(set) var openingMode: EditorOpeningMode
 
-    var draftText = ""
+    var draftText = "" {
+        didSet {
+            guard !isApplyingEditorTextChange else { return }
+            wordCountTask?.cancel()
+            wordCountGeneration &+= 1
+            isWordCountCurrent = true
+            wordCount = Self.countWords(in: draftText)
+        }
+    }
+    private(set) var wordCount = 0
     private(set) var relativePath = ""
     private(set) var workspaceID: WorkspaceID?
     private(set) var document: Document?
@@ -79,6 +88,18 @@ final class EditorSession: Identifiable {
 
     @ObservationIgnored
     private var presentedErrorContext: PresentedErrorContext = .general
+
+    @ObservationIgnored
+    private var wordCountTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var wordCountGeneration: UInt64 = 0
+
+    @ObservationIgnored
+    private var isApplyingEditorTextChange = false
+
+    @ObservationIgnored
+    private var isWordCountCurrent = true
 
     init(
         id: UUID = UUID(),
@@ -139,10 +160,6 @@ final class EditorSession: Identifiable {
 
     var displayName: String {
         document?.filename ?? preferredFilenameForRestoration
-    }
-
-    var wordCount: Int {
-        draftText.split(whereSeparator: { $0.isWhitespace }).count
     }
 
     var wordCountLabel: String {
@@ -253,6 +270,7 @@ final class EditorSession: Identifiable {
     }
 
     func deactivate() {
+        wordCountTask?.cancel()
         autosaveErrorMonitor?.cancel()
         autosaver?.cancel()
         autosaver = nil
@@ -265,10 +283,38 @@ final class EditorSession: Identifiable {
         presentedErrorContext = .general
     }
 
-    func editorTextDidChange(_ newText: String) {
+    func editorTextDidChange(
+        _ newText: String,
+        edit: EditorTextEdit? = nil
+    ) {
         guard let document else { return }
 
+        let previousText = draftText
+        let nextWordCount = edit.flatMap {
+            Self.incrementalWordCount(
+                previousText: previousText,
+                newText: newText,
+                edit: $0,
+                previousCount: wordCount,
+                previousCountIsCurrent: isWordCountCurrent
+            )
+        }
+        isApplyingEditorTextChange = true
         draftText = newText
+        isApplyingEditorTextChange = false
+        if let nextWordCount {
+            wordCountTask?.cancel()
+            wordCountGeneration &+= 1
+            wordCount = nextWordCount
+            isWordCountCurrent = true
+        } else if edit == nil, (newText as NSString).length <= 65_536 {
+            wordCountTask?.cancel()
+            wordCountGeneration &+= 1
+            wordCount = Self.countWords(in: newText)
+            isWordCountCurrent = true
+        } else {
+            scheduleWordCountRefresh(for: newText)
+        }
         document.replaceText(with: newText)
         guard let autosaver else {
             errorMessage = SessionError.parentFolderAuthorizationRequired
@@ -373,6 +419,93 @@ private extension EditorSession {
     enum PresentedErrorContext {
         case general
         case save
+    }
+
+    nonisolated static func countWords(in source: String) -> Int {
+        source.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
+    nonisolated static func incrementalWordCount(
+        previousText: String,
+        newText: String,
+        edit: EditorTextEdit,
+        previousCount: Int,
+        previousCountIsCurrent: Bool
+    ) -> Int? {
+        guard previousCountIsCurrent else { return nil }
+        let previous = previousText as NSString
+        let next = newText as NSString
+        let range = NSRange(
+            location: edit.replacedRange.location,
+            length: edit.replacedRange.length
+        )
+        let replacementLength = (edit.replacement as NSString).length
+        guard range.location >= 0,
+              range.length >= 0,
+              NSMaxRange(range) <= previous.length,
+              next.length == previous.length - range.length + replacementLength,
+              replacementLength <= 8_192 else { return nil }
+
+        let whitespace = CharacterSet.whitespacesAndNewlines
+        func isWhitespace(_ codeUnit: unichar) -> Bool {
+            guard let scalar = UnicodeScalar(Int(codeUnit)) else { return false }
+            return whitespace.contains(scalar)
+        }
+        var left = range.location
+        var right = NSMaxRange(range)
+        var scanned = 0
+        while left > 0,
+              !isWhitespace(previous.character(at: left - 1)) {
+            left -= 1
+            scanned += 1
+            if scanned > 8_192 { return nil }
+        }
+        while right < previous.length,
+              !isWhitespace(previous.character(at: right)) {
+            right += 1
+            scanned += 1
+            if scanned > 8_192 { return nil }
+        }
+
+        let delta = replacementLength - range.length
+        let nextRight = right + delta
+        guard nextRight >= left, nextRight <= next.length else { return nil }
+        let previousFragment = previous.substring(
+            with: NSRange(location: left, length: right - left)
+        )
+        let nextFragment = next.substring(
+            with: NSRange(location: left, length: nextRight - left)
+        )
+        return max(
+            0,
+            previousCount
+                - countWords(in: previousFragment)
+                + countWords(in: nextFragment)
+        )
+    }
+
+    func scheduleWordCountRefresh(for source: String) {
+        wordCountTask?.cancel()
+        wordCountGeneration &+= 1
+        let generation = wordCountGeneration
+        isWordCountCurrent = false
+        wordCountTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(160))
+            } catch {
+                return
+            }
+            let count = await Task.detached(priority: .utility) {
+                Self.countWords(in: source)
+            }.value
+            guard !Task.isCancelled,
+                  let self,
+                  self.wordCountGeneration == generation,
+                  self.draftText == source else { return }
+            self.wordCount = count
+            self.isWordCountCurrent = true
+            self.wordCountTask = nil
+        }
     }
 
     func loadInitialDocument(

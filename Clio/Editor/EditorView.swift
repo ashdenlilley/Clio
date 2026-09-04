@@ -42,22 +42,30 @@ struct EditorView: NSViewRepresentable {
     @Binding private var text: String
     private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
+    private var onTextEdit: ((String, EditorTextEdit?) -> Void)?
+    private var onSlashCommand: (() -> Void)?
 
     init(
         text: Binding<String>,
         viewport: Binding<EditorViewportState>? = nil,
-        configuration: EditorConfiguration = EditorConfiguration()
+        configuration: EditorConfiguration = EditorConfiguration(),
+        onTextEdit: ((String, EditorTextEdit?) -> Void)? = nil,
+        onSlashCommand: (() -> Void)? = nil
     ) {
         _text = text
         self.viewport = viewport
         self.configuration = configuration
+        self.onTextEdit = onTextEdit
+        self.onSlashCommand = onSlashCommand
     }
 
     func makeCoordinator() -> EditorCoordinator {
         EditorCoordinator(
             text: $text,
             viewport: viewport,
-            configuration: configuration
+            configuration: configuration,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
     }
 
@@ -68,7 +76,9 @@ struct EditorView: NSViewRepresentable {
         context.coordinator.update(
             text: $text,
             viewport: viewport,
-            configuration: configuration
+            configuration: configuration,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
         return surface
     }
@@ -77,7 +87,9 @@ struct EditorView: NSViewRepresentable {
         context.coordinator.update(
             text: $text,
             viewport: viewport,
-            configuration: configuration
+            configuration: configuration,
+            onTextEdit: onTextEdit,
+            onSlashCommand: onSlashCommand
         )
     }
 }
@@ -101,6 +113,7 @@ final class EditorContainerView: NSView {
         wantsLayer = true
         layer?.backgroundColor = Palette.background.cgColor
         focusRingType = .none
+        setAccessibilityIdentifier("editor.surface.no-focus-ring")
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.borderType = .noBorder

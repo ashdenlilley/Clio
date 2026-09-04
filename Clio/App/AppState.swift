@@ -546,15 +546,26 @@ final class AppState: ClioCommandDispatching {
         guard let descriptor = workspaceDescriptors.first(where: { $0.id == result.workspaceID }),
               let workspace = workspace(for: descriptor.id) else { return }
         let fileURL = descriptor.rootURL.appendingPathComponent(result.relativePath)
-        guard !routeToExistingDocument(at: fileURL) else { return }
-        do {
-                try openDocument(
-                    at: fileURL,
-                    workspace: workspace,
-                    descriptor: descriptor,
-                    documentID: result.documentID,
-                    in: window
+        let matchViewport = result.documentMatchRange.map {
+            EditorViewportState(
+                selection: $0,
+                topVisibleUTF16Offset: $0.location,
+                fractionalYOffset: 0
             )
+        }
+        guard !routeToExistingDocument(
+            at: fileURL,
+            applying: matchViewport
+        ) else { return }
+        do {
+            let tab = try openDocument(
+                at: fileURL,
+                workspace: workspace,
+                descriptor: descriptor,
+                documentID: result.documentID,
+                in: window
+            )
+            if let matchViewport { tab.updateViewport(matchViewport) }
         } catch {
             presentError("Clio couldn’t open that search result.", underlying: error)
         }
@@ -709,7 +720,8 @@ final class AppState: ClioCommandDispatching {
         case .export:
             NotificationCenter.default.post(
                 name: .clioRequestedExport,
-                object: tab
+                object: tab,
+                userInfo: [ClioExportNotificationKey.arguments: invocation.arguments]
             )
         case .focus:
             isFocusModeEnabled.toggle()
@@ -733,6 +745,10 @@ final class AppState: ClioCommandDispatching {
 
 extension Notification.Name {
     static let clioRequestedExport = Notification.Name("ClioRequestedExport")
+}
+
+enum ClioExportNotificationKey {
+    static let arguments = "ClioExportArguments"
 }
 
 private extension AppState {
@@ -868,13 +884,14 @@ private extension AppState {
         }
     }
 
+    @discardableResult
     func openDocument(
         at fileURL: URL,
         workspace: Workspace,
         descriptor: WorkspaceDescriptor,
         documentID: DocumentID? = nil,
         in window: EditorWindowSession
-    ) throws {
+    ) throws -> EditorSession {
         let tab = EditorSession(
             openingMode: .mostRecent,
             restoredDocumentID: documentID
@@ -886,15 +903,20 @@ private extension AppState {
         )
         editorSessions.append(tab)
         window.append(tab)
+        return tab
     }
 
-    func routeToExistingDocument(at fileURL: URL) -> Bool {
+    func routeToExistingDocument(
+        at fileURL: URL,
+        applying viewport: EditorViewportState? = nil
+    ) -> Bool {
         let identity = PhysicalFileIdentity.authorizedFile(at: fileURL)
         for window in editorWindows {
             if let tab = window.tabs.first(where: { candidate in
                 guard let candidateURL = candidate.fileURL else { return false }
                 return PhysicalFileIdentity.authorizedFile(at: candidateURL) == identity
             }) {
+                if let viewport { tab.updateViewport(viewport) }
                 window.focus(tabID: tab.id)
                 return true
             }
@@ -914,9 +936,11 @@ private extension AppState {
         defer { selectedURL.stopAccessingSecurityScopedResource() }
 
         do {
-            let descriptor = try workspaceCatalog.addAuthorizedFolder(selectedURL)
-            guard let authorizedWorkspace = workspaceCatalog.workspace(id: descriptor.id),
-                  authorizedWorkspace.contains(fileURL) else {
+            let descriptor = try workspaceCatalog.addAuthorizedFolder(
+                selectedURL,
+                containing: fileURL
+            )
+            guard let authorizedWorkspace = workspaceCatalog.workspace(id: descriptor.id) else {
                 throw Workspace.WorkspaceError.fileOutsideWorkspace(fileURL)
             }
             try tab.activate(

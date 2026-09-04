@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct CommandPaletteView: View {
@@ -25,7 +26,7 @@ struct CommandPaletteView: View {
                 .textFieldStyle(.plain)
                 .focused($isQueryFocused)
                 .font(.custom(Typography.family, fixedSize: 14))
-                .onSubmit { chooseFirstResult() }
+                .accessibilityIdentifier("palette.query")
 
                 if windowSession.paletteMode == .search {
                     Picker(
@@ -70,17 +71,25 @@ struct CommandPaletteView: View {
                 .fill(Color(nsColor: Palette.hairline))
                 .frame(height: 1)
 
-            ScrollView {
-                LazyVStack(spacing: 1) {
-                    if windowSession.paletteMode == .commands {
-                        commandResults
-                    } else {
-                        searchResults
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        if windowSession.paletteMode == .commands {
+                            commandResults
+                        } else {
+                            searchResults
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxHeight: 360)
+                .onChange(of: windowSession.selectedPaletteItemAnchor) { _, anchor in
+                    guard let anchor else { return }
+                    withAnimation(.easeOut(duration: 0.08)) {
+                        proxy.scrollTo(anchor, anchor: .center)
                     }
                 }
-                .padding(6)
             }
-            .frame(maxHeight: 360)
         }
         .frame(width: 620)
         .background(Color(nsColor: Palette.backgroundRaised))
@@ -92,28 +101,60 @@ struct CommandPaletteView: View {
         .shadow(color: .black.opacity(0.7), radius: 28, y: 12)
         .onAppear { isQueryFocused = true }
         .onExitCommand { windowSession.dismissPalette() }
+        .background(
+            PaletteKeyboardMonitor { key in
+                switch key {
+                case .up:
+                    windowSession.movePaletteSelection(by: -1)
+                case .down:
+                    windowSession.movePaletteSelection(by: 1)
+                case .pageUp:
+                    windowSession.movePaletteSelection(by: -8)
+                case .pageDown:
+                    windowSession.movePaletteSelection(by: 8)
+                case .return:
+                    windowSession.performSelectedPaletteItem()
+                }
+            }
+        )
         .accessibilityElement(children: .contain)
         .accessibilityLabel(windowSession.paletteMode == .search
             ? "Workspace search"
             : "Command palette")
+        .accessibilityIdentifier("command.palette")
     }
 
     @ViewBuilder
     private var commandResults: some View {
-        if windowSession.filteredCommands.isEmpty {
+        if let error = windowSession.paletteErrorMessage {
+            EmptyPaletteRow(message: error)
+        } else if windowSession.filteredCommands.isEmpty {
             EmptyPaletteRow(message: "No matching command")
         } else {
-            ForEach(windowSession.filteredCommands) { descriptor in
+            ForEach(
+                Array(windowSession.filteredCommands.enumerated()),
+                id: \.element.id
+            ) { index, descriptor in
                 Button {
-                    windowSession.perform(descriptor.command)
+                    windowSession.selectPaletteItem(at: index)
+                    windowSession.performSelectedPaletteItem()
                 } label: {
                     PaletteRow(
                         icon: descriptor.systemImage,
                         title: descriptor.command.slashName,
-                        detail: descriptor.title
+                        detail: descriptor.title,
+                        isSelected: index == windowSession.paletteSelectionIndex
                     )
                 }
                 .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering { windowSession.selectPaletteItem(at: index) }
+                }
+                .id("command:\(descriptor.command.rawValue)")
+                .accessibilityIdentifier("palette.command.\(descriptor.command.rawValue)")
+                .modifier(SelectedAccessibilityTrait(
+                    isSelected: index == windowSession.paletteSelectionIndex
+                ))
             }
         }
     }
@@ -130,9 +171,13 @@ struct CommandPaletteView: View {
                 message: windowSession.isSearching ? "Searching…" : "No results"
             )
         } else {
-            ForEach(windowSession.searchResults) { result in
+            ForEach(
+                Array(windowSession.searchResults.enumerated()),
+                id: \.element.id
+            ) { index, result in
                 Button {
-                    windowSession.chooseSearchResult(result)
+                    windowSession.selectPaletteItem(at: index)
+                    windowSession.performSelectedPaletteItem()
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -163,18 +208,23 @@ struct CommandPaletteView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .contentShape(Rectangle())
+                    .background {
+                        if index == windowSession.paletteSelectionIndex {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(nsColor: Palette.hairline).opacity(0.8))
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering { windowSession.selectPaletteItem(at: index) }
+                }
+                .id("search:\(result.id.uuidString)")
+                .accessibilityIdentifier("palette.search-result")
+                .modifier(SelectedAccessibilityTrait(
+                    isSelected: index == windowSession.paletteSelectionIndex
+                ))
             }
-        }
-    }
-
-    private func chooseFirstResult() {
-        if windowSession.paletteMode == .commands,
-           let command = windowSession.filteredCommands.first?.command {
-            windowSession.perform(command)
-        } else if let result = windowSession.searchResults.first {
-            windowSession.chooseSearchResult(result)
         }
     }
 }
@@ -183,6 +233,7 @@ private struct PaletteRow: View {
     let icon: String
     let title: String
     let detail: String
+    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -199,6 +250,111 @@ private struct PaletteRow: View {
         .padding(.horizontal, 10)
         .frame(height: 35)
         .contentShape(Rectangle())
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: Palette.hairline).opacity(0.8))
+            }
+        }
+    }
+}
+
+private struct SelectedAccessibilityTrait: ViewModifier {
+    let isSelected: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isSelected {
+            content.accessibilityAddTraits(.isSelected)
+        } else {
+            content
+        }
+    }
+}
+
+private enum PaletteNavigationKey {
+    case up
+    case down
+    case pageUp
+    case pageDown
+    case `return`
+}
+
+/// A window-scoped event monitor lets arrow and paging keys continue to drive
+/// palette selection while the plain TextField remains first responder.
+private struct PaletteKeyboardMonitor: NSViewRepresentable {
+    let handler: (PaletteNavigationKey) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(handler: handler)
+    }
+
+    func makeNSView(context: Context) -> PaletteKeyboardMonitorView {
+        let view = PaletteKeyboardMonitorView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(
+        _ nsView: PaletteKeyboardMonitorView,
+        context: Context
+    ) {
+        context.coordinator.handler = handler
+    }
+
+    final class Coordinator {
+        var handler: (PaletteNavigationKey) -> Void
+        private weak var view: PaletteKeyboardMonitorView?
+        private var monitor: Any?
+
+        init(handler: @escaping (PaletteNavigationKey) -> Void) {
+            self.handler = handler
+        }
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+
+        func attach(to view: PaletteKeyboardMonitorView) {
+            self.view = view
+            view.onWindowChanged = { [weak self] in self?.installMonitorIfNeeded() }
+            installMonitorIfNeeded()
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil, view?.window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                [weak self] event in
+                guard let self,
+                      let window = self.view?.window,
+                      event.window === window,
+                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                      (window.firstResponder as? NSTextView)?.hasMarkedText() != true,
+                      let key = Self.navigationKey(for: event) else { return event }
+                self.handler(key)
+                return nil
+            }
+        }
+
+        private static func navigationKey(for event: NSEvent) -> PaletteNavigationKey? {
+            switch event.keyCode {
+            case 126: return .up
+            case 125: return .down
+            case 116: return .pageUp
+            case 121: return .pageDown
+            case 36, 76: return .return
+            default: return nil
+            }
+        }
+    }
+}
+
+private final class PaletteKeyboardMonitorView: NSView {
+    var onWindowChanged: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChanged?()
     }
 }
 

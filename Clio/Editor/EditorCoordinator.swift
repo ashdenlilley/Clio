@@ -5,6 +5,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var text: Binding<String>
     private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
+    private var onTextEdit: ((String, EditorTextEdit?) -> Void)?
+    private var onSlashCommand: (() -> Void)?
     private weak var surface: EditorContainerView?
 
     private let typewriterScroller = TypewriterScroller()
@@ -15,16 +17,22 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var hasAppliedConfiguration = false
     private var hasRestoredViewport = false
     private var isApplyingViewport = false
+    private var lastKnownViewport: EditorViewportState?
+    private var pendingTextEdit: EditorTextEdit?
     private var boundsObserver: NSObjectProtocol?
 
     init(
         text: Binding<String>,
         viewport: Binding<EditorViewportState>? = nil,
-        configuration: EditorConfiguration
+        configuration: EditorConfiguration,
+        onTextEdit: ((String, EditorTextEdit?) -> Void)? = nil,
+        onSlashCommand: (() -> Void)? = nil
     ) {
         self.text = text
         self.viewport = viewport
         self.configuration = configuration
+        self.onTextEdit = onTextEdit
+        self.onSlashCommand = onSlashCommand
     }
 
     deinit {
@@ -69,10 +77,14 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     func update(
         text: Binding<String>,
         viewport: Binding<EditorViewportState>? = nil,
-        configuration: EditorConfiguration
+        configuration: EditorConfiguration,
+        onTextEdit: ((String, EditorTextEdit?) -> Void)? = nil,
+        onSlashCommand: (() -> Void)? = nil
     ) {
         self.text = text
         self.viewport = viewport
+        self.onTextEdit = onTextEdit
+        self.onSlashCommand = onSlashCommand
         guard let surface else { return }
 
         let configurationChanged = self.configuration != configuration
@@ -88,7 +100,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         replaceEditorTextIfNeeded(with: text.wrappedValue, in: surface.textView)
         typewriterScroller.updateViewportInsets(in: surface, configuration: configuration)
         focusDimmer.apply(to: surface.textView, configuration: configuration)
-        restoreViewportIfNeeded()
+        applyBoundViewportIfNeeded()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -96,9 +108,12 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
               let textView = notification.object as? NSTextView else { return }
 
         let newText = textView.string
-        if text.wrappedValue != newText {
+        if let onTextEdit {
+            onTextEdit(newText, pendingTextEdit)
+        } else if text.wrappedValue != newText {
             text.wrappedValue = newText
         }
+        pendingTextEdit = nil
 
         typewriterScroller.resumeAfterEdit()
         focusDimmer.apply(to: textView, configuration: configuration)
@@ -132,9 +147,47 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         shouldChangeTextIn affectedCharRange: NSRange,
         replacementString: String?
     ) -> Bool {
+        let replacement = replacementString ?? ""
+        if Self.isInlineSlashTrigger(
+            in: textView.string,
+            range: affectedCharRange,
+            replacement: replacement,
+            hasMarkedText: textView.hasMarkedText()
+        ) {
+            pendingTextEdit = nil
+            isChangingText = false
+            DispatchQueue.main.async { [weak self] in
+                self?.onSlashCommand?()
+            }
+            return false
+        }
+
         isChangingText = true
+        pendingTextEdit = EditorTextEdit(
+            replacedRange: UTF16Range(
+                location: affectedCharRange.location,
+                length: affectedCharRange.length
+            ),
+            replacement: replacement
+        )
         focusDimmer.clear(in: textView)
         return true
+    }
+
+    static func isInlineSlashTrigger(
+        in source: String,
+        range: NSRange,
+        replacement: String,
+        hasMarkedText: Bool = false
+    ) -> Bool {
+        guard !hasMarkedText,
+              replacement == "/",
+              range.length == 0 else { return false }
+        let source = source as NSString
+        guard range.location >= 0, range.location <= source.length else { return false }
+        guard range.location > 0 else { return true }
+        let preceding = source.character(at: range.location - 1)
+        return preceding == 0x0A || preceding == 0x0D
     }
 
     private func replaceEditorTextIfNeeded(with newText: String, in textView: EditorTextView) {
@@ -145,6 +198,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         let undoWasEnabled = textView.allowsUndo
 
         isApplyingExternalUpdate = true
+        pendingTextEdit = nil
         focusDimmer.clear(in: textView)
         textView.allowsUndo = false
         if let textStorage = textView.textStorage {
@@ -171,15 +225,16 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         isApplyingExternalUpdate = false
     }
 
-    private func restoreViewportIfNeeded() {
-        guard !hasRestoredViewport,
-              let surface,
+    private func applyBoundViewportIfNeeded() {
+        guard let surface,
               let state = viewport?.wrappedValue else { return }
+        if hasRestoredViewport, state == lastKnownViewport { return }
         hasRestoredViewport = true
         isApplyingViewport = true
 
         let length = (surface.textView.string as NSString).length
         let clamped = state.clamped(toUTF16Length: length)
+        lastKnownViewport = clamped
         surface.textView.setSelectedRange(
             NSRange(
                 location: clamped.selection.location,
@@ -249,7 +304,10 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             fractionalYOffset: fractionalOffset
         )
         if viewport.wrappedValue != next {
+            lastKnownViewport = next
             viewport.wrappedValue = next
+        } else {
+            lastKnownViewport = next
         }
     }
 }

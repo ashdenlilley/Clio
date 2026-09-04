@@ -7,6 +7,17 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceCatalog {
+    enum CatalogError: LocalizedError, Equatable {
+        case selectedFolderDoesNotContainDocument(URL)
+
+        var errorDescription: String? {
+            switch self {
+            case let .selectedFolderDoesNotContainDocument(url):
+                return "The selected folder does not contain \(url.lastPathComponent)."
+            }
+        }
+    }
+
     struct AuthorizationFailure: Identifiable, Equatable {
         let id: WorkspaceID
         let folderName: String
@@ -65,18 +76,26 @@ final class WorkspaceCatalog {
     @discardableResult
     func addAuthorizedFolder(
         _ folderURL: URL,
-        bookmark suppliedBookmark: Data? = nil
+        bookmark suppliedBookmark: Data? = nil,
+        containing requiredDocumentURL: URL? = nil
     ) throws -> WorkspaceDescriptor {
         let standardizedURL = folderURL.standardizedFileURL
         if let existing = descriptors.first(where: {
             $0.rootURL == standardizedURL.resolvingSymlinksInPath()
         }) {
+            if let requiredDocumentURL,
+               activeWorkspaces[existing.id]?.contains(requiredDocumentURL) != true {
+                throw CatalogError.selectedFolderDoesNotContainDocument(requiredDocumentURL)
+            }
             return existing
         }
 
         let bookmark = try suppliedBookmark ?? bookmarkMaker(standardizedURL)
         let resolution = try bookmarkResolver(bookmark)
         let workspace = try workspaceFactory(resolution.url)
+        if let requiredDocumentURL, !workspace.contains(requiredDocumentURL) {
+            throw CatalogError.selectedFolderDoesNotContainDocument(requiredDocumentURL)
+        }
         let descriptor = WorkspaceDescriptor(rootURL: workspace.rootURL)
         let refreshedBookmark = resolution.isStale
             ? try bookmarkMaker(resolution.url)

@@ -111,12 +111,7 @@ struct ContentView: View {
             EditorView(
                 text: Binding(
                     get: { editorSession.draftText },
-                    set: { newText in
-                        windowSession.noteEditorChange(
-                            from: editorSession.draftText,
-                            to: newText
-                        )
-                    }
+                    set: { editorSession.draftText = $0 }
                 ),
                 viewport: Binding(
                     get: { editorSession.viewportState },
@@ -131,7 +126,13 @@ struct ContentView: View {
                     typewriterAnchor: CGFloat(appState.typewriterAnchor),
                     isFocusModeEnabled: appState.isFocusModeEnabled,
                     focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
-                )
+                ),
+                onTextEdit: { newText, edit in
+                    windowSession.noteEditorChange(to: newText, edit: edit)
+                },
+                onSlashCommand: {
+                    windowSession.presentInlineSlashPalette()
+                }
             )
             .id(editorSession.id)
 
