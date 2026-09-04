@@ -37,7 +37,7 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ashdenlilley.Clio
+        PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac
         PRODUCT_NAME: Clio
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
@@ -64,7 +64,7 @@ targets:
       - target: Clio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ashdenlilley.ClioTests
+        PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac.tests
         PRODUCT_NAME: ClioTests
         GENERATE_INFOPLIST_FILE: YES
         BUNDLE_LOADER: "$(TEST_HOST)"
