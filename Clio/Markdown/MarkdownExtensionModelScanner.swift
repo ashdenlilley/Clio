@@ -104,6 +104,7 @@ struct MarkdownExtensionModelScanner {
         var next = NSMaxRange(line)
         while next < source.length {
             try Task.checkCancellation()
+            try cancellation?.check()
             let candidate = lineRange(at: next)
             let candidateContent = contentRange(of: candidate)
             if candidateContent.length == 0 {
@@ -127,7 +128,10 @@ struct MarkdownExtensionModelScanner {
             next = NSMaxRange(candidate)
         }
         let whole = NSRange(location: line.location, length: NSMaxRange(last) - line.location)
-        let parsed = try SwiftMarkdownSemanticParser(source: projection.text).parse()
+        let parsed = try SwiftMarkdownSemanticParser(
+            source: projection.text,
+            cancellation: cancellation
+        ).parse()
         let blocks = MarkdownModelRangeMapper.map(parsed.blocks) {
             projection.originalRange(for: $0)
         }
@@ -166,7 +170,10 @@ struct MarkdownExtensionModelScanner {
         var cursor = NSMaxRange(first)
         var count = 0
         while cursor < source.length {
-            if count.isMultiple(of: 256) { try Task.checkCancellation() }
+            if count.isMultiple(of: 256) {
+                try Task.checkCancellation()
+                try cancellation?.check()
+            }
             let candidate = lineRange(at: cursor)
             let content = contentRange(of: candidate)
             if content.length == 0 {

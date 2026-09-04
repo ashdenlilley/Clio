@@ -76,7 +76,10 @@ enum DocumentRevisionReader {
         return status.st_size
     }
 
-    static func revision(at url: URL) throws -> DiskRevision {
+    static func revision(
+        at url: URL,
+        maximumByteCount: Int64? = nil
+    ) throws -> DiskRevision {
         let standardizedURL = url.standardizedFileURL
         let descriptor = open(standardizedURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard descriptor >= 0 else { throw posixError(for: standardizedURL) }
@@ -84,8 +87,20 @@ enum DocumentRevisionReader {
 
         let initial = try fileStatus(descriptor, url: standardizedURL)
         try validateRegularFile(initial, url: standardizedURL)
+        try validateSize(
+            initial.st_size,
+            maximumByteCount: maximumByteCount,
+            url: standardizedURL
+        )
         var hasher = SHA256()
+        var hashedByteCount: Int64 = 0
         let byteCount = try readChunks(descriptor, url: standardizedURL) { chunk in
+            hashedByteCount += Int64(chunk.count)
+            try validateSize(
+                hashedByteCount,
+                maximumByteCount: maximumByteCount,
+                url: standardizedURL
+            )
             hasher.update(data: chunk)
         }
         let final = try fileStatus(descriptor, url: standardizedURL)
@@ -139,6 +154,7 @@ private extension DocumentRevisionReader {
         var total = 0
         var storage = [UInt8](repeating: 0, count: readChunkByteCount)
         while true {
+            try Task.checkCancellation()
             let count = read(descriptor, &storage, storage.count)
             if count == 0 { return total }
             if count < 0 {

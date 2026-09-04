@@ -29,6 +29,7 @@ final class AppState: ClioCommandDispatching {
 
     let workspaceCatalog: WorkspaceCatalog
     let discoverySettings: WorkspaceDiscoverySettings
+    private(set) var pendingExportRecoveries: [ExportRecoveryItem] = []
 
     var fontSize: Double = 14 {
         didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
@@ -78,6 +79,12 @@ final class AppState: ClioCommandDispatching {
 
     @ObservationIgnored
     private let crashRecoveryJournal: CrashRecoveryJournal
+
+    @ObservationIgnored
+    private let exportRecoveryCheckpointStore: any ExportRecoveryCheckpointing
+
+    @ObservationIgnored
+    private let exportRecoveryCatalog: any ExportTransactionRecoveryCataloging
 
     @ObservationIgnored
     private var recoveryStore: any RecoveryPersisting
@@ -159,7 +166,9 @@ final class AppState: ClioCommandDispatching {
         documentMover suppliedDocumentMover: DocumentMover? = nil,
         externalFileAccessController: SecurityScopedFileAccessController = .init(),
         parentFolderSelection: (@MainActor (URL) -> URL?)? = nil,
-        activationWillOpen: (@MainActor (URL) async -> Void)? = nil
+        activationWillOpen: (@MainActor (URL) async -> Void)? = nil,
+        exportRecoveryCheckpointStore: any ExportRecoveryCheckpointing = ExportRecoveryCheckpointStore.shared,
+        exportRecoveryCatalog: any ExportTransactionRecoveryCataloging = ExportRecoveryCatalog.shared
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
@@ -167,6 +176,8 @@ final class AppState: ClioCommandDispatching {
         self.externalFileAccessController = externalFileAccessController
         self.parentFolderSelection = parentFolderSelection
         self.activationWillOpen = activationWillOpen
+        self.exportRecoveryCheckpointStore = exportRecoveryCheckpointStore
+        self.exportRecoveryCatalog = exportRecoveryCatalog
         let activeRecoveryStore = recoveryStore
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
@@ -1045,6 +1056,7 @@ final class AppState: ClioCommandDispatching {
     func dismissTransientMessage() {
         workspaceErrorMessage = nil
         if pendingCrashRecoveryCount == 0,
+           pendingExportRecoveries.isEmpty,
            !isCrashRecoveryDurabilityCompromised {
             crashRecoveryMessage = nil
         }
@@ -1097,6 +1109,48 @@ final class AppState: ClioCommandDispatching {
                 underlying: error
             )
             return false
+        }
+    }
+
+    func revealExportRecovery(_ item: ExportRecoveryItem) {
+        guard pendingExportRecoveries.contains(item) else { return }
+        switch item.storage {
+        case .appContainer:
+            NSWorkspace.shared.activateFileViewerSelecting([item.candidateURL])
+        case .rememberedDirectory:
+            let catalog = exportRecoveryCatalog
+            Task { @MainActor [weak self] in
+                do {
+                    try await catalog.reveal(item)
+                } catch {
+                    self?.crashRecoveryMessage = "Clio could not reveal the recovered export (\(error.localizedDescription)). Its file remains intact."
+                }
+            }
+        }
+    }
+
+    func discardExportRecovery(_ item: ExportRecoveryItem) {
+        guard pendingExportRecoveries.contains(item) else { return }
+        let store = exportRecoveryCheckpointStore
+        let catalog = exportRecoveryCatalog
+        Task { @MainActor [weak self] in
+            do {
+                switch item.storage {
+                case .appContainer:
+                    try await store.discard(item)
+                case .rememberedDirectory:
+                    try await catalog.discard(item)
+                }
+                guard let self else { return }
+                pendingExportRecoveries.removeAll { $0 == item }
+                if pendingExportRecoveries.isEmpty,
+                   pendingCrashRecoveryCount == 0,
+                   !isCrashRecoveryDurabilityCompromised {
+                    crashRecoveryMessage = nil
+                }
+            } catch {
+                self?.crashRecoveryMessage = "Clio could not discard the recovered export (\(error.localizedDescription)). Its file remains intact."
+            }
         }
     }
 
@@ -1857,26 +1911,31 @@ private extension AppState {
     }
 
     func scheduleExportTransactionRecovery() {
-        let journal = crashRecoveryJournal
+        let checkpointStore = exportRecoveryCheckpointStore
+        let catalog = exportRecoveryCatalog
         Task { @MainActor [weak self] in
-            let result: Result<Int, Error> = await Task.detached(priority: .utility) {
+            let result: Result<[ExportRecoveryItem], Error> = await Task.detached(priority: .utility) {
                 do {
-                    let transactionCount = try ExportRecoveryCatalog.shared
-                        .recoverInterruptedExports(
-                            journal: journal
-                        )
-                    let checkpointCount = try await ExportRecoveryCheckpointStore.shared
-                        .recoverInterruptedCheckpoints(journal: journal)
-                    return .success(transactionCount + checkpointCount)
+                    let directoryItems = try await catalog.interruptedExports()
+                    let containerItems = try await checkpointStore
+                        .interruptedCheckpoints()
+                    return .success((directoryItems + containerItems).sorted {
+                        if $0.createdAt != $1.createdAt {
+                            return $0.createdAt > $1.createdAt
+                        }
+                        return $0.id.uuidString < $1.id.uuidString
+                    })
                 } catch {
                     return .failure(error)
                 }
             }.value
             guard let self else { return }
             switch result {
-            case .success(let recoveredCount):
-                if recoveredCount > 0 {
-                    scheduleCrashRecoveryMigration()
+            case .success(let items):
+                pendingExportRecoveries = items
+                if !items.isEmpty {
+                    let noun = items.count == 1 ? "export" : "exports"
+                    crashRecoveryMessage = "Clio preserved \(items.count) interrupted \(noun). Reveal or discard each file when ready."
                 }
             case .failure(let error):
                 crashRecoveryMessage = "Clio could not inspect a prior export transaction (\(error.localizedDescription)). The destination was not modified during this check."

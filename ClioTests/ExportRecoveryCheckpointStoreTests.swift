@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class ExportRecoveryCheckpointStoreTests: XCTestCase {
-    func testCheckpointSurvivesRelaunchAndEntersSevenDayRecoveryFlow() async throws {
+    func testCheckpointSurvivesRelaunchAsFileBackedRecovery() async throws {
         try await withTemporaryRoots { destinationRoot, storeRoot, journalRoot in
             let snapshot = makeSnapshot(source: "# Recoverable export\n\nBody")
             let parsed = try await SourcePreservingMarkdownParser().parse(snapshot)
@@ -28,17 +28,127 @@ final class ExportRecoveryCheckpointStoreTests: XCTestCase {
 
             let relaunched = ExportRecoveryCheckpointStore(rootURL: storeRoot)
             let journal = CrashRecoveryJournal(rootURL: journalRoot)
-            let recovered = try await relaunched.recoverInterruptedCheckpoints(
-                journal: journal
-            )
-            XCTAssertEqual(recovered, 1)
-            let record = try XCTUnwrap(journal.validRecords().first)
-            XCTAssertEqual(record.data, expected)
-            XCTAssertEqual(record.targetURL, destination)
-            XCTAssertEqual(record.filename, "Draft.html")
-            XCTAssertEqual(record.reason, .atomicCandidate)
+            let recovered = try await relaunched.interruptedCheckpoints()
+            let item = try XCTUnwrap(recovered.first)
+            XCTAssertEqual(recovered.count, 1)
+            XCTAssertEqual(item.kind, .renderedCandidate)
+            XCTAssertEqual(item.candidateURL, checkpoint.candidateURL)
+            XCTAssertEqual(item.intendedDestinationURL, destination)
+            XCTAssertEqual(item.filename, "Draft.html")
+            XCTAssertEqual(try Data(contentsOf: item.candidateURL), expected)
+            XCTAssertTrue(try journal.validRecords().isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.manifestURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.candidateURL.path))
+
+            try await relaunched.discard(item)
             XCTAssertFalse(FileManager.default.fileExists(atPath: checkpoint.manifestURL.path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: checkpoint.candidateURL.path))
+        }
+    }
+
+    func testArtifactBeyondMarkdownJournalLimitRemainsFileBackedAcrossRelaunch() async throws {
+        try await withTemporaryRoots { destinationRoot, storeRoot, journalRoot in
+            let byteCount = CrashRecoveryJournal.maximumRecordByteCount + 1
+            let source = destinationRoot.appendingPathComponent("large-staged.html")
+            XCTAssertTrue(FileManager.default.createFile(atPath: source.path, contents: nil))
+            let handle = try FileHandle(forWritingTo: source)
+            try handle.truncate(atOffset: UInt64(byteCount))
+            try handle.close()
+            let staged = StagedDocumentExport(
+                format: .html,
+                temporaryURL: source,
+                reservation: ExportDestinationReservation(
+                    url: destinationRoot.appendingPathComponent("Large.html"),
+                    commit: .create
+                ),
+                byteCount: byteCount,
+                documentID: DocumentID(),
+                generation: BufferGeneration(),
+                sourceFingerprint: "large-file-backed"
+            )
+            let store = ExportRecoveryCheckpointStore(rootURL: storeRoot)
+            let checkpoint = try await store.checkpoint(staged)
+
+            let relaunched = ExportRecoveryCheckpointStore(rootURL: storeRoot)
+            let recoveries = try await relaunched.interruptedCheckpoints()
+            let item = try XCTUnwrap(recoveries.first)
+            XCTAssertEqual(item.byteCount, byteCount)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: item.candidateURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.manifestURL.path))
+            XCTAssertTrue(try CrashRecoveryJournal(rootURL: journalRoot).validRecords().isEmpty)
+        }
+    }
+
+    func testExpiredAppContainerRecoveryRemovesCandidateAndManifest() async throws {
+        try await withTemporaryRoots { destinationRoot, storeRoot, _ in
+            let createdAt = Date(timeIntervalSince1970: 1_000)
+            let source = destinationRoot.appendingPathComponent("staged.html")
+            try Data("derived export".utf8).write(to: source)
+            let staged = StagedDocumentExport(
+                format: .html,
+                temporaryURL: source,
+                reservation: ExportDestinationReservation(
+                    url: destinationRoot.appendingPathComponent("Expired.html"),
+                    commit: .create
+                ),
+                byteCount: Int64(try Data(contentsOf: source).count),
+                documentID: DocumentID(),
+                generation: BufferGeneration(),
+                sourceFingerprint: "expired"
+            )
+            let store = ExportRecoveryCheckpointStore(
+                rootURL: storeRoot,
+                now: { createdAt }
+            )
+            let checkpoint = try await store.checkpoint(staged)
+            let relaunched = ExportRecoveryCheckpointStore(
+                rootURL: storeRoot,
+                now: {
+                    createdAt.addingTimeInterval(RecoveryStore.retention + 1)
+                }
+            )
+
+            let recoveries = try await relaunched.interruptedCheckpoints()
+
+            XCTAssertTrue(recoveries.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: checkpoint.manifestURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: checkpoint.candidateURL.path))
+        }
+    }
+
+    func testRelaunchPromotesSyncedPendingManifestWithoutLoadingCandidate() async throws {
+        try await withTemporaryRoots { destinationRoot, storeRoot, _ in
+            let source = destinationRoot.appendingPathComponent("staged.html")
+            try Data("pending manifest export".utf8).write(to: source)
+            let staged = StagedDocumentExport(
+                format: .html,
+                temporaryURL: source,
+                reservation: ExportDestinationReservation(
+                    url: destinationRoot.appendingPathComponent("Pending.html"),
+                    commit: .create
+                ),
+                byteCount: Int64(try Data(contentsOf: source).count),
+                documentID: DocumentID(),
+                generation: BufferGeneration(),
+                sourceFingerprint: "pending"
+            )
+            let store = ExportRecoveryCheckpointStore(rootURL: storeRoot)
+            let checkpoint = try await store.checkpoint(staged)
+            let pendingURL = storeRoot.appendingPathComponent(
+                ".export-\(checkpoint.id.uuidString.lowercased()).pending"
+            )
+            try FileManager.default.moveItem(
+                at: checkpoint.manifestURL,
+                to: pendingURL
+            )
+
+            let recoveries = try await ExportRecoveryCheckpointStore(
+                rootURL: storeRoot
+            ).interruptedCheckpoints()
+
+            XCTAssertEqual(recoveries.map(\.candidateURL), [checkpoint.candidateURL])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.manifestURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: pendingURL.path))
         }
     }
 
