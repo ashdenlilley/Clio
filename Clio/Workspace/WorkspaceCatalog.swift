@@ -177,7 +177,10 @@ final class WorkspaceCatalog {
     /// Stores a Powerbox-authorized folder. The caller remains responsible for
     /// balancing the temporary scope supplied by `NSOpenPanel`.
     @discardableResult
-    func addAuthorizedFolder(_ folderURL: URL) throws -> WorkspaceDescriptor {
+    func addAuthorizedFolder(
+        _ folderURL: URL,
+        bookmark suppliedBookmark: Data? = nil
+    ) throws -> WorkspaceDescriptor {
         let standardizedURL = folderURL.standardizedFileURL
         if let existing = descriptors.first(where: {
             $0.rootURL == standardizedURL.resolvingSymlinksInPath()
@@ -185,7 +188,7 @@ final class WorkspaceCatalog {
             return existing
         }
 
-        let bookmark = try bookmarkMaker(standardizedURL)
+        let bookmark = try suppliedBookmark ?? bookmarkMaker(standardizedURL)
         let resolution = try bookmarkResolver(bookmark)
         let workspaceID = WorkspaceID()
         let workspace = try makeWorkspace(id: workspaceID, rootURL: resolution.url)

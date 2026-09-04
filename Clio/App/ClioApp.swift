@@ -38,46 +38,37 @@ struct ClioApp: App {
 private struct EditorWindowRoot: View {
     let appState: AppState
     @Binding private var request: EditorWindowRequest
-    @State private var editorSession: EditorSession
+    @State private var windowSession: EditorWindowSession
 
     init(request: Binding<EditorWindowRequest>, appState: AppState) {
         _request = request
         self.appState = appState
         let initialRequest = request.wrappedValue
-        _editorSession = State(
-            initialValue: EditorSession(
-                id: initialRequest.id,
-                openingMode: initialRequest.openingMode,
-                restoredRelativePath: initialRequest.relativePath,
-                startInFullScreen: initialRequest.isFullScreen
-            )
+        _windowSession = State(
+            initialValue: EditorWindowSession(request: initialRequest)
         )
     }
 
     var body: some View {
         ContentView()
-            .environment(editorSession)
-            .focusedSceneValue(\.editorSession, editorSession)
+            .environment(windowSession)
+            .focusedSceneValue(\.editorWindowSession, windowSession)
+            .focusedSceneValue(\.editorSession, windowSession.activeTab)
             .onAppear {
-                appState.register(editorSession)
+                windowSession.connect(to: appState)
             }
             .onDisappear {
-                appState.unregister(editorSession)
+                windowSession.disconnect()
             }
-            .onChange(of: editorSession.relativePath) { _, relativePath in
-                guard !relativePath.isEmpty,
-                      request.relativePath != relativePath else { return }
-                request.relativePath = relativePath
-            }
-            .onChange(of: editorSession.isReady, initial: true) { _, isReady in
-                guard isReady,
-                      editorSession.fileURL == nil,
-                      request.openingMode == .mostRecent else { return }
-                editorSession.resolveAsNewDocument()
-                request.openingMode = .newDocument
-            }
-            .onChange(of: editorSession.isFullScreenEnabled) { _, isFullScreen in
-                request.isFullScreen = isFullScreen
+            .onChange(of: windowSession.restorationState, initial: true) { _, state in
+                request.restoration = state
+                request.relativePath = windowSession.activeTab?.relativePath
+                request.isFullScreen = state.isFullScreen
+                if windowSession.tabs.count == 1,
+                   windowSession.activeTab?.isReady == true,
+                   windowSession.activeTab?.fileURL == nil {
+                    request.openingMode = .newDocument
+                }
             }
     }
 }
@@ -119,6 +110,13 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(newWindowItem)
 
         return menu
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        appState.enqueueExternalDocumentURLs(urls)
+        if !application.windows.contains(where: isClioEditorWindow) {
+            _ = performWindowCommand(titled: "New Window")
+        }
     }
 
     func applicationShouldTerminate(
