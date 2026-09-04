@@ -305,6 +305,33 @@ final class WorkspaceIndexTests: XCTestCase {
         }
     }
 
+    func testIncrementalIndexTreatsDisappearingModifiedFileAsDeletion() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let documentURL = rootURL.appendingPathComponent("ephemeral.md")
+            try write("short lived token", to: documentURL)
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: rootURL.appendingPathComponent("index.sqlite3")
+            )
+            try await index.rebuild(workspaces: [workspace], policy: .default)
+            try FileManager.default.removeItem(at: documentURL)
+
+            try await index.apply([
+                WorkspaceEvent(
+                    workspaceID: workspace.id,
+                    kind: .modified,
+                    fileURL: documentURL,
+                    origin: .external
+                ),
+            ])
+
+            let results = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "short lived"))
+            )
+            XCTAssertTrue(results.results.isEmpty)
+        }
+    }
+
     func testSQLiteIndexDeduplicatesOverlappingWorkspaceRoots() async throws {
         try await withTemporaryDirectory { rootURL in
             let nestedURL = rootURL.appendingPathComponent("nested", isDirectory: true)
