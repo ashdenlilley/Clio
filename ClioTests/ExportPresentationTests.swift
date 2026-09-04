@@ -198,9 +198,13 @@ private final class FakeExportPanelPresenter: ExportPanelPresenting {
 private final class FakeExportRecoveryCatalog: ExportRecoveryCataloging,
     @unchecked Sendable {
     private(set) var directories: [URL] = []
+    var strategy: ExportRecoveryStrategy = .directoryTransaction
 
-    func remember(destinationDirectory: URL) throws {
-        directories.append(destinationDirectory.standardizedFileURL)
+    func recoveryStrategy(for destinationURL: URL) async -> ExportRecoveryStrategy {
+        directories.append(
+            destinationURL.deletingLastPathComponent().standardizedFileURL
+        )
+        return strategy
     }
 }
 

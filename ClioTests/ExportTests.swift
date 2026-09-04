@@ -143,6 +143,64 @@ final class ExportTests: XCTestCase {
         XCTAssertTrue(html.contains("<span role=\"img\" aria-label=\"fallback\">fallback</span>"))
     }
 
+    func testStreamingHTMLMatchesSemanticRendererAndEnforcesBoundedOutput() async throws {
+        try await withTemporaryDirectory { directory in
+            let parsed = try await SourcePreservingMarkdownParser.parse(source: """
+            # Stream & verify
+
+            > Quoted **body**
+
+            - [x] finished
+            - [ ] pending
+
+            | Name | Value |
+            | --- | ---: |
+            | café | <safe> |
+
+            [link](https://example.com?a=1&b=2)
+            """)
+            let expected = try HTMLDocumentRenderer.render(
+                document: parsed.document,
+                title: "Stream & verify.md"
+            )
+            let destination = directory.appendingPathComponent("stream.html")
+            let count = try HTMLDocumentStreamRenderer.write(
+                document: parsed.document,
+                title: "Stream & verify.md",
+                to: destination,
+                reportingDestination: destination
+            )
+            let bytes = try Data(contentsOf: destination)
+            let expectedBytes = Data(expected.utf8)
+            XCTAssertEqual(bytes, expectedBytes)
+            XCTAssertEqual(count, Int64(bytes.count))
+
+            let boundedURL = directory.appendingPathComponent("bounded.html")
+            XCTAssertThrowsError(try HTMLDocumentStreamRenderer.write(
+                document: MarkdownDocumentModel(blocks: [
+                    .paragraph(
+                        content: [
+                            .text(
+                                value: String(repeating: "<&\"", count: 2_000),
+                                range: .init(location: 0, length: 6_000)
+                            ),
+                        ],
+                        range: .init(location: 0, length: 6_000)
+                    ),
+                ]),
+                title: "Bounded",
+                to: boundedURL,
+                reportingDestination: boundedURL,
+                maximumByteCount: 1_024
+            )) { error in
+                guard case DocumentExportError.artifactTooLarge = error else {
+                    return XCTFail("Expected a bounded-output error, got \(error)")
+                }
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: boundedURL.path))
+        }
+    }
+
     func testExportCollisionRequiresAChoiceAndKeepBothUsesParenthesizedNumber() async throws {
         try await withTemporaryDirectory { directory in
             let snapshot = makeSnapshot(source: "Existing")
@@ -201,6 +259,10 @@ final class ExportTests: XCTestCase {
 
             XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
             XCTAssertTrue(FileManager.default.fileExists(atPath: staged.temporaryURL.path))
+            XCTAssertNotEqual(
+                staged.temporaryURL.deletingLastPathComponent().standardizedFileURL,
+                destination.deletingLastPathComponent().standardizedFileURL
+            )
             XCTAssertGreaterThan(staged.byteCount, 0)
 
             let receipt = try staged.install()

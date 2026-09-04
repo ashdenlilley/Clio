@@ -461,8 +461,8 @@ private extension DocumentExportPresentation {
             ) else { return }
             guard !Task.isCancelled else { return }
             do {
-                try recoveryCatalog.remember(
-                    destinationDirectory: destination.deletingLastPathComponent()
+                let recoveryStrategy = await recoveryCatalog.recoveryStrategy(
+                    for: destination
                 )
                 guard let snapshotProvider else {
                     throw ExportPresentationError.noDocument
@@ -475,7 +475,8 @@ private extension DocumentExportPresentation {
                     format: format,
                     snapshot: snapshot,
                     destinationURL: destination,
-                    pdfSettings: format == .pdf ? printSettingsStore.settings : nil
+                    pdfSettings: format == .pdf ? printSettingsStore.settings : nil,
+                    recoveryStrategy: recoveryStrategy
                 )
                 run(request, resolution: nil)
             } catch is CancellationError {

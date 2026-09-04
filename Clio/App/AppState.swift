@@ -1859,11 +1859,17 @@ private extension AppState {
     func scheduleExportTransactionRecovery() {
         let journal = crashRecoveryJournal
         Task { @MainActor [weak self] in
-            let result = await Task.detached(priority: .utility) {
-                Result {
-                    try ExportRecoveryCatalog.shared.recoverInterruptedExports(
-                        journal: journal
-                    )
+            let result: Result<Int, Error> = await Task.detached(priority: .utility) {
+                do {
+                    let transactionCount = try ExportRecoveryCatalog.shared
+                        .recoverInterruptedExports(
+                            journal: journal
+                        )
+                    let checkpointCount = try await ExportRecoveryCheckpointStore.shared
+                        .recoverInterruptedCheckpoints(journal: journal)
+                    return .success(transactionCount + checkpointCount)
+                } catch {
+                    return .failure(error)
                 }
             }.value
             guard let self else { return }

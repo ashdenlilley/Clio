@@ -105,6 +105,68 @@ final class ExportRecoveryCatalogTests: XCTestCase {
             }
         }
     }
+
+    func testUnpersistableParentSelectsAppContainerFallback() async throws {
+        try await withTemporaryRootsAsync { destination, catalogRoot, _ in
+            let catalog = ExportRecoveryCatalog(
+                rootURL: catalogRoot,
+                bookmarkMaker: { _ in throw CocoaError(.fileWriteNoPermission) },
+                bookmarkResolver: Self.resolve
+            )
+            let strategy = await catalog.recoveryStrategy(
+                for: destination.appendingPathComponent("Draft.pdf")
+            )
+            XCTAssertEqual(strategy, .appContainerCheckpoint)
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: catalogRoot.appendingPathComponent("roots.plist").path
+                )
+            )
+        }
+    }
+
+    func testCatalogLoadsPreviousGenerationAfterInterruptedPrimarySwap() throws {
+        try withTemporaryRoots { destination, catalogRoot, journalRoot in
+            let secondDirectory = destination.deletingLastPathComponent()
+                .appendingPathComponent("Second", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: secondDirectory,
+                withIntermediateDirectories: true
+            )
+            _ = try interruptedCreate(
+                in: destination,
+                filename: "First.html",
+                contents: Data("first".utf8)
+            )
+            _ = try interruptedCreate(
+                in: secondDirectory,
+                filename: "Second.html",
+                contents: Data("second".utf8)
+            )
+
+            let catalog = makeCatalog(rootURL: catalogRoot)
+            try catalog.remember(destinationDirectory: destination)
+            try catalog.remember(destinationDirectory: secondDirectory)
+
+            let primary = catalogRoot.appendingPathComponent("roots.plist")
+            let previous = catalogRoot.appendingPathComponent("roots.previous.plist")
+            // This is the exact durable state after the old primary has been
+            // archived but before the new primary rename completes.
+            try? FileManager.default.removeItem(at: previous)
+            try FileManager.default.moveItem(at: primary, to: previous)
+
+            let journal = CrashRecoveryJournal(rootURL: journalRoot)
+            XCTAssertEqual(
+                try makeCatalog(rootURL: catalogRoot)
+                    .recoverInterruptedExports(journal: journal),
+                2
+            )
+            XCTAssertEqual(Set(try journal.validRecords().map(\.data)), [
+                Data("first".utf8),
+                Data("second".utf8),
+            ])
+        }
+    }
 }
 
 private extension ExportRecoveryCatalogTests {
@@ -161,5 +223,23 @@ private extension ExportRecoveryCatalogTests {
         )
         defer { try? FileManager.default.removeItem(at: root) }
         try operation(destination, catalog, journal)
+    }
+
+    func withTemporaryRootsAsync(
+        _ operation: (URL, URL, URL) async throws -> Void
+    ) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ClioExportRecoveryCatalog-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        let catalog = root.appendingPathComponent("Catalog", isDirectory: true)
+        let journal = root.appendingPathComponent("Journal", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await operation(destination, catalog, journal)
     }
 }
