@@ -58,9 +58,10 @@ private extension ClioLaunchConfiguration {
                     isStale: false
                 )
             },
-            workspaceFactory: {
+            workspaceFactory: { id, url in
                 try Workspace(
-                    rootURL: $0,
+                    id: id,
+                    rootURL: url,
                     accessSecurityScopedResource: false
                 )
             }

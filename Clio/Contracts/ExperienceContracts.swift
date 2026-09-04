@@ -45,6 +45,28 @@ struct EditorWindowRestorationState: Codable, Hashable, Sendable, Identifiable {
     var isFullScreen: Bool
 
     mutating func normalize() {
+        struct RestorationIntent: Hashable {
+            let documentID: DocumentID
+            let locator: DocumentLocator?
+        }
+
+        var retainedByIntent: [RestorationIntent: UUID] = [:]
+        var normalizedTabs: [EditorTabRestorationState] = []
+        normalizedTabs.reserveCapacity(tabs.count)
+        for tab in tabs {
+            let intent = RestorationIntent(
+                documentID: tab.documentID,
+                locator: tab.locator
+            )
+            if let retainedID = retainedByIntent[intent] {
+                if activeTabID == tab.id { activeTabID = retainedID }
+                continue
+            }
+            retainedByIntent[intent] = tab.id
+            normalizedTabs.append(tab)
+        }
+        tabs = normalizedTabs
+
         guard !tabs.isEmpty else {
             activeTabID = nil
             return

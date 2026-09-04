@@ -133,11 +133,13 @@ final class AppState: ClioCommandDispatching {
         fileManager: FileManager = .default,
         initialWorkspace: Workspace? = nil,
         recoveryStore: RecoveryStore? = nil,
-        documentRegistry: DocumentBufferRegistry? = nil,
         crashRecoveryJournal: CrashRecoveryJournal = .shared,
         workspaceCatalog: WorkspaceCatalog? = nil,
         discoverySettings: WorkspaceDiscoverySettings? = nil,
-        searchIndex: (any SearchIndexing)? = nil
+        searchIndex: (any SearchIndexing)? = nil,
+        documentRegistry suppliedDocumentRegistry: DocumentBufferRegistry? = nil,
+        conflictResolver suppliedConflictResolver: ConflictResolver? = nil,
+        documentMover suppliedDocumentMover: DocumentMover? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
@@ -146,12 +148,14 @@ final class AppState: ClioCommandDispatching {
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
         self.recoveryStore = activeRecoveryStore
-        self.documentRegistry = documentRegistry ?? DocumentBufferRegistry()
-        conflictResolver = ConflictResolver(recoveryStore: activeRecoveryStore)
-        documentMover = DocumentMover(
-            recoveryStore: activeRecoveryStore,
-            fileManager: fileManager
-        )
+        documentRegistry = suppliedDocumentRegistry ?? DocumentBufferRegistry()
+        conflictResolver = suppliedConflictResolver
+            ?? ConflictResolver(recoveryStore: activeRecoveryStore)
+        documentMover = suppliedDocumentMover
+            ?? DocumentMover(
+                recoveryStore: activeRecoveryStore,
+                fileManager: fileManager
+            )
         self.workspaceCatalog = workspaceCatalog
             ?? WorkspaceCatalog(
                 defaults: defaults,
@@ -338,7 +342,10 @@ final class AppState: ClioCommandDispatching {
         session.activate(
             in: primaryWorkspace.workspace,
             workspaceID: primaryWorkspace.descriptor.id,
-            documentURLs: []
+            documentURLs: [],
+            registry: documentRegistry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
         )
     }
 
@@ -397,6 +404,7 @@ final class AppState: ClioCommandDispatching {
             workspace = workspaceCatalog.workspace(id: descriptor.id)
             legacyWorkspaceDescriptor = nil
             defaults.removeObject(forKey: Keys.workspaceBookmark)
+            defaults.removeObject(forKey: Keys.legacyWorkspaceID)
             workspaceErrorMessage = nil
             activateUnreadySessions()
             refreshWorkspaceDiscovery()
@@ -600,10 +608,6 @@ final class AppState: ClioCommandDispatching {
             }
         }
 
-        if routeToExistingDocument(at: fileURL) {
-            return
-        }
-
         if let descriptor = descriptor(containing: fileURL),
            let authorizedWorkspace = workspace(for: descriptor.id) {
             do {
@@ -611,6 +615,10 @@ final class AppState: ClioCommandDispatching {
                     at: fileURL,
                     workspace: authorizedWorkspace,
                     descriptor: descriptor,
+                    documentID: discoveredDocumentID(
+                        workspaceID: descriptor.id,
+                        relativePath: authorizedWorkspace.relativePath(for: fileURL)
+                    ),
                     in: window
                 )
             } catch {
@@ -619,9 +627,15 @@ final class AppState: ClioCommandDispatching {
             return
         }
 
+        if routeToExistingDocument(at: fileURL) != nil { return }
         let tab = EditorSession(openingMode: .newDocument)
         do {
-            try tab.activateExternal(documentURL: fileURL)
+            try tab.activateExternal(
+                documentURL: fileURL,
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
             editorSessions.append(tab)
             window.append(tab)
             authorizeParentFolder(of: fileURL, for: tab)
@@ -644,16 +658,13 @@ final class AppState: ClioCommandDispatching {
                 fractionalYOffset: 0
             )
         }
-        guard !routeToExistingDocument(
-            at: fileURL,
-            applying: matchViewport
-        ) else { return }
         do {
             let tab = try openDocument(
                 at: fileURL,
                 workspace: workspace,
                 descriptor: descriptor,
                 documentID: result.documentID,
+                applying: matchViewport,
                 in: window
             )
             if let matchViewport { tab.updateViewport(matchViewport) }
@@ -663,6 +674,7 @@ final class AppState: ClioCommandDispatching {
     }
 
     func openWorkspaceFile(
+        documentID: DocumentID,
         workspaceID: WorkspaceID,
         relativePath: String,
         from window: EditorWindowSession
@@ -670,12 +682,12 @@ final class AppState: ClioCommandDispatching {
         guard let descriptor = workspaceDescriptors.first(where: { $0.id == workspaceID }),
               let workspace = workspace(for: workspaceID) else { return }
         let fileURL = descriptor.rootURL.appendingPathComponent(relativePath)
-        guard !routeToExistingDocument(at: fileURL) else { return }
         do {
             try openDocument(
                 at: fileURL,
                 workspace: workspace,
                 descriptor: descriptor,
+                documentID: documentID,
                 in: window
             )
         } catch {
@@ -684,13 +696,16 @@ final class AppState: ClioCommandDispatching {
     }
 
     func dragPayload(
+        documentID: DocumentID,
         workspaceID: WorkspaceID,
         relativePath: String
     ) -> String? {
         guard let locator = try? DocumentLocator(
             workspaceID: workspaceID,
             relativePath: relativePath
-        ), let data = try? JSONEncoder().encode(locator) else { return nil }
+        ), let data = try? JSONEncoder().encode(
+            DocumentDragPayload(documentID: documentID, locator: locator)
+        ) else { return nil }
         return data.base64EncodedString()
     }
 
@@ -701,74 +716,63 @@ final class AppState: ClioCommandDispatching {
         parentRelativePath: String
     ) -> Bool {
         guard let data = Data(base64Encoded: dragPayload),
-              let source = try? JSONDecoder().decode(DocumentLocator.self, from: data),
-              let sourceWorkspace = workspace(for: source.workspaceID),
+              let payload = try? JSONDecoder().decode(DocumentDragPayload.self, from: data),
+              let sourceWorkspace = workspace(for: payload.locator.workspaceID),
               let destinationWorkspace = workspace(for: destinationWorkspaceID) else {
             return false
         }
 
-        let sourceURL = sourceWorkspace.rootURL
-            .appendingPathComponent(source.relativePath)
-        let parentURL = parentRelativePath.isEmpty
-            ? destinationWorkspace.rootURL
-            : destinationWorkspace.rootURL.appendingPathComponent(
-                parentRelativePath,
-                isDirectory: true
-            )
-        var destinationURL = parentURL.appendingPathComponent(sourceURL.lastPathComponent)
-        guard sourceURL.standardizedFileURL != destinationURL.standardizedFileURL else {
-            return false
-        }
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            let alert = NSAlert()
-            alert.messageText = "A document named \(destinationURL.lastPathComponent) already exists."
-            alert.informativeText = "Cancel, move the existing copy to Trash and replace it, or keep both with a numbered name."
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Replace")
-            alert.addButton(withTitle: "Keep Both")
-            switch alert.runModal() {
-            case .alertSecondButtonReturn:
-                do {
-                    try fileManager.trashItem(
-                        at: destinationURL,
-                        resultingItemURL: nil
-                    )
-                } catch {
-                    presentError("Clio couldn’t replace the destination document.", underlying: error)
-                    return false
-                }
-            case .alertThirdButtonReturn:
-                destinationURL = availableNumberedURL(for: destinationURL)
-            default:
-                return false
-            }
-        }
-
-        let openTab = editorSessions.first {
-            $0.fileURL.map(PhysicalFileIdentity.authorizedFile)
-                == PhysicalFileIdentity.authorizedFile(at: sourceURL)
-        }
         do {
-            try fileManager.createDirectory(
-                at: parentURL,
-                withIntermediateDirectories: true
+            let sourceURL = try sourceWorkspace.fileURL(for: payload.locator)
+            let destinationRelativePath = [
+                parentRelativePath,
+                sourceURL.lastPathComponent,
+            ].filter { !$0.isEmpty }.joined(separator: "/")
+            let destinationLocator = try DocumentLocator(
+                workspaceID: destinationWorkspaceID,
+                relativePath: destinationRelativePath
             )
-            try openTab?.flush()
-            try fileManager.moveItem(at: sourceURL, to: destinationURL)
-            if let openTab {
-                try openTab.activate(
-                    documentURL: destinationURL,
-                    in: destinationWorkspace,
-                    workspaceID: destinationWorkspaceID
-                )
-            }
-            refreshWorkspaceDiscovery()
-            return true
+            guard payload.locator != destinationLocator else { return false }
         } catch {
-            presentError("Clio couldn’t move that document.", underlying: error)
             return false
         }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let sourceURL = try sourceWorkspace.fileURL(for: payload.locator)
+                let document = try self.documentRegistry.open(
+                    sourceURL,
+                    in: sourceWorkspace,
+                    preferredID: payload.documentID
+                )
+                var outcome = try await self.documentMover.move(
+                    document,
+                    from: sourceWorkspace,
+                    to: destinationWorkspace,
+                    parentRelativePath: parentRelativePath,
+                    registry: self.documentRegistry
+                )
+                if case let .collision(collision) = outcome {
+                    let choice = self.collisionChoice(for: collision)
+                    guard choice != .cancel else { return }
+                    outcome = try await self.documentMover.move(
+                        document,
+                        from: sourceWorkspace,
+                        to: destinationWorkspace,
+                        parentRelativePath: parentRelativePath,
+                        collisionChoice: choice,
+                        registry: self.documentRegistry
+                    )
+                }
+                if case .completed = outcome {
+                    self.refreshWorkspaceDiscovery()
+                }
+            } catch {
+                self.presentError("Clio couldn’t move that document.", underlying: error)
+            }
+        }
+        return true
     }
 
     func focusWindow(_ id: UUID) {
@@ -841,6 +845,29 @@ final class AppState: ClioCommandDispatching {
         }
     }
 
+    /// Commits the already-confirmed Trash action. Kept separate from the
+    /// alert so the data-safety boundary is deterministic and testable.
+    @discardableResult
+    func commitMoveToTrash(
+        _ tab: EditorSession,
+        from window: EditorWindowSession
+    ) -> Bool {
+        do {
+            // DocumentMover flushes first and only detaches the canonical
+            // buffer after the Trash operation succeeds.
+            try tab.moveToTrash()
+            window.closeAfterSuccessfulFileMutation(tabID: tab.id)
+            refreshWorkspaceDiscovery()
+            return true
+        } catch {
+            presentError(
+                "Clio couldn’t move that document to the Trash. The tab remains open with its canonical buffer.",
+                underlying: error
+            )
+            return false
+        }
+    }
+
     func chooseRecoveryFolder() {
         let panel = configuredFolderPanel(
             title: "Choose Clio Recovery Folder",
@@ -877,6 +904,11 @@ enum ClioExportNotificationKey {
 }
 
 private extension AppState {
+    struct DocumentDragPayload: Codable {
+        let documentID: DocumentID
+        let locator: DocumentLocator
+    }
+
     struct WorkspaceSelection {
         let descriptor: WorkspaceDescriptor
         let workspace: Workspace
@@ -918,55 +950,95 @@ private extension AppState {
             .max { $0.rootURL.path.count < $1.rootURL.path.count }
     }
 
+    func collisionChoice(for collision: FileCollision) -> CollisionChoice {
+        let alert = NSAlert()
+        alert.messageText = "A document already exists at \(collision.proposedLocator.relativePath)."
+        alert.informativeText = "Cancel, replace it after preserving recovery data, or keep both with a numbered name."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Keep Both")
+        switch alert.runModal() {
+        case .alertSecondButtonReturn: return .replace
+        case .alertThirdButtonReturn: return .keepBoth
+        default: return .cancel
+        }
+    }
+
     func activate(_ session: EditorSession) {
+        if session.hasPreferredDocument {
+            let requestedWorkspace = session.restoredWorkspaceID.flatMap(workspace(for:))
+            guard let requestedWorkspaceID = session.restoredWorkspaceID,
+                  let requestedPath = session.restoredRelativePath,
+                  let requestedWorkspace else {
+                session.activateUnresolvedRestoration(
+                    in: requestedWorkspace,
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover
+                )
+                return
+            }
+            do {
+                let locator = try DocumentLocator(
+                    workspaceID: requestedWorkspaceID,
+                    relativePath: requestedPath
+                )
+                let requestedURL = try requestedWorkspace.fileURL(for: locator)
+                guard fileManager.fileExists(atPath: requestedURL.path) else {
+                    session.activateUnresolvedRestoration(
+                        in: requestedWorkspace,
+                        registry: documentRegistry,
+                        conflictResolver: conflictResolver,
+                        documentMover: documentMover
+                    )
+                    return
+                }
+                try session.activate(
+                    documentURL: requestedURL,
+                    in: requestedWorkspace,
+                    workspaceID: requestedWorkspaceID,
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover,
+                    preferredDocumentID: session.documentID
+                )
+            } catch {
+                session.activateUnresolvedRestoration(
+                    in: requestedWorkspace,
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover,
+                    underlyingError: error
+                )
+            }
+            return
+        }
+
         guard let primaryWorkspace else { return }
 
-        if session.openingMode == .newDocument,
-           !session.hasPreferredDocument {
+        if session.openingMode == .newDocument {
             session.activate(
                 in: primaryWorkspace.workspace,
                 workspaceID: primaryWorkspace.descriptor.id,
-                documentURLs: []
+                documentURLs: [],
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
             )
             return
         }
 
-        if let requestedWorkspaceID = session.restoredWorkspaceID,
-           let requestedPath = session.restoredRelativePath,
-           let requestedWorkspace = workspace(for: requestedWorkspaceID) {
-            let requestedURL = requestedWorkspace.rootURL
-                .appendingPathComponent(requestedPath)
-            if fileManager.fileExists(atPath: requestedURL.path) {
-                do {
-                    try session.activate(
-                        documentURL: requestedURL,
-                        in: requestedWorkspace,
-                        workspaceID: requestedWorkspaceID
-                    )
-                    return
-                } catch {
-                    presentError(
-                        "Clio couldn’t restore \(requestedPath). A blank tab remains available.",
-                        underlying: error
-                    )
-                }
-            }
-        }
-
         do {
-            let openIdentities = Set(
+            let openDocumentIDs = Set(
                 editorSessions
                     .filter { $0 !== session }
-                    .compactMap(\.fileURL)
-                    .map(PhysicalFileIdentity.authorizedFile)
+                    .compactMap(\.document?.id)
             )
             let candidates = try workspaceDescriptors.flatMap { descriptor -> [(URL, WorkspaceDescriptor, Workspace)] in
                 guard let candidateWorkspace = workspace(for: descriptor.id) else { return [] }
                 return try candidateWorkspace.documentURLs().map {
                     ($0, descriptor, candidateWorkspace)
                 }
-            }.filter {
-                !openIdentities.contains(PhysicalFileIdentity.authorizedFile(at: $0.0))
             }.sorted {
                 let left = (try? $0.0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                     ?? .distantPast
@@ -976,17 +1048,36 @@ private extension AppState {
                 return $0.0.path.localizedStandardCompare($1.0.path) == .orderedAscending
             }
 
-            if let candidate = candidates.first {
-                try session.activate(
-                    documentURL: candidate.0,
+            var didActivate = false
+            for candidate in candidates {
+                let document = try documentRegistry.open(
+                    candidate.0,
                     in: candidate.2,
-                    workspaceID: candidate.1.id
+                    preferredID: discoveredDocumentID(
+                        workspaceID: candidate.1.id,
+                        relativePath: candidate.2.relativePath(for: candidate.0)
+                    )
                 )
-            } else {
+                guard !openDocumentIDs.contains(document.id) else { continue }
+                session.activate(
+                    document: document,
+                    in: candidate.2,
+                    workspaceID: candidate.1.id,
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover
+                )
+                didActivate = true
+                break
+            }
+            if !didActivate {
                 session.activate(
                     in: primaryWorkspace.workspace,
                     workspaceID: primaryWorkspace.descriptor.id,
-                    documentURLs: []
+                    documentURLs: [],
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover
                 )
                 session.resolveAsNewDocument()
             }
@@ -994,7 +1085,10 @@ private extension AppState {
             session.activate(
                 in: primaryWorkspace.workspace,
                 workspaceID: primaryWorkspace.descriptor.id,
-                documentURLs: []
+                documentURLs: [],
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
             )
             presentError(
                 "Clio still has workspace access, but couldn’t read every document.",
@@ -1015,26 +1109,58 @@ private extension AppState {
         workspace: Workspace,
         descriptor: WorkspaceDescriptor,
         documentID: DocumentID? = nil,
+        applying viewport: EditorViewportState? = nil,
         in window: EditorWindowSession
     ) throws -> EditorSession {
+        let document = try documentRegistry.open(
+            fileURL,
+            in: workspace,
+            preferredID: documentID
+        )
+        if let existing = routeToExistingDocument(
+            documentID: document.id,
+            applying: viewport
+        ) {
+            return existing
+        }
         let tab = EditorSession(
             openingMode: .mostRecent,
-            restoredDocumentID: documentID
+            restoredDocumentID: document.id
         )
-        try tab.activate(
-            documentURL: fileURL,
+        tab.activate(
+            document: document,
             in: workspace,
-            workspaceID: descriptor.id
+            workspaceID: descriptor.id,
+            registry: documentRegistry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
         )
+        if let viewport { tab.updateViewport(viewport) }
         editorSessions.append(tab)
         window.append(tab)
         return tab
     }
 
+    @discardableResult
+    func routeToExistingDocument(
+        documentID: DocumentID,
+        applying viewport: EditorViewportState? = nil
+    ) -> EditorSession? {
+        for window in editorWindows {
+            if let tab = window.tabs.first(where: { $0.documentID == documentID }) {
+                if let viewport { tab.updateViewport(viewport) }
+                window.focus(tabID: tab.id)
+                return tab
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
     func routeToExistingDocument(
         at fileURL: URL,
         applying viewport: EditorViewportState? = nil
-    ) -> Bool {
+    ) -> EditorSession? {
         let identity = PhysicalFileIdentity.authorizedFile(at: fileURL)
         for window in editorWindows {
             if let tab = window.tabs.first(where: { candidate in
@@ -1043,10 +1169,19 @@ private extension AppState {
             }) {
                 if let viewport { tab.updateViewport(viewport) }
                 window.focus(tabID: tab.id)
-                return true
+                return tab
             }
         }
-        return false
+        return nil
+    }
+
+    func discoveredDocumentID(
+        workspaceID: WorkspaceID,
+        relativePath: String
+    ) -> DocumentID? {
+        workspaceTrees[workspaceID]?.files.first {
+            $0.relativePath == relativePath
+        }?.documentID
     }
 
     func authorizeParentFolder(of fileURL: URL, for tab: EditorSession) {
@@ -1068,11 +1203,7 @@ private extension AppState {
             guard let authorizedWorkspace = workspaceCatalog.workspace(id: descriptor.id) else {
                 throw Workspace.WorkspaceError.fileOutsideWorkspace(fileURL)
             }
-            try tab.activate(
-                documentURL: fileURL,
-                in: authorizedWorkspace,
-                workspaceID: descriptor.id
-            )
+            tab.adoptAuthorizedWorkspace(authorizedWorkspace)
             if workspace == nil {
                 workspace = authorizedWorkspace
             }
@@ -1086,9 +1217,7 @@ private extension AppState {
     }
 
     func rename(_ tab: EditorSession) {
-        guard let sourceURL = tab.fileURL,
-              let workspaceID = tab.workspaceID,
-              let workspace = workspace(for: workspaceID) else { return }
+        guard let sourceURL = tab.fileURL else { return }
 
         let alert = NSAlert()
         alert.messageText = "Rename Document"
@@ -1107,46 +1236,16 @@ private extension AppState {
             proposedName += ".\(sourceURL.pathExtension)"
         }
         guard !proposedName.isEmpty, proposedName != sourceURL.lastPathComponent else { return }
-        var destinationURL = sourceURL.deletingLastPathComponent()
-            .appendingPathComponent(proposedName)
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            let collision = NSAlert()
-            collision.messageText = "A document named \(proposedName) already exists."
-            collision.informativeText = "Cancel, move the existing copy to Trash and replace it, or keep both with a numbered name."
-            collision.addButton(withTitle: "Cancel")
-            collision.addButton(withTitle: "Replace")
-            collision.addButton(withTitle: "Keep Both")
-            switch collision.runModal() {
-            case .alertSecondButtonReturn:
-                do {
-                    try fileManager.trashItem(
-                        at: destinationURL,
-                        resultingItemURL: nil
-                    )
+        Task { @MainActor [weak self, weak tab] in
+            guard let self, let tab else { return }
+            do {
+                let outcome = try await tab.rename(to: proposedName)
+                if case .completed = outcome {
+                    self.refreshWorkspaceDiscovery()
                 }
-                catch {
-                    presentError("Clio couldn’t replace the existing document.", underlying: error)
-                    return
-                }
-            case .alertThirdButtonReturn:
-                destinationURL = availableNumberedURL(for: destinationURL)
-            default:
-                return
+            } catch {
+                self.presentError("Clio couldn’t rename that document.", underlying: error)
             }
-        }
-
-        do {
-            try tab.flush()
-            try fileManager.moveItem(at: sourceURL, to: destinationURL)
-            try tab.activate(
-                documentURL: destinationURL,
-                in: workspace,
-                workspaceID: workspaceID
-            )
-            refreshWorkspaceDiscovery()
-        } catch {
-            presentError("Clio couldn’t rename that document.", underlying: error)
         }
     }
 
@@ -1163,20 +1262,7 @@ private extension AppState {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        NSWorkspace.shared.recycle([fileURL]) { [weak self, weak window, weak tab] _, error in
-            Task { @MainActor in
-                guard let self else { return }
-                if let error {
-                    self.presentError("Clio couldn’t move that document to the Trash.", underlying: error)
-                    return
-                }
-                if let window, let tab {
-                    window.close(tabID: tab.id)
-                    self.editorSessions.removeAll { $0 === tab }
-                }
-                self.refreshWorkspaceDiscovery()
-            }
-        }
+        commitMoveToTrash(tab, from: window)
     }
 
     func availableNumberedURL(for original: URL) -> URL {
@@ -1224,6 +1310,7 @@ private extension AppState {
         static let focusMode = "mode.focus"
         static let chromeFade = "mode.chromeFade"
         static let workspaceBookmark = "workspace.securityScopedBookmark"
+        static let legacyWorkspaceID = "workspace.securityScopedBookmark.id"
         static let recoveryBookmark = "recovery.securityScopedBookmark"
     }
 
@@ -1328,15 +1415,22 @@ private extension AppState {
         }
 
         do {
-            try activateWorkspace(from: bookmark, flushingCurrentDocuments: false)
+            let legacyID = persistentLegacyWorkspaceID()
+            try activateWorkspace(
+                from: bookmark,
+                workspaceID: legacyID,
+                flushingCurrentDocuments: false
+            )
             if let restoredWorkspace = workspace {
                 let descriptor = try workspaceCatalog.addAuthorizedFolder(
                     restoredWorkspace.rootURL,
-                    bookmark: bookmark
+                    bookmark: bookmark,
+                    preferredID: legacyID
                 )
                 workspace = workspaceCatalog.workspace(id: descriptor.id)
                 legacyWorkspaceDescriptor = nil
                 defaults.removeObject(forKey: Keys.workspaceBookmark)
+                defaults.removeObject(forKey: Keys.legacyWorkspaceID)
             }
         } catch {
             let needsNewAuthorization = (error as? WorkspaceActivationError)?
@@ -1344,6 +1438,7 @@ private extension AppState {
 
             if needsNewAuthorization {
                 defaults.removeObject(forKey: Keys.workspaceBookmark)
+                defaults.removeObject(forKey: Keys.legacyWorkspaceID)
             }
 
             presentError(
@@ -1385,6 +1480,7 @@ private extension AppState {
 
     func activateWorkspace(
         from bookmark: Data,
+        workspaceID: WorkspaceID? = nil,
         flushingCurrentDocuments: Bool = true
     ) throws {
         if flushingCurrentDocuments {
@@ -1397,6 +1493,7 @@ private extension AppState {
         do {
             resolution = try Workspace.resolveSecurityScopedBookmark(bookmark)
             newWorkspace = try Workspace(
+                id: workspaceID ?? persistentLegacyWorkspaceID(),
                 rootURL: resolution.url,
                 crashRecoveryJournal: crashRecoveryJournal
             )
@@ -1424,31 +1521,25 @@ private extension AppState {
         beginWatching(newWorkspace)
         let descriptor = WorkspaceDescriptor(id: newWorkspace.id, rootURL: newWorkspace.rootURL)
         legacyWorkspaceDescriptor = descriptor
-        var availableDocumentURLs = documentURLs
         for session in editorSessions {
-            let candidates = session.hasPreferredDocument
-                ? documentURLs
-                : availableDocumentURLs
-            session.activate(
-                in: newWorkspace,
-                workspaceID: descriptor.id,
-                documentURLs: candidates,
-                registry: documentRegistry,
-                conflictResolver: conflictResolver,
-                documentMover: documentMover
-            )
-
-            if let openedURL = session.fileURL?.standardizedFileURL {
-                availableDocumentURLs.removeAll {
-                    $0.standardizedFileURL == openedURL
-                }
-            }
+            activate(session)
         }
 
         workspaceErrorMessage = nil
         defaults.set(bookmarkToStore, forKey: Keys.workspaceBookmark)
         scheduleCrashRecoveryMigration()
+        defaults.set(descriptor.id.rawValue.uuidString, forKey: Keys.legacyWorkspaceID)
         refreshWorkspaceDiscovery()
+    }
+
+    func persistentLegacyWorkspaceID() -> WorkspaceID {
+        if let rawValue = defaults.string(forKey: Keys.legacyWorkspaceID),
+           let uuid = UUID(uuidString: rawValue) {
+            return WorkspaceID(rawValue: uuid)
+        }
+        let id = WorkspaceID()
+        defaults.set(id.rawValue.uuidString, forKey: Keys.legacyWorkspaceID)
+        return id
     }
 
     func flushEditorSessionsBeforeWorkspaceChange() throws {

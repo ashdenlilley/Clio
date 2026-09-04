@@ -86,7 +86,9 @@ final class EditorWindowSession: Identifiable {
         isSidebarVisible = request.restoration?.isSidebarVisible ?? true
         isSidebarPinned = request.restoration?.isSidebarPinned ?? false
 
-        if let restoration = request.restoration, !restoration.tabs.isEmpty {
+        var restoration = request.restoration
+        restoration?.normalize()
+        if let restoration, !restoration.tabs.isEmpty {
             tabs = restoration.tabs.map { tab in
                 EditorSession(
                     id: tab.id,
@@ -194,6 +196,22 @@ final class EditorWindowSession: Identifiable {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs[index]
         guard tab.flushForLifecycleEvent() else { return }
+        tab.deactivate()
+        appState?.release(tab)
+        tabs.remove(at: index)
+
+        if tabs.isEmpty {
+            newDocument()
+        } else if activeTabID == tabID {
+            activeTabID = tabs[min(index, tabs.count - 1)].id
+        }
+    }
+
+    /// Used only after a file mutation has already flushed and committed.
+    /// Re-flushing an intentionally detached buffer could recreate its path.
+    func closeAfterSuccessfulFileMutation(tabID: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = tabs[index]
         tab.deactivate()
         appState?.release(tab)
         tabs.remove(at: index)

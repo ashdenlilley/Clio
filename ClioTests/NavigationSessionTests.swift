@@ -2,6 +2,8 @@ import XCTest
 import SwiftUI
 @testable import Clio
 
+private struct NavigationTrashFailure: Error {}
+
 @MainActor
 final class NavigationSessionTests: XCTestCase {
     func testNewDocumentAddsAnInAppTabAndKeepsOneTabWhenClosed() {
@@ -79,6 +81,206 @@ final class NavigationSessionTests: XCTestCase {
             from: JSONEncoder().encode(request)
         )
         XCTAssertEqual(roundTrip.restoration, state)
+    }
+
+    func testWindowRestorationDeduplicatesExactIntentsAndRetainsActiveIntent() throws {
+        let workspaceID = WorkspaceID()
+        let documentID = DocumentID()
+        let retainedTabID = UUID()
+        let duplicateTabID = UUID()
+        let locator = try DocumentLocator(
+            workspaceID: workspaceID,
+            relativePath: "draft.md"
+        )
+        var request = EditorWindowRequest.mostRecent()
+        request.restoration = EditorWindowRestorationState(
+            id: request.id,
+            tabs: [
+                EditorTabRestorationState(
+                    id: retainedTabID,
+                    documentID: documentID,
+                    locator: locator,
+                    preferredFilename: "draft.md",
+                    viewport: .zero
+                ),
+                EditorTabRestorationState(
+                    id: duplicateTabID,
+                    documentID: documentID,
+                    locator: locator,
+                    preferredFilename: "draft.md",
+                    viewport: .zero
+                ),
+            ],
+            activeTabID: duplicateTabID,
+            isSidebarVisible: true,
+            isSidebarPinned: false,
+            isFullScreen: false
+        )
+
+        let window = EditorWindowSession(request: request)
+
+        XCTAssertEqual(window.tabs.map(\.id), [retainedTabID])
+        XCTAssertEqual(window.activeTabID, retainedTabID)
+    }
+
+    func testRestoredTabsAcrossWindowsShareCanonicalBufferAndAutosavePipeline() throws {
+        try withTemporaryDirectory { folder in
+            let fileURL = folder.appendingPathComponent("shared.md")
+            try Data("base".utf8).write(to: fileURL)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let documentID = DocumentID()
+            let locator = try DocumentLocator(
+                workspaceID: descriptor.id,
+                relativePath: "shared.md"
+            )
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil
+            )
+            func request() -> EditorWindowRequest {
+                var request = EditorWindowRequest.mostRecent()
+                let tabID = UUID()
+                request.restoration = EditorWindowRestorationState(
+                    id: request.id,
+                    tabs: [
+                        EditorTabRestorationState(
+                            id: tabID,
+                            documentID: documentID,
+                            locator: locator,
+                            preferredFilename: "shared.md",
+                            viewport: .zero
+                        ),
+                    ],
+                    activeTabID: tabID,
+                    isSidebarVisible: true,
+                    isSidebarPinned: false,
+                    isFullScreen: false
+                )
+                return request
+            }
+            let firstWindow = EditorWindowSession(request: request())
+            let secondWindow = EditorWindowSession(request: request())
+
+            firstWindow.connect(to: appState)
+            secondWindow.connect(to: appState)
+
+            let first = try XCTUnwrap(firstWindow.activeTab)
+            let second = try XCTUnwrap(secondWindow.activeTab)
+            XCTAssertTrue(first.document === second.document)
+            XCTAssertEqual(first.documentID, documentID)
+            XCTAssertEqual(appState.documentRegistry.openDocuments.count, 1)
+            first.editorTextDidChange("shared edit")
+            XCTAssertEqual(second.draftText, "shared edit")
+            let document = try XCTUnwrap(first.document)
+            let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
+            XCTAssertTrue(
+                appState.documentRegistry.autosaver(for: document, in: workspace)
+                    === appState.documentRegistry.autosaver(for: document, in: workspace)
+            )
+        }
+    }
+
+    func testMissingExactRestorationStaysDetachedAndNeverFallsBackToNewest() throws {
+        try withTemporaryDirectory { folder in
+            try Data("newest unrelated".utf8).write(
+                to: folder.appendingPathComponent("newest.md")
+            )
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let restoredID = DocumentID()
+            let locator = try DocumentLocator(
+                workspaceID: descriptor.id,
+                relativePath: "missing.md"
+            )
+            var request = EditorWindowRequest.mostRecent()
+            let tabID = UUID()
+            request.restoration = EditorWindowRestorationState(
+                id: request.id,
+                tabs: [
+                    EditorTabRestorationState(
+                        id: tabID,
+                        documentID: restoredID,
+                        locator: locator,
+                        preferredFilename: "missing.md",
+                        viewport: .zero
+                    ),
+                ],
+                activeTabID: tabID,
+                isSidebarVisible: true,
+                isSidebarPinned: false,
+                isFullScreen: false
+            )
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil
+            )
+            let window = EditorWindowSession(request: request)
+
+            window.connect(to: appState)
+
+            let restored = try XCTUnwrap(window.activeTab)
+            XCTAssertNil(restored.fileURL)
+            XCTAssertTrue(restored.isRestorationUnresolved)
+            XCTAssertEqual(restored.documentID, restoredID)
+            XCTAssertEqual(restored.locator, locator)
+            XCTAssertEqual(restored.draftText, "")
+            XCTAssertNotEqual(restored.draftText, "newest unrelated")
+        }
+    }
+
+    func testUnreadableExactRestorationStaysDetachedAndNeverTriesOtherFiles() throws {
+        try withTemporaryDirectory { folder in
+            try Data([0xFF, 0xFE]).write(to: folder.appendingPathComponent("bad.md"))
+            try Data("readable unrelated".utf8).write(
+                to: folder.appendingPathComponent("newest.md")
+            )
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let restoredID = DocumentID()
+            let locator = try DocumentLocator(
+                workspaceID: descriptor.id,
+                relativePath: "bad.md"
+            )
+            var request = EditorWindowRequest.mostRecent()
+            let tabID = UUID()
+            request.restoration = EditorWindowRestorationState(
+                id: request.id,
+                tabs: [
+                    EditorTabRestorationState(
+                        id: tabID,
+                        documentID: restoredID,
+                        locator: locator,
+                        preferredFilename: "bad.md",
+                        viewport: .zero
+                    ),
+                ],
+                activeTabID: tabID,
+                isSidebarVisible: true,
+                isSidebarPinned: false,
+                isFullScreen: false
+            )
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil
+            )
+            let window = EditorWindowSession(request: request)
+
+            window.connect(to: appState)
+
+            let restored = try XCTUnwrap(window.activeTab)
+            XCTAssertNil(restored.fileURL)
+            XCTAssertTrue(restored.isRestorationUnresolved)
+            XCTAssertEqual(restored.documentID, restoredID)
+            XCTAssertEqual(restored.locator, locator)
+            XCTAssertTrue(restored.errorMessage?.contains("UTF-8") == true)
+        }
     }
 
     func testInlineSlashAtLineStartOpensPaletteWithoutChangingDraft() {
@@ -338,6 +540,7 @@ final class NavigationSessionTests: XCTestCase {
             let originalTabID = window.activeTabID
 
             appState.openWorkspaceFile(
+                documentID: try XCTUnwrap(window.activeTab?.documentID),
                 workspaceID: descriptor.id,
                 relativePath: "shared.md",
                 from: window
@@ -500,9 +703,9 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(queries[1].workspaceFilter, filter)
     }
 
-    func testSidebarMoveChangesPhysicalLocationAndRetargetsOpenTab() throws {
-        try withTemporaryDirectory { sourceFolder in
-            try withTemporaryDirectory { destinationFolder in
+    func testSidebarMoveChangesPhysicalLocationAndRetargetsEveryOpenTab() async throws {
+        try await withTemporaryDirectory { sourceFolder in
+            try await withTemporaryDirectory { destinationFolder in
                 let sourceURL = sourceFolder.appendingPathComponent("move-me.md")
                 try Data("move".utf8).write(to: sourceURL)
                 let defaults = makeDefaults()
@@ -516,9 +719,35 @@ final class NavigationSessionTests: XCTestCase {
                 )
                 let window = EditorWindowSession(request: .mostRecent())
                 window.connect(to: appState)
-                let originalDocumentID = window.activeTab?.documentID
+                let originalDocumentID = try XCTUnwrap(window.activeTab?.documentID)
+                let originalDocument = try XCTUnwrap(window.activeTab?.document)
+                let locator = try DocumentLocator(
+                    workspaceID: sourceWorkspace.id,
+                    relativePath: "move-me.md"
+                )
+                var secondRequest = EditorWindowRequest.mostRecent()
+                let secondTabID = UUID()
+                secondRequest.restoration = EditorWindowRestorationState(
+                    id: secondRequest.id,
+                    tabs: [
+                        EditorTabRestorationState(
+                            id: secondTabID,
+                            documentID: originalDocumentID,
+                            locator: locator,
+                            preferredFilename: "move-me.md",
+                            viewport: .zero
+                        ),
+                    ],
+                    activeTabID: secondTabID,
+                    isSidebarVisible: true,
+                    isSidebarPinned: false,
+                    isFullScreen: false
+                )
+                let secondWindow = EditorWindowSession(request: secondRequest)
+                secondWindow.connect(to: appState)
                 let payload = try XCTUnwrap(
                     appState.dragPayload(
+                        documentID: originalDocumentID,
                         workspaceID: sourceWorkspace.id,
                         relativePath: "move-me.md"
                     )
@@ -534,11 +763,111 @@ final class NavigationSessionTests: XCTestCase {
 
                 let destinationURL = destinationFolder
                     .appendingPathComponent("drafts/move-me.md")
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try await Task.sleep(for: .milliseconds(20))
+                }
                 XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
                 XCTAssertTrue(FileManager.default.fileExists(atPath: destinationURL.path))
                 XCTAssertEqual(window.activeTab?.fileURL, destinationURL)
+                XCTAssertEqual(secondWindow.activeTab?.fileURL, destinationURL)
                 XCTAssertEqual(window.activeTab?.documentID, originalDocumentID)
+                XCTAssertTrue(window.activeTab?.document === originalDocument)
+                XCTAssertTrue(secondWindow.activeTab?.document === originalDocument)
             }
+        }
+    }
+
+    func testTrashCommitClosesOnlyAfterSuccessfulFlushAndMutation() throws {
+        try withTemporaryDirectory { folder in
+            let fileURL = folder.appendingPathComponent("trash.md")
+            try Data("base".utf8).write(to: fileURL)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            _ = try catalog.addAuthorizedFolder(folder)
+            var bytesAtTrash: String?
+            let mover = DocumentMover(
+                recoveryStore: RecoveryStore(rootURL: folder.appendingPathComponent("Recovery")),
+                trashOperation: { url in
+                    bytesAtTrash = try String(contentsOf: url)
+                    try FileManager.default.removeItem(at: url)
+                    return nil
+                }
+            )
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil,
+                documentMover: mover
+            )
+            let window = EditorWindowSession(request: .mostRecent())
+            window.connect(to: appState)
+            let tab = try XCTUnwrap(window.activeTab)
+            tab.editorTextDidChange("latest")
+
+            XCTAssertTrue(appState.commitMoveToTrash(tab, from: window))
+
+            XCTAssertEqual(bytesAtTrash, "latest")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+            XCTAssertFalse(window.tabs.contains { $0 === tab })
+            XCTAssertEqual(window.tabs.count, 1)
+        }
+    }
+
+    func testTrashFailureKeepsCanonicalTabOpenAndRegistered() throws {
+        try withTemporaryDirectory { folder in
+            let fileURL = folder.appendingPathComponent("trash.md")
+            try Data("base".utf8).write(to: fileURL)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let mover = DocumentMover(
+                recoveryStore: RecoveryStore(rootURL: folder.appendingPathComponent("Recovery")),
+                trashOperation: { _ in throw NavigationTrashFailure() }
+            )
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil,
+                documentMover: mover
+            )
+            let window = EditorWindowSession(request: .mostRecent())
+            window.connect(to: appState)
+            let tab = try XCTUnwrap(window.activeTab)
+            let document = try XCTUnwrap(tab.document)
+            tab.editorTextDidChange("latest")
+
+            XCTAssertFalse(appState.commitMoveToTrash(tab, from: window))
+
+            XCTAssertTrue(window.tabs.contains { $0 === tab })
+            XCTAssertTrue(tab.document === document)
+            XCTAssertEqual(tab.fileURL, fileURL)
+            XCTAssertTrue(
+                appState.documentRegistry.document(
+                    at: fileURL,
+                    in: try XCTUnwrap(catalog.workspace(id: descriptor.id))
+                ) === document
+            )
+            XCTAssertEqual(try String(contentsOf: fileURL), "latest")
+        }
+    }
+
+    func testCatalogMigrationPersistsLegacyPreferredWorkspaceIdentity() throws {
+        try withTemporaryDirectory { folder in
+            let defaults = makeDefaults()
+            let expectedID = WorkspaceID()
+            let catalog = makeCatalog(defaults: defaults)
+
+            let descriptor = try catalog.addAuthorizedFolder(
+                folder,
+                bookmark: Data(folder.path.utf8),
+                preferredID: expectedID
+            )
+            let restored = makeCatalog(defaults: defaults)
+
+            XCTAssertEqual(descriptor.id, expectedID)
+            XCTAssertEqual(catalog.workspace(id: expectedID)?.id, expectedID)
+            XCTAssertEqual(restored.descriptors.map(\.id), [expectedID])
+            XCTAssertEqual(restored.workspace(id: expectedID)?.id, expectedID)
         }
     }
 
@@ -724,9 +1053,10 @@ private extension NavigationSessionTests {
                     isStale: false
                 )
             },
-            workspaceFactory: {
+            workspaceFactory: { id, url in
                 try Workspace(
-                    rootURL: $0,
+                    id: id,
+                    rootURL: url,
                     accessSecurityScopedResource: false
                 )
             }

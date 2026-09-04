@@ -65,6 +65,7 @@ struct ContentView: View {
                     if editorSession.requiresExplicitRestore {
                         DetachedDocumentBanner(
                             filename: editorSession.filename,
+                            canRestore: editorSession.canRestoreAtPreviousLocation,
                             restore: editorSession.saveNow
                         )
                     } else if let errorMessage = editorSession.errorMessage
@@ -212,16 +213,21 @@ private func findEditorTextView(in view: NSView) -> EditorTextView? {
 
 private struct DetachedDocumentBanner: View {
     let filename: String
+    let canRestore: Bool
     let restore: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "doc.badge.clock")
                 .foregroundStyle(.orange)
-            Text("\(filename) was removed from disk. Its text is safe in Clio and will not be recreated automatically.")
+            Text(canRestore
+                ? "\(filename) was removed from disk. Its text is safe in Clio and will not be recreated automatically."
+                : "\(filename) could not be restored. Clio kept this exact tab detached and did not substitute another document.")
             Spacer(minLength: 8)
-            Button("Restore Document", action: restore)
-                .keyboardShortcut(.defaultAction)
+            if canRestore {
+                Button("Restore Document", action: restore)
+                    .keyboardShortcut(.defaultAction)
+            }
         }
         .font(.custom(Typography.family, fixedSize: 12))
         .foregroundStyle(Color(nsColor: Palette.foreground))

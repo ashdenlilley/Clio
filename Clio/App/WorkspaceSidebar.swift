@@ -155,11 +155,13 @@ private struct WorkspaceTreeSection: View {
                     ),
                     children: \.children
                 ) { item in
-                    if let relativePath = item.relativePath {
+                    if let relativePath = item.relativePath,
+                       let documentID = item.documentID {
                         let isSelected = windowSession.activeTab?.workspaceID == workspace.id
                             && windowSession.activeTab?.relativePath == relativePath
                         Button {
                             appState.openWorkspaceFile(
+                                documentID: documentID,
                                 workspaceID: workspace.id,
                                 relativePath: relativePath,
                                 from: windowSession
@@ -178,6 +180,7 @@ private struct WorkspaceTreeSection: View {
                         .onDrag {
                             NSItemProvider(
                                 object: (appState.dragPayload(
+                                    documentID: documentID,
                                     workspaceID: workspace.id,
                                     relativePath: relativePath
                                 ) ?? "") as NSString
@@ -244,6 +247,7 @@ private struct SidebarSelectedTrait: ViewModifier {
 private struct SidebarTreeItem: Identifiable {
     let id: String
     let name: String
+    let documentID: DocumentID?
     let relativePath: String?
     let dropTargetPath: String?
     let exclusionReason: ExclusionReason?
@@ -291,6 +295,7 @@ private struct SidebarTreeItem: Identifiable {
             return SidebarTreeItem(
                 id: "\(workspaceID.rawValue.uuidString):folder:\(path)",
                 name: folder,
+                documentID: nil,
                 relativePath: nil,
                 dropTargetPath: path,
                 exclusionReason: nil,
@@ -308,6 +313,7 @@ private struct SidebarTreeItem: Identifiable {
             SidebarTreeItem(
                 id: "\(workspaceID.rawValue.uuidString):file:\(file.relativePath)",
                 name: URL(fileURLWithPath: file.relativePath).lastPathComponent,
+                documentID: file.documentID,
                 relativePath: file.relativePath,
                 dropTargetPath: nil,
                 exclusionReason: file.exclusionReason,

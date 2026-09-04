@@ -183,7 +183,8 @@ final class WorkspaceCatalog {
     func addAuthorizedFolder(
         _ folderURL: URL,
         bookmark suppliedBookmark: Data? = nil,
-        containing requiredDocumentURL: URL? = nil
+        containing requiredDocumentURL: URL? = nil,
+        preferredID: WorkspaceID? = nil
     ) throws -> WorkspaceDescriptor {
         let standardizedURL = folderURL.standardizedFileURL
         if let existing = descriptors.first(where: {
@@ -198,7 +199,7 @@ final class WorkspaceCatalog {
 
         let bookmark = try suppliedBookmark ?? bookmarkMaker(standardizedURL)
         let resolution = try bookmarkResolver(bookmark)
-        let workspaceID = WorkspaceID()
+        let workspaceID = preferredID ?? WorkspaceID()
         let workspace = try makeWorkspace(id: workspaceID, rootURL: resolution.url)
         if let requiredDocumentURL, !workspace.contains(requiredDocumentURL) {
             throw CatalogError.selectedFolderDoesNotContainDocument(requiredDocumentURL)

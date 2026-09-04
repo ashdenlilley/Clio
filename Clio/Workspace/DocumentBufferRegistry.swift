@@ -167,6 +167,16 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         )
     }
 
+    /// Registers an unbacked restoration placeholder without inventing a file
+    /// locator. An already-open buffer with the same stable ID remains the
+    /// single canonical object shared by every window.
+    @discardableResult
+    func registerUnbacked(_ document: Document) -> Document {
+        if let existing = documents[document.id] { return existing }
+        documents[document.id] = document
+        return document
+    }
+
     func document(at fileURL: URL, in workspace: Workspace) -> Document? {
         let standardizedURL = fileURL.standardizedFileURL
         let identity = PhysicalFileIdentity.authorizedFile(at: standardizedURL)
