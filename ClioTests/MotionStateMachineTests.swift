@@ -246,6 +246,104 @@ final class ChromeMotionControllerTests: XCTestCase {
         }
     }
 
+    func testMeaningfulPointerMovementAtFourPointNineSecondsCancelsWritingEpoch() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            pointerLocation: MotionPoint(x: 100, y: 100)
+        )
+        controller.noteTyping()
+        clock.now = 4.9
+
+        controller.pointerMoved(to: MotionPoint(x: 104, y: 100))
+
+        XCTAssertFalse(controller.isWritingBurstActive)
+        XCTAssertNil(controller.nextDeadline)
+        clock.now = 6
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(controller.pointer.target, 1)
+    }
+
+    func testSubFourPixelPointerJitterDoesNotCancelWritingEpoch() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            pointerLocation: MotionPoint(x: 100, y: 100)
+        )
+        controller.noteTyping()
+        clock.now = 4.9
+
+        controller.pointerMoved(to: MotionPoint(x: 103.99, y: 100))
+
+        XCTAssertTrue(controller.isWritingBurstActive)
+        XCTAssertEqual(controller.nextDeadline, 5)
+        clock.now = 5
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.titlebar.target, 0)
+    }
+
+    func testSidebarInteractionCancelsPendingWritingEpoch() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 4.9
+
+        controller.recordSidebarInteraction()
+
+        XCTAssertFalse(controller.isWritingBurstActive)
+        XCTAssertNil(controller.nextDeadline)
+        clock.now = 6
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+    }
+
+    func testModalOrWindowInteractionCancelsStaleWritingDeadline() throws {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        let staleDeadline = try XCTUnwrap(controller.nextDeadline)
+        clock.now = 4.9
+        controller.noteIntentionalInteraction()
+        clock.now = 4.95
+        controller.noteTyping()
+
+        clock.now = staleDeadline
+        controller.tick()
+
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(
+            try XCTUnwrap(controller.nextDeadline),
+            9.95,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testIntentionalInteractionRestoresHiddenChromeWithoutSidebar() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 6
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.context.target, 0)
+
+        controller.noteIntentionalInteraction()
+
+        XCTAssertFalse(controller.isWritingBurstActive)
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(controller.pointer.target, 1)
+    }
+
     func testTemporarySidebarWaitsAfterHoverEnds() {
         let clock = ManualMotionClock()
         let controller = ChromeMotionController(
@@ -768,6 +866,36 @@ final class TransientSurfaceMotionControllerTests: XCTestCase {
         XCTAssertEqual(controller.overlay.target, 1)
         _ = controller.dismissSettings()
         XCTAssertEqual(controller.overlay.target, 0)
+    }
+
+    func testExitingSurfaceKeepsVisualZOrderUntilDismissalCompletes() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        controller.presentSettings(capturing: snapshot())
+        clock.now = 0.25
+        controller.tick()
+        controller.presentPalette(capturing: snapshot())
+        clock.now = 0.30
+        controller.tick()
+
+        _ = controller.dismissPalette()
+
+        XCTAssertEqual(controller.activeSurfaceStack, [.settings])
+        XCTAssertEqual(controller.visualSurfaceStack, [.settings, .palette])
+        clock.now = 1
+        controller.tick()
+        XCTAssertEqual(controller.visualSurfaceStack, [.settings])
+    }
+
+    func testZeroPresentationDismissalPrunesVisualSurfaceImmediately() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        controller.presentPalette(capturing: snapshot())
+
+        _ = controller.dismissPalette()
+
+        XCTAssertTrue(controller.activeSurfaceStack.isEmpty)
+        XCTAssertTrue(controller.visualSurfaceStack.isEmpty)
     }
 
     func testConflictBannerEntersOnceAndSurvivesFailedResolution() {

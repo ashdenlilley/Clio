@@ -102,9 +102,15 @@ final class ChromeMotionController {
     /// does that.
     func endWritingBurst() {
         tick()
-        writingStartedAt = nil
-        didTriggerWritingThreshold = false
-        didTriggerContextFade = false
+        cancelWritingEpoch()
+    }
+
+    /// Records an intentional non-pointer interaction, such as presenting a
+    /// transient surface or activating the window. It ends the current writing
+    /// epoch and restores non-document chrome without changing sidebar intent.
+    func noteIntentionalInteraction() {
+        tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
     }
 
     /// Enables or disables the writing-triggered chrome treatment. Disabling
@@ -139,35 +145,16 @@ final class ChromeMotionController {
     /// Exactly four pixels is an intentional movement; anything below is ignored.
     func pointerMoved(to location: MotionPoint) {
         tick()
-
-        let chromeIsRestingVisible = context.target == 1
-            && titlebar.target == 1
-            && pointer.target == 1
-            && !context.hasActiveTransition
-            && !titlebar.hasActiveTransition
-            && !pointer.hasActiveTransition
-
-        if chromeIsRestingVisible {
-            pointerWakeAnchor = location
-            return
-        }
-
         guard pointerWakeAnchor.distance(to: location)
             >= MotionContract.pointerJitterThreshold else { return }
 
-        let time = clock.now
-        retargetContext(to: 1, at: time, recipe: MotionContract.chromeRestore)
-        retargetTitlebar(to: 1, at: time, recipe: MotionContract.chromeRestore)
-        retargetPointer(to: 1, at: time, recipe: MotionContract.chromeRestore)
-        // Waking the controls starts a fresh writing epoch on the next key input.
-        writingStartedAt = nil
-        didTriggerWritingThreshold = false
-        didTriggerContextFade = false
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         pointerWakeAnchor = location
     }
 
     func toggleSidebar() {
         tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         abandonSidebarGesture()
         wasSidebarCollapsedByWriting = false
         let time = clock.now
@@ -182,6 +169,7 @@ final class ChromeMotionController {
 
     func setSidebarPinned(_ pinned: Bool) {
         tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         abandonSidebarGesture()
         wasSidebarCollapsedByWriting = false
         isSidebarPinned = pinned
@@ -198,6 +186,7 @@ final class ChromeMotionController {
 
     func revealSidebarTemporarily() {
         tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         abandonSidebarGesture()
         wasSidebarCollapsedByWriting = false
         let time = clock.now
@@ -209,6 +198,7 @@ final class ChromeMotionController {
 
     func hideSidebar() {
         tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         abandonSidebarGesture()
         wasSidebarCollapsedByWriting = false
         retargetSidebar(
@@ -222,6 +212,7 @@ final class ChromeMotionController {
 
     func recordSidebarInteraction() {
         tick()
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         guard isSidebarTemporary, !isSidebarPinned else { return }
         temporarySidebarDeadline = clock.now + MotionContract.temporarySidebarDelay
     }
@@ -230,6 +221,9 @@ final class ChromeMotionController {
         tick()
         guard isSidebarHovered != hovered else { return }
         isSidebarHovered = hovered
+        if hovered {
+            restoreChromeAfterIntentionalInteraction(at: clock.now)
+        }
         recordSidebarInteractionAfterStateChange()
     }
 
@@ -237,6 +231,9 @@ final class ChromeMotionController {
         tick()
         guard isSidebarFocused != focused else { return }
         isSidebarFocused = focused
+        if focused {
+            restoreChromeAfterIntentionalInteraction(at: clock.now)
+        }
         recordSidebarInteractionAfterStateChange()
     }
 
@@ -245,6 +242,7 @@ final class ChromeMotionController {
     func beginSidebarGesture() {
         tick()
         guard gestureStartPresentation == nil else { return }
+        restoreChromeAfterIntentionalInteraction(at: clock.now)
         _ = sidebar.advance(to: clock.now)
         gestureStartPresentation = sidebar.presentation
         gestureStartTarget = sidebar.target
@@ -444,6 +442,22 @@ final class ChromeMotionController {
 }
 
 private extension ChromeMotionController {
+    func cancelWritingEpoch() {
+        writingStartedAt = nil
+        didTriggerWritingThreshold = false
+        didTriggerContextFade = false
+    }
+
+    /// All intentional interaction restores the contextual chrome, but sidebar
+    /// visibility remains an independent user intent. This is also the single
+    /// cancellation point for a pending or completed writing epoch.
+    func restoreChromeAfterIntentionalInteraction(at time: TimeInterval) {
+        cancelWritingEpoch()
+        retargetContext(to: 1, at: time, recipe: MotionContract.chromeRestore)
+        retargetTitlebar(to: 1, at: time, recipe: MotionContract.chromeRestore)
+        retargetPointer(to: 1, at: time, recipe: MotionContract.chromeRestore)
+    }
+
     var hasTemporaryDismissalBlocker: Bool {
         isSidebarHovered
             || isSidebarFocused
