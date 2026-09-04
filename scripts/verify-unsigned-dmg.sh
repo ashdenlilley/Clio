@@ -74,8 +74,29 @@ find "${APP_PATH}/Contents/Resources" -name 'LICENSE-Hack.md' -print -quit | gre
     echo "error: third-party notices are missing" >&2
     exit 1
 }
+grep -q 'swift-markdown' "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" || {
+    echo "error: bundled swift-markdown notice is missing" >&2
+    exit 1
+}
+grep -q 'swift-cmark' "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" || {
+    echo "error: bundled swift-cmark notice is missing" >&2
+    exit 1
+}
 [[ -f "${APP_PATH}/Contents/Resources/AppIcon.icns" ]] || {
     echo "error: compiled application icon is missing" >&2
+    exit 1
+}
+
+UNEXPECTED_DEPENDENCIES="$(
+    otool -L "${EXECUTABLE_PATH}" \
+        | tail -n +2 \
+        | awk '{ print $1 }' \
+        | grep -Ev '^(/System/Library/|/usr/lib/)' \
+        || true
+)"
+[[ -z "${UNEXPECTED_DEPENDENCIES}" ]] || {
+    echo "error: executable links unexpected non-system libraries:" >&2
+    echo "${UNEXPECTED_DEPENDENCIES}" >&2
     exit 1
 }
 
@@ -85,4 +106,4 @@ MARKDOWN_DOCUMENT_TYPE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTyp
     exit 1
 }
 
-echo "Verified unsigned Clio ${VERSION} (${BUILD}; ${BUNDLE_ID}) [${ARCHITECTURES}]"
+echo "Verified unsigned Clio ${VERSION} (${BUILD}; ${BUNDLE_ID}) [${ARCHITECTURES}; system libraries only]"
