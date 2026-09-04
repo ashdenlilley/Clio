@@ -143,7 +143,9 @@ struct MotionRecipe: Equatable, Sendable {
             curve: .linear,
             animatedProperties: [.opacity],
             transform: .init(),
-            usesBackdropBlur: false
+            // Reduce Motion removes motion, not translucency. Backdrop blur is
+            // a discrete treatment and is disabled only by Reduce Transparency.
+            usesBackdropBlur: usesBackdropBlur && !preferences.reduceTransparency
         )
     }
 }

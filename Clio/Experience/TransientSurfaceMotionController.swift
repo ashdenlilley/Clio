@@ -17,6 +17,11 @@ enum TransientSurface: Equatable, Hashable, Sendable {
 /// owning any AppKit objects. Focus snapshots are returned to the adapter only
 /// when the matching surface is intentionally dismissed.
 final class TransientSurfaceMotionController {
+    private struct PendingFocusRestoration {
+        let snapshot: MotionFocusSnapshot
+        let underlay: [TransientSurface]
+    }
+
     private let clock: MotionClock
 
     private(set) var preferences: MotionPreferences
@@ -27,7 +32,12 @@ final class TransientSurfaceMotionController {
     private(set) var conflictBanner = ReversibleMotionStateMachine(initialPresentation: 0)
 
     private(set) var activeSurfaces: Set<TransientSurface> = []
+    /// Back-to-front order. Focus restoration is only emitted for the topmost
+    /// dismissed surface; removing an underlay rewires the next surface's
+    /// snapshot so a later dismissal cannot focus a defunct control.
+    private(set) var activeSurfaceStack: [TransientSurface] = []
     private var focusSnapshots: [TransientSurface: MotionFocusSnapshot] = [:]
+    private var pendingFocusRestorations: [TransientSurface: PendingFocusRestoration] = [:]
     private var events: [MotionEvent] = []
 
     init(
@@ -74,8 +84,13 @@ final class TransientSurfaceMotionController {
         tick()
         let alreadyActive = activeSurfaces.contains(.conflict)
         if !alreadyActive {
-            focusSnapshots[.conflict] = focus
-            activeSurfaces.insert(.conflict)
+            activate(
+                .conflict,
+                capturing: resolvedFocusForPresentation(
+                    of: .conflict,
+                    proposed: focus
+                )
+            )
             retargetConflict(to: 1, recipe: MotionContract.sheetEnter)
             retargetConflictBanner(to: 1, recipe: MotionContract.conflictBannerEnter)
             updateOverlay()
@@ -92,11 +107,13 @@ final class TransientSurfaceMotionController {
     @discardableResult
     func conflictResolutionSucceeded() -> MotionFocusSnapshot? {
         tick()
-        guard activeSurfaces.remove(.conflict) != nil else { return nil }
+        guard activeSurfaces.contains(.conflict) else { return nil }
+        let restoration = deactivate(.conflict)
         retargetConflict(to: 0, recipe: MotionContract.sheetExit)
         retargetConflictBanner(to: 0, recipe: MotionContract.conflictBannerExit)
+        retainPendingRestorationIfExiting(restoration, for: .conflict)
         updateOverlay()
-        return focusSnapshots.removeValue(forKey: .conflict)
+        return restoration
     }
 
     func setMotionPreferences(_ newPreferences: MotionPreferences) {
@@ -138,11 +155,27 @@ final class TransientSurfaceMotionController {
 
     func tick() {
         let time = clock.now
-        _ = palette.advance(to: time)
-        _ = settings.advance(to: time)
-        _ = conflict.advance(to: time)
+        let paletteCompletion = palette.advance(to: time)
+        let settingsCompletion = settings.advance(to: time)
+        let conflictCompletion = conflict.advance(to: time)
         _ = overlay.advance(to: time)
         _ = conflictBanner.advance(to: time)
+
+        clearCompletedPendingRestoration(
+            for: .palette,
+            completion: paletteCompletion,
+            machine: palette
+        )
+        clearCompletedPendingRestoration(
+            for: .settings,
+            completion: settingsCompletion,
+            machine: settings
+        )
+        clearCompletedPendingRestoration(
+            for: .conflict,
+            completion: conflictCompletion,
+            machine: conflict
+        )
     }
 
     func drainEvents() -> [MotionEvent] {
@@ -158,8 +191,10 @@ private extension TransientSurfaceMotionController {
     ) {
         tick()
         guard !activeSurfaces.contains(surface) else { return }
-        activeSurfaces.insert(surface)
-        focusSnapshots[surface] = focus
+        activate(
+            surface,
+            capturing: resolvedFocusForPresentation(of: surface, proposed: focus)
+        )
 
         switch surface {
         case .palette:
@@ -176,7 +211,8 @@ private extension TransientSurfaceMotionController {
     @discardableResult
     func dismiss(_ surface: TransientSurface) -> MotionFocusSnapshot? {
         tick()
-        guard activeSurfaces.remove(surface) != nil else { return nil }
+        guard activeSurfaces.contains(surface) else { return nil }
+        let restoration = deactivate(surface)
 
         switch surface {
         case .palette:
@@ -186,8 +222,100 @@ private extension TransientSurfaceMotionController {
         case .conflict:
             assertionFailure("Use conflictResolutionSucceeded() for conflicts")
         }
+        retainPendingRestorationIfExiting(restoration, for: surface)
         updateOverlay()
-        return focusSnapshots.removeValue(forKey: surface)
+        return restoration
+    }
+
+    func activate(
+        _ surface: TransientSurface,
+        capturing focus: MotionFocusSnapshot
+    ) {
+        activeSurfaces.insert(surface)
+        activeSurfaceStack.append(surface)
+        focusSnapshots[surface] = focus
+        pendingFocusRestorations.removeValue(forKey: surface)
+    }
+
+    /// Removes a surface while preserving the focus chain. A non-topmost
+    /// dismissal cannot restore focus yet, so its predecessor snapshot replaces
+    /// the snapshot captured by the surface directly above it.
+    func deactivate(_ surface: TransientSurface) -> MotionFocusSnapshot? {
+        guard let index = activeSurfaceStack.firstIndex(of: surface) else {
+            activeSurfaces.remove(surface)
+            focusSnapshots.removeValue(forKey: surface)
+            return nil
+        }
+
+        let wasTopmost = index == activeSurfaceStack.index(before: activeSurfaceStack.endIndex)
+        let snapshot = focusSnapshots.removeValue(forKey: surface)
+        activeSurfaceStack.remove(at: index)
+        activeSurfaces.remove(surface)
+
+        if !wasTopmost,
+           index < activeSurfaceStack.count,
+           let snapshot {
+            let surfaceImmediatelyAbove = activeSurfaceStack[index]
+            focusSnapshots[surfaceImmediatelyAbove] = snapshot
+        }
+
+        return wasTopmost ? snapshot : nil
+    }
+
+    /// If a surface is reopened while its exit is still on screen, its original
+    /// predecessor remains the correct restoration destination. A changed
+    /// underlay means this is a genuinely new presentation and uses the newly
+    /// captured focus instead.
+    func resolvedFocusForPresentation(
+        of surface: TransientSurface,
+        proposed focus: MotionFocusSnapshot
+    ) -> MotionFocusSnapshot {
+        guard let pending = pendingFocusRestorations[surface],
+              pending.underlay == activeSurfaceStack,
+              machine(for: surface).hasActiveTransition,
+              machine(for: surface).target == 0 else {
+            pendingFocusRestorations.removeValue(forKey: surface)
+            return focus
+        }
+        return pending.snapshot
+    }
+
+    func retainPendingRestorationIfExiting(
+        _ restoration: MotionFocusSnapshot?,
+        for surface: TransientSurface
+    ) {
+        guard let restoration,
+              machine(for: surface).hasActiveTransition,
+              machine(for: surface).target == 0 else {
+            pendingFocusRestorations.removeValue(forKey: surface)
+            return
+        }
+        pendingFocusRestorations[surface] = PendingFocusRestoration(
+            snapshot: restoration,
+            underlay: activeSurfaceStack
+        )
+    }
+
+    func clearCompletedPendingRestoration(
+        for surface: TransientSurface,
+        completion: MotionCompletion?,
+        machine: ReversibleMotionStateMachine
+    ) {
+        guard completion != nil,
+              machine.target == 0,
+              !activeSurfaces.contains(surface) else { return }
+        pendingFocusRestorations.removeValue(forKey: surface)
+    }
+
+    func machine(for surface: TransientSurface) -> ReversibleMotionStateMachine {
+        switch surface {
+        case .palette:
+            palette
+        case .settings:
+            settings
+        case .conflict:
+            conflict
+        }
     }
 
     func updateOverlay() {
