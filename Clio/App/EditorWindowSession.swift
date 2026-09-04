@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -53,6 +54,9 @@ final class EditorWindowSession: Identifiable {
     var paletteErrorMessage: String?
     var isSearching = false
     private(set) var paletteSelectionIndex = 0
+
+    @ObservationIgnored
+    private var palettePointerAtPresentation = NSPoint.zero
     private(set) var focusRestorationGeneration = 0
 
     @ObservationIgnored
@@ -322,6 +326,7 @@ final class EditorWindowSession: Identifiable {
         paletteQuery = query
         paletteErrorMessage = nil
         paletteSelectionIndex = 0
+        palettePointerAtPresentation = NSEvent.mouseLocation
         isPalettePresented = true
         if mode == .search {
             updateSearch()
@@ -370,6 +375,13 @@ final class EditorWindowSession: Identifiable {
 
     func movePaletteSelection(by offset: Int) {
         selectPaletteItem(at: paletteSelectionIndex + offset)
+    }
+
+    func selectPaletteItemFromPointer(at index: Int) {
+        // Opening a palette under a stationary pointer must not override its
+        // initial keyboard selection. Hover takes over once the pointer moves.
+        guard NSEvent.mouseLocation != palettePointerAtPresentation else { return }
+        selectPaletteItem(at: index)
     }
 
     func performSelectedPaletteItem() {

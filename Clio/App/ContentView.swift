@@ -184,7 +184,6 @@ struct ContentView: View {
                     windowSession.presentInlineSlashPalette()
                 }
             )
-            .id(editorSession.id)
 
             StatusLine(
                 relativePath: editorSession.relativePath,

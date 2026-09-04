@@ -13,17 +13,17 @@ final class ClioNavigationUITests: XCTestCase {
         launch(scenario: "blank")
 
         app.typeKey("k", modifierFlags: .command)
-        XCTAssertTrue(app.otherElements["command.palette"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["command.palette"].waitForExistence(timeout: 3))
         let openCommand = app.buttons["palette.command.open"]
         XCTAssertTrue(openCommand.exists)
 
         app.typeKey(.downArrow, modifierFlags: [])
-        XCTAssertTrue(openCommand.isSelected)
+        XCTAssertEqual(openCommand.value as? String, "Selected")
 
         let query = app.textFields["palette.query"]
         query.typeText("sidebar")
         app.typeKey(.return, modifierFlags: [])
-        XCTAssertFalse(app.otherElements["sidebar"].waitForExistence(timeout: 0.5))
+        XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["sidebar"].exists })
     }
 
     func testInlineSlashPaletteIsFullyKeyboardNavigable() {
@@ -32,13 +32,13 @@ final class ClioNavigationUITests: XCTestCase {
         let editor = app.textViews["editor.text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         editor.typeText("/")
-        XCTAssertTrue(app.otherElements["command.palette"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["command.palette"].waitForExistence(timeout: 3))
 
         app.textFields["palette.query"].typeText("sidebar")
         app.typeKey(.pageDown, modifierFlags: [])
         app.typeKey(.pageUp, modifierFlags: [])
         app.typeKey(.return, modifierFlags: [])
-        XCTAssertFalse(app.otherElements["sidebar"].waitForExistence(timeout: 0.5))
+        XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["sidebar"].exists })
     }
 
     func testNewDocumentAndNewWindowFollowNativeShortcuts() {
@@ -61,13 +61,13 @@ final class ClioNavigationUITests: XCTestCase {
         launch(scenario: "blank")
 
         XCTAssertTrue(
-            app.otherElements["editor.surface.no-focus-ring"]
+            app.descendants(matching: .any)["editor.surface.no-focus-ring"]
                 .waitForExistence(timeout: 3)
         )
         let toggle = app.buttons["sidebar.toggle"].firstMatch
         XCTAssertTrue(toggle.exists)
         toggle.click()
-        XCTAssertFalse(app.otherElements["sidebar"].waitForExistence(timeout: 0.5))
+        XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["sidebar"].exists })
         XCTAssertTrue(app.buttons["sidebar.toggle"].waitForExistence(timeout: 2))
     }
 

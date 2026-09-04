@@ -118,6 +118,8 @@ final class EditorContainerView: NSView {
         layer?.backgroundColor = Palette.background.cgColor
         focusRingType = .none
         setAccessibilityIdentifier("editor.surface.no-focus-ring")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.borderType = .noBorder
@@ -187,6 +189,10 @@ final class EditorContainerView: NSView {
         hasRequestedInitialFocus = true
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
+            // A palette or another text field may have claimed focus while
+            // SwiftUI attached this editor during the same update.
+            if let responder = window.firstResponder as? NSTextView,
+               responder !== self.textView { return }
             window.makeFirstResponder(self.textView)
         }
     }

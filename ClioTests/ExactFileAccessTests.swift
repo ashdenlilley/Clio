@@ -131,13 +131,16 @@ final class ExactFileAccessTests: XCTestCase {
         let initial = await iterator.next()
         XCTAssertEqual(initial, .changed)
         let replaced = expectation(description: "atomic replacement under one second")
+        let observed = AccessCalls()
         let replacedTask = Task {
             let event = await iterator.next()
             XCTAssertEqual(event, .changed)
+            observed.append("replacement")
             replaced.fulfill()
         }
         try Data("replacement".utf8).write(to: file, options: .atomic)
         await fulfillment(of: [replaced], timeout: 1)
+        guard observed.values.contains("replacement") else { return }
         await replacedTask.value
         try FileManager.default.removeItem(at: file)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
@@ -145,9 +148,11 @@ final class ExactFileAccessTests: XCTestCase {
         let rejectedTask = Task {
             let event = await iterator.next()
             XCTAssertEqual(event, .accessLost)
+            observed.append("rejection")
             rejected.fulfill()
         }
         await fulfillment(of: [rejected], timeout: 1)
+        guard observed.values.contains("rejection") else { return }
         await rejectedTask.value
         XCTAssertEqual(try String(contentsOf: target), "private")
     }

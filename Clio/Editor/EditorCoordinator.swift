@@ -122,6 +122,11 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
 
         if let renderedContentGeneration {
             if contentGeneration != renderedContentGeneration {
+                if contentGeneration.bufferID != renderedContentGeneration.bufferID {
+                    surface.textView.undoManager?.removeAllActions()
+                    hasRestoredViewport = false
+                    lastKnownViewport = nil
+                }
                 let expectedEditorRevision = renderedContentGeneration.revision
                     &+ pendingEditorRevisionAdvances
                 if contentGeneration.bufferID == renderedContentGeneration.bufferID,

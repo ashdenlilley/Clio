@@ -99,7 +99,13 @@ struct CommandPaletteView: View {
                 .stroke(Color(nsColor: Palette.hairline), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.7), radius: 28, y: 12)
-        .onAppear { isQueryFocused = true }
+        .task {
+            // Menu-command presentation must finish its current responder
+            // transaction before the palette claims the field editor.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            isQueryFocused = true
+        }
         .onExitCommand { windowSession.dismissPalette() }
         .background(
             PaletteKeyboardMonitor { key in
@@ -148,7 +154,7 @@ struct CommandPaletteView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
-                    if hovering { windowSession.selectPaletteItem(at: index) }
+                    if hovering { windowSession.selectPaletteItemFromPointer(at: index) }
                 }
                 .id("command:\(descriptor.command.rawValue)")
                 .accessibilityIdentifier("palette.command.\(descriptor.command.rawValue)")
@@ -217,7 +223,7 @@ struct CommandPaletteView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
-                    if hovering { windowSession.selectPaletteItem(at: index) }
+                    if hovering { windowSession.selectPaletteItemFromPointer(at: index) }
                 }
                 .id("search:\(result.id.uuidString)")
                 .accessibilityIdentifier("palette.search-result")
@@ -262,13 +268,10 @@ private struct PaletteRow: View {
 private struct SelectedAccessibilityTrait: ViewModifier {
     let isSelected: Bool
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isSelected {
-            content.accessibilityAddTraits(.isSelected)
-        } else {
-            content
-        }
+        content
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
 
@@ -327,7 +330,7 @@ private struct PaletteKeyboardMonitor: NSViewRepresentable {
                 [weak self] event in
                 guard let self,
                       let window = self.view?.window,
-                      event.window === window,
+                      (event.window ?? NSApp.keyWindow) === window,
                       event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
                       (window.firstResponder as? NSTextView)?.hasMarkedText() != true,
                       let key = Self.navigationKey(for: event) else { return event }
