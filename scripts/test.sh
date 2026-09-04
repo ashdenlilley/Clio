@@ -68,6 +68,11 @@ xcodebuild \
     test
 
 if [[ "${HAS_UI_TESTS}" == "1" ]]; then
+    # Fail clearly instead of waiting for XCTest's opaque activation timeout.
+    CONSOLE_STATE="$(/usr/sbin/ioreg -n Root -d1)"
+    if [[ "${CONSOLE_STATE}" == *'"CGSSessionScreenIsLocked"=Yes'* ]]; then
+        clio_die "native UI tests require an unlocked macOS desktop; unlock this Mac and rerun the gate"
+    fi
     set --
     if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
         set -- -resultBundlePath "${UI_RESULT_PATH}"
