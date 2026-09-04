@@ -246,6 +246,19 @@ struct ExportRequest: Sendable {
     let pdfSettings: PDFPrintSettings?
 }
 
+/// The exact destination state presented to the user when an export collides.
+/// A replacement decision is valid only for this revision; callers must ask
+/// again if the file changes before the atomic commit.
+struct ExportCollision: Codable, Hashable, Sendable {
+    let destinationURL: URL
+    let revision: DiskRevision
+}
+
+struct ExportCollisionResolution: Codable, Hashable, Sendable {
+    let collision: ExportCollision
+    let choice: CollisionChoice
+}
+
 struct ExportReceipt: Codable, Hashable, Sendable {
     let format: ExportFormat
     let destinationURL: URL

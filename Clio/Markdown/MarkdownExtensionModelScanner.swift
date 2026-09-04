@@ -22,7 +22,7 @@ struct MarkdownExtensionModelScanner {
         while cursor < source.length {
             if lineCount.isMultiple(of: 256) { try Task.checkCancellation() }
             let line = lineRange(at: cursor)
-            if let definition = footnote(at: line) {
+            if let definition = try footnote(at: line) {
                 blocks.append(definition.block)
                 cursor = definition.end
             } else {
@@ -60,7 +60,7 @@ struct MarkdownExtensionModelScanner {
 
     private func footnote(
         at line: NSRange
-    ) -> (block: MarkdownBlock, end: Int)? {
+    ) throws -> (block: MarkdownBlock, end: Int)? {
         let content = contentRange(of: line)
         var cursor = content.location
         var indentation = 0
@@ -81,37 +81,92 @@ struct MarkdownExtensionModelScanner {
               source.character(at: close + 1) == 0x3A else { return nil }
         let label = source.substring(with: NSRange(location: labelStart, length: close - labelStart))
         var bodyStart = close + 2
-        while bodyStart < NSMaxRange(content), isHorizontalSpace(source.character(at: bodyStart)) {
+        if bodyStart < NSMaxRange(content), isHorizontalSpace(source.character(at: bodyStart)) {
             bodyStart += 1
         }
+        var projection = MarkdownFootnoteProjection()
+        projection.append(
+            NSRange(location: bodyStart, length: NSMaxRange(line) - bodyStart),
+            from: source
+        )
         var last = line
         var next = NSMaxRange(line)
         while next < source.length {
+            try Task.checkCancellation()
             let candidate = lineRange(at: next)
             let candidateContent = contentRange(of: candidate)
-            var indentation = 0
-            while indentation < candidateContent.length,
-                  source.character(at: candidateContent.location + indentation) == 0x20 {
-                indentation += 1
+            if candidateContent.length == 0 {
+                guard let run = try blankLinesBeforeContinuation(startingAt: candidate) else {
+                    break
+                }
+                for blank in run.lines { projection.append(blank, from: source) }
+                last = run.lines.last ?? last
+                next = run.continuationOffset
+                continue
             }
-            guard indentation >= 4 else { break }
+            guard let indentation = continuationIndent(in: candidateContent) else { break }
+            projection.append(
+                NSRange(
+                    location: candidateContent.location + indentation,
+                    length: NSMaxRange(candidate) - candidateContent.location - indentation
+                ),
+                from: source
+            )
             last = candidate
             next = NSMaxRange(candidate)
         }
-        let bodyRange = NSRange(
-            location: bodyStart,
-            length: max(0, NSMaxRange(contentRange(of: last)) - bodyStart)
-        )
         let whole = NSRange(location: line.location, length: NSMaxRange(last) - line.location)
-        let text = MarkdownInline.text(value: source.substring(with: bodyRange), range: bodyRange.utf16)
+        let parsed = try SwiftMarkdownSemanticParser(source: projection.text).parse()
+        let blocks = MarkdownModelRangeMapper.map(parsed.blocks) {
+            projection.originalRange(for: $0)
+        }
         return (
             .footnoteDefinition(
                 label: label,
-                blocks: [.paragraph(content: [text], range: bodyRange.utf16)],
+                blocks: blocks,
                 range: whole.utf16
             ),
             NSMaxRange(last)
         )
+    }
+
+    private func continuationIndent(in content: NSRange) -> Int? {
+        var cursor = content.location
+        var columns = 0
+        while cursor < NSMaxRange(content), columns < 4 {
+            switch source.character(at: cursor) {
+            case 0x20:
+                cursor += 1
+                columns += 1
+            case 0x09:
+                cursor += 1
+                columns = 4
+            default:
+                return nil
+            }
+        }
+        return columns >= 4 ? cursor - content.location : nil
+    }
+
+    private func blankLinesBeforeContinuation(
+        startingAt first: NSRange
+    ) throws -> (lines: [NSRange], continuationOffset: Int)? {
+        var lines = [first]
+        var cursor = NSMaxRange(first)
+        var count = 0
+        while cursor < source.length {
+            if count.isMultiple(of: 256) { try Task.checkCancellation() }
+            let candidate = lineRange(at: cursor)
+            let content = contentRange(of: candidate)
+            if content.length == 0 {
+                lines.append(candidate)
+                cursor = NSMaxRange(candidate)
+                count += 1
+                continue
+            }
+            return continuationIndent(in: content) == nil ? nil : (lines, cursor)
+        }
+        return nil
     }
 
     private func lineRange(at offset: Int) -> NSRange {

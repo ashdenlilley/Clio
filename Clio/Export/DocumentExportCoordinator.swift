@@ -15,7 +15,9 @@ enum DocumentExportPhase: Equatable, Sendable {
 @Observable
 final class DocumentExportCoordinator: DocumentExportCoordinating {
     private(set) var phase: DocumentExportPhase = .idle
-    private(set) var progress: Double = 0
+    /// Rendering and parsing are intentionally indeterminate. A numeric value
+    /// is exposed only once the atomic installation has completed.
+    private(set) var progress: Double?
 
     @ObservationIgnored
     private let parser: any MarkdownParsing
@@ -36,7 +38,7 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
     private var activeOperationID: UUID?
 
     init(
-        parser: any MarkdownParsing,
+        parser: any MarkdownParsing = SourcePreservingMarkdownParser(),
         fileManager: FileManager = .default,
         pdfExporter: PDFDocumentExporter? = nil,
         htmlExporter: HTMLDocumentExporter? = nil
@@ -48,18 +50,18 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
     }
 
     func export(_ request: ExportRequest) async throws -> ExportReceipt {
-        try await export(request, collisionChoice: nil)
+        try await export(request, collisionResolution: nil)
     }
 
     func export(
         _ request: ExportRequest,
-        collisionChoice: CollisionChoice?
+        collisionResolution: ExportCollisionResolution?
     ) async throws -> ExportReceipt {
         activeTask?.cancel()
         let operationID = UUID()
         activeOperationID = operationID
         phase = .parsing
-        progress = 0.08
+        progress = nil
 
         let task = Task { @MainActor [parser, pdfExporter, htmlExporter] in
             let parsed = try await parser.parse(request.snapshot)
@@ -68,7 +70,6 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
                 throw DocumentExportError.staleParse
             }
             self.phase = .rendering(request.format)
-            self.progress = 0.35
 
             let staged: StagedDocumentExport
             switch request.format {
@@ -76,13 +77,13 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
                 staged = try await pdfExporter.prepare(
                     parsed: parsed,
                     request: request,
-                    collisionChoice: collisionChoice
+                    collisionResolution: collisionResolution
                 )
             case .html:
                 staged = try await htmlExporter.prepare(
                     parsed: parsed,
                     request: request,
-                    collisionChoice: collisionChoice
+                    collisionResolution: collisionResolution
                 )
             }
             defer { staged.discard(fileManager: self.fileManager) }
@@ -92,7 +93,6 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
             }
             try Task.checkCancellation()
             self.phase = .installing
-            self.progress = 0.92
 
             // There must be no suspension or cancellation check between this
             // atomic filesystem commit and publishing completion.
@@ -116,7 +116,7 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
                 activeTask = nil
                 activeOperationID = nil
                 phase = .cancelled
-                progress = 0
+                progress = nil
             }
             throw CancellationError()
         } catch {
@@ -124,7 +124,7 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
                 activeTask = nil
                 activeOperationID = nil
                 phase = .failed(error.localizedDescription)
-                progress = 0
+                progress = nil
             }
             throw error
         }
@@ -136,12 +136,12 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
         self.activeTask = nil
         activeOperationID = nil
         phase = .cancelled
-        progress = 0
+        progress = nil
     }
 
     func reset() {
         guard activeTask == nil else { return }
         phase = .idle
-        progress = 0
+        progress = nil
     }
 }
