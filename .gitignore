@@ -10,3 +10,5 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# Locally produced release artifacts are checksummed and archived outside Git.
+artifacts/
