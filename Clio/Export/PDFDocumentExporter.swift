@@ -36,7 +36,10 @@ actor PDFDocumentExporter {
             fileManager: fileManager
         )
         do {
-            let attributedDocument = try PDFAttributedDocumentBuilder.build(parsed.document)
+            let attributedDocument = try PDFAttributedDocumentBuilder.build(
+                parsed.document,
+                contentWidth: geometry.contentRect.width
+            )
             try render(
                 attributedDocument,
                 title: request.snapshot.filename,
@@ -103,6 +106,7 @@ private extension PDFDocumentExporter {
             try Task.checkCancellation()
             context.beginPDFPage(nil)
             context.textMatrix = .identity
+            context.textPosition = .zero
             context.setFillColor(NSColor.white.cgColor)
             context.fill(mediaBox)
             drawHeader(title, pageNumber: pageNumber, context: context, pageSize: dimensions, margins: margins)
@@ -115,7 +119,12 @@ private extension PDFDocumentExporter {
                     path,
                     nil
                 )
+                context.saveGState()
+                context.textMatrix = .identity
+                context.textPosition = .zero
                 CTFrameDraw(frame, context)
+                context.restoreGState()
+                drawTableRules(in: frame, document: attributedDocument, context: context, contentRect: contentRect)
                 let visible = CTFrameGetVisibleStringRange(frame)
                 guard visible.length > 0 else {
                     context.endPDFPage()
@@ -141,6 +150,10 @@ private extension PDFDocumentExporter {
         pageSize: CGSize,
         margins: PrintMargins
     ) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.textMatrix = .identity
+        context.textPosition = .zero
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .regular),
             .foregroundColor: NSColor.black,
@@ -171,20 +184,52 @@ private extension PDFDocumentExporter {
             NSAttributedString(string: "\(pageNumber)", attributes: attributes)
         )
         let pageWidth = CTLineGetTypographicBounds(page, nil, nil, nil)
+        context.textMatrix = .identity
         context.textPosition = CGPoint(
             x: pageSize.width - margins.trailing - pageWidth,
             y: margins.bottom + 6
         )
         CTLineDraw(page, context)
     }
+
+    func drawTableRules(
+        in frame: CTFrame,
+        document: NSAttributedString,
+        context: CGContext,
+        contentRect: CGRect
+    ) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(0.5)
+        for (index, line) in lines.enumerated() {
+            let range = CTLineGetStringRange(line)
+            guard range.location < document.length,
+                  let rule = document.attribute(.clioTableRule, at: range.location, effectiveRange: nil) as? [CGFloat],
+                  rule.count == 2 else { continue }
+            var descent: CGFloat = 0
+            _ = CTLineGetTypographicBounds(line, nil, &descent, nil)
+            let y = max(contentRect.minY, contentRect.minY + origins[index].y - descent - 3)
+            context.move(to: CGPoint(x: contentRect.minX + rule[0], y: y))
+            context.addLine(to: CGPoint(x: contentRect.minX + rule[0] + rule[1], y: y))
+            context.strokePath()
+        }
+    }
+}
+
+private extension NSAttributedString.Key {
+    static let clioTableRule = Self("ClioPDFTableHeaderRule")
 }
 
 enum PDFAttributedDocumentBuilder {
-    static func build(_ document: MarkdownDocumentModel) throws -> NSAttributedString {
+    static func build(_ document: MarkdownDocumentModel, contentWidth: CGFloat = 500) throws -> NSAttributedString {
         let output = NSMutableAttributedString()
         for block in document.blocks {
             try Task.checkCancellation()
-            try append(block: block, depth: 0, to: output)
+            try append(block: block, depth: 0, contentWidth: contentWidth, to: output)
         }
         return output
     }
@@ -233,6 +278,7 @@ private extension PDFAttributedDocumentBuilder {
     static func append(
         block: MarkdownBlock,
         depth: Int,
+        contentWidth: CGFloat,
         to output: NSMutableAttributedString
     ) throws {
         switch block {
@@ -260,7 +306,7 @@ private extension PDFAttributedDocumentBuilder {
                 firstLineHeadIndent: CGFloat(depth) * 18
             )
             try append("> ", style: quoteStyle, to: output)
-            for nested in blocks { try append(block: nested, depth: depth + 1, to: output) }
+            for nested in blocks { try append(block: nested, depth: depth + 1, contentWidth: contentWidth, to: output) }
         case .list(let list):
             for (offset, item) in list.items.enumerated() {
                 try Task.checkCancellation()
@@ -280,7 +326,7 @@ private extension PDFAttributedDocumentBuilder {
                     firstLineHeadIndent: CGFloat(depth) * 18
                 )
                 try append(marker, style: listStyle, to: output)
-                for nested in item.blocks { try append(block: nested, depth: depth + 1, to: output) }
+                for nested in item.blocks { try append(block: nested, depth: depth + 1, contentWidth: contentWidth, to: output) }
                 if item.blocks.isEmpty { try append("\n", style: listStyle, to: output) }
             }
         case .codeFence(let language, let source, _):
@@ -291,19 +337,7 @@ private extension PDFAttributedDocumentBuilder {
             try append(source, style: style, to: output)
             if !source.hasSuffix("\n") { try append("\n", style: style, to: output) }
         case .table(let table):
-            let tableStyle = attributes(
-                font: .systemFont(ofSize: 10.5),
-                paragraphSpacing: 4,
-                lineHeight: 1.35,
-                headIndent: CGFloat(depth) * 18
-            )
-            try appendTableRow(table.header, style: tableStyle, to: output)
-            try append(String(repeating: "-", count: max(3, table.header.count * 7)) + "\n", style: tableStyle, to: output)
-            for row in table.rows {
-                try Task.checkCancellation()
-                try appendTableRow(row, style: tableStyle, to: output)
-            }
-            try append("\n", style: tableStyle, to: output)
+            try appendTable(table, depth: depth, contentWidth: contentWidth, to: output)
         case .thematicBreak:
             try append("------------------------\n", style: bodyStyle(depth: depth), to: output)
         case .frontMatter(let source, _):
@@ -312,7 +346,7 @@ private extension PDFAttributedDocumentBuilder {
             if !source.hasSuffix("\n") { try append("\n", style: style, to: output) }
         case .footnoteDefinition(let label, let blocks, _):
             try append("[\(label)] ", style: bodyStyle(depth: depth), to: output)
-            for nested in blocks { try append(block: nested, depth: depth + 1, to: output) }
+            for nested in blocks { try append(block: nested, depth: depth + 1, contentWidth: contentWidth, to: output) }
         case .rawHTML(let source, _):
             let style = codeStyle(depth: depth)
             try append(source, style: style, to: output)
@@ -320,16 +354,81 @@ private extension PDFAttributedDocumentBuilder {
         }
     }
 
-    static func appendTableRow(
-        _ row: [MarkdownTableCell],
-        style: [NSAttributedString.Key: Any],
+    static func appendTable(
+        _ table: MarkdownTable,
+        depth: Int,
+        contentWidth: CGFloat,
         to output: NSMutableAttributedString
     ) throws {
-        for (offset, cell) in row.enumerated() {
-            if offset > 0 { try append("  |  ", style: style, to: output) }
-            try append(inlines: cell.content, base: style, to: output)
+        let columns = max(1, table.header.count, table.rows.map(\.count).max() ?? 0)
+        let inset = min(CGFloat(depth) * 18, max(0, contentWidth - 40))
+        let width = max(1, contentWidth - inset)
+        let columnWidth = width / CGFloat(columns)
+        let padding = min(6, columnWidth * 0.1)
+        let cellWidth = max(0.1, columnWidth - 2 * padding)
+        let fontSize = min(10.5, cellWidth / 2)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineHeightMultiple = 1.35
+        paragraph.paragraphSpacing = 3
+        paragraph.tabStops = (0..<columns).map { column in
+            let alignment = column < table.alignments.count ? table.alignments[column] : .leading
+            let start = inset + CGFloat(column) * columnWidth
+            switch alignment {
+            case .trailing:
+                return NSTextTab(textAlignment: .right, location: start + columnWidth - padding)
+            case .center:
+                return NSTextTab(textAlignment: .center, location: start + columnWidth / 2)
+            case .none, .leading:
+                return NSTextTab(textAlignment: .left, location: start + padding)
+            }
         }
-        try append("\n", style: style, to: output)
+        for rowIndex in 0...table.rows.count {
+            try Task.checkCancellation()
+            let row = rowIndex == 0 ? table.header : table.rows[rowIndex - 1]
+            let style: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: fontSize, weight: rowIndex == 0 ? .semibold : .regular),
+                .foregroundColor: textColor,
+                .paragraphStyle: paragraph,
+            ]
+            let cells = try (0..<columns).map { column -> NSAttributedString in
+                let value = NSMutableAttributedString()
+                if column < row.count { try append(inlines: row[column].content, base: style, to: value) }
+                // Cell-local tabs must not escape into an adjacent column.
+                value.mutableString.replaceOccurrences(of: "\t", with: " ", range: NSRange(location: 0, length: value.length))
+                return value
+            }
+            let typesetters = cells.map { CTTypesetterCreateWithAttributedString($0) }
+            var offsets = [Int](repeating: 0, count: columns)
+            repeat {
+                try Task.checkCancellation()
+                let lineStart = output.length
+                for column in 0..<columns {
+                    try Task.checkCancellation()
+                    try append("\t", style: style, to: output)
+                    let cell = cells[column]
+                    guard offsets[column] < cell.length else { continue }
+                    let count = CTTypesetterSuggestLineBreak(typesetters[column], offsets[column], Double(cellWidth))
+                    let source = cell.string as NSString
+                    let length = count > 0 ? count : source.rangeOfComposedCharacterSequence(at: offsets[column]).length
+                    let range = NSRange(location: offsets[column], length: min(length, cell.length - offsets[column]))
+                    let slice = NSMutableAttributedString(attributedString: cell.attributedSubstring(from: range))
+                    // A hard break ends the cell line, not the surrounding row.
+                    slice.mutableString.replaceOccurrences(of: "\n", with: " ", range: NSRange(location: 0, length: slice.length))
+                    slice.mutableString.replaceOccurrences(of: "\r", with: " ", range: NSRange(location: 0, length: slice.length))
+                    output.append(slice)
+                    offsets[column] += range.length
+                }
+                try append("\n", style: style, to: output)
+                if rowIndex == 0, zip(offsets, cells).allSatisfy({ $0.0 >= $0.1.length }) {
+                    let headerParagraph = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                    headerParagraph.paragraphSpacing = 9
+                    let range = NSRange(location: lineStart, length: output.length - lineStart)
+                    output.addAttribute(.paragraphStyle, value: headerParagraph, range: range)
+                    output.addAttribute(.clioTableRule, value: [inset, width], range: range)
+                }
+            } while zip(offsets, cells).contains(where: { $0.0 < $0.1.length })
+        }
+        try append("\n", style: bodyStyle(depth: depth), to: output)
     }
 
     static func append(

@@ -396,6 +396,79 @@ final class ExportTests: XCTestCase {
         }
     }
 
+    func testPDFTablesAlignColumnsAndWrapLongCellsAcrossPages() async throws {
+        try await withTemporaryDirectory { directory in
+            let longCell = Array(repeating: "Long cells wrap within their own column", count: 45).joined(separator: " ")
+            let source = """
+            | Name | Quantity |
+            | :--- | ---: |
+            | Short | 10 |
+            | \(longCell) WRAPPED-END | 200 |
+            | Bottom | 3000 |
+            """
+            let snapshot = makeSnapshot(source: source, filename: "Table.md")
+            let destination = directory.appendingPathComponent("Table.pdf")
+            let settings = PDFPrintSettings(
+                paperName: "table-small",
+                paperWidthPoints: 300,
+                paperHeightPoints: 360,
+                margins: PrintMargins(top: 28, leading: 28, bottom: 28, trailing: 28),
+                orientation: .portrait
+            )
+            _ = try await DocumentExportCoordinator().export(
+                makeRequest(.pdf, snapshot: snapshot, destination: destination, settings: settings)
+            )
+            let document = try XCTUnwrap(PDFDocument(url: destination))
+            XCTAssertGreaterThan(document.pageCount, 1)
+            let headers = document.findString("Table.md", withOptions: [])
+            XCTAssertEqual(headers.count, document.pageCount)
+            let firstHeader = try XCTUnwrap(headers.first)
+            let firstHeaderPage = try XCTUnwrap(firstHeader.pages.first)
+            let expectedHeader = firstHeader.bounds(for: firstHeaderPage)
+            let contentRect = try PDFPrintGeometry.resolve(settings, fallback: settings).contentRect
+            var bodyTop: CGFloat?
+            for pageIndex in 0..<document.pageCount {
+                let page = try XCTUnwrap(document.page(at: pageIndex))
+                let header = try XCTUnwrap(headers.first { $0.pages.contains(page) }, "Missing header on page \(pageIndex + 1)")
+                XCTAssertEqual(header.bounds(for: page).minX, expectedHeader.minX, accuracy: 0.5)
+                XCTAssertEqual(header.bounds(for: page).minY, expectedHeader.minY, accuracy: 0.5)
+                if pageIndex > 0 {
+                    let body = try XCTUnwrap(page.selection(for: contentRect))
+                    if let bodyTop {
+                        XCTAssertEqual(body.bounds(for: page).maxY, bodyTop, accuracy: 0.5)
+                    } else {
+                        bodyTop = body.bounds(for: page).maxY
+                    }
+                }
+            }
+            if FileManager.default.fileExists(atPath: "/tmp/ClioRunPDFVisualFixture") {
+                let preserved = FileManager.default.temporaryDirectory.appendingPathComponent("ClioExportTableWrappingFixture.pdf")
+                if FileManager.default.fileExists(atPath: preserved.path) {
+                    try FileManager.default.removeItem(at: preserved)
+                }
+                try FileManager.default.copyItem(at: destination, to: preserved)
+                print("CLIO_TABLE_WRAPPING_PDF=\(preserved.path)")
+            }
+            let selection: (String) throws -> (PDFSelection, PDFPage) = { text in
+                let selected = try XCTUnwrap(document.findString(text, withOptions: []).first, "Missing table text: \(text)")
+                return (selected, try XCTUnwrap(selected.pages.first))
+            }
+            let (short, shortPage) = try selection("Short")
+            let (bottom, bottomPage) = try selection("Bottom")
+            XCTAssertEqual(short.bounds(for: shortPage).minX, bottom.bounds(for: bottomPage).minX, accuracy: 0.5)
+            let (ten, tenPage) = try selection("10")
+            let (threeThousand, lastPage) = try selection("3000")
+            XCTAssertEqual(ten.bounds(for: tenPage).maxX, threeThousand.bounds(for: lastPage).maxX, accuracy: 0.5)
+            let (tail, tailPage) = try selection("WRAPPED")
+            XCTAssertLessThanOrEqual(tail.bounds(for: tailPage).maxX, 150)
+            let (tailEnd, tailEndPage) = try selection("END")
+            XCTAssertLessThanOrEqual(tailEnd.bounds(for: tailEndPage).maxX, 150)
+            XCTAssertLessThanOrEqual(threeThousand.bounds(for: lastPage).maxX, 272)
+            XCTAssertFalse(document.string?.contains(" | ") == true)
+            XCTAssertFalse(document.string?.contains("-------") == true)
+        }
+    }
+
     func testPDFAttributedBuilderPreservesSoftBreaksAndNestedIndentation() throws {
         let breakModel = MarkdownDocumentModel(blocks: [
             .paragraph(
