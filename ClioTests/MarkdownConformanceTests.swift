@@ -107,6 +107,68 @@ final class MarkdownConformanceTests: XCTestCase {
         XCTAssertEqual(parsed.sourceFingerprint, StableSourceFingerprint.make(source))
     }
 
+    func testFootnotesPreserveNestedBlocksAndEntityAdjacentReferences() async throws {
+        let source = """
+        Entity &amp;[^note].
+
+        [^note]: First *emphasis* and [safe link](https://example.com)\u{20}\u{20}
+            hard break
+
+            - nested **item**
+              continuation
+        """
+        let parsed = try await SourcePreservingMarkdownParser.parse(source: source)
+        let topLevel = parsed.document.blocks.flatMap(\.allInlines)
+        XCTAssertTrue(topLevel.contains {
+            if case .footnoteReference(label: "note", _) = $0 { return true }
+            return false
+        })
+
+        let footnote = try XCTUnwrap(parsed.document.blocks.compactMap { block -> [MarkdownBlock]? in
+            if case .footnoteDefinition(label: "note", blocks: let blocks, range: _) = block {
+                return blocks
+            }
+            return nil
+        }.first)
+        let nested = footnote.flatMap(\.allInlines)
+        XCTAssertTrue(nested.contains { if case .emphasis = $0 { return true }; return false })
+        XCTAssertTrue(nested.contains { if case .link(destination: "https://example.com", title: _, content: _, range: _) = $0 { return true }; return false })
+        XCTAssertTrue(nested.contains { if case .hardBreak = $0 { return true }; return false })
+        XCTAssertTrue(footnote.contains { if case .list = $0 { return true }; return false })
+
+        let original = source as NSString
+        for inline in nested {
+            let range = inline.sourceRange
+            XCTAssertLessThanOrEqual(range.upperBound, original.length)
+        }
+        let semanticSlices = nested.map {
+            original.substring(with: NSRange(
+                location: $0.sourceRange.location,
+                length: $0.sourceRange.length
+            ))
+        }
+        XCTAssertTrue(semanticSlices.contains("*emphasis*"))
+        XCTAssertTrue(semanticSlices.contains("[safe link](https://example.com)"))
+        XCTAssertTrue(semanticSlices.contains("**item**"))
+    }
+
+    func testFootnoteReplacementNeverDropsAdjacentSemanticText() async throws {
+        let source = "Before the definition.\n[^note]: nested *note*\nAfter the definition."
+        let parsed = try await SourcePreservingMarkdownParser.parse(source: source)
+        let text = parsed.document.blocks.flatMap(\.allInlines).compactMap { inline -> String? in
+            if case .text(let value, _) = inline { return value }
+            return nil
+        }.joined(separator: " ")
+
+        XCTAssertTrue(text.contains("Before the definition."))
+        XCTAssertTrue(text.contains("nested"))
+        XCTAssertTrue(text.contains("After the definition."))
+        XCTAssertEqual(parsed.document.blocks.filter {
+            if case .footnoteDefinition = $0 { return true }
+            return false
+        }.count, 1)
+    }
+
     private func fixture(_ name: String) throws -> String {
         let bundle = Bundle(for: Self.self)
         let url = try XCTUnwrap(
@@ -144,6 +206,17 @@ private extension MarkdownBlock {
 }
 
 private extension MarkdownInline {
+    var sourceRange: UTF16Range {
+        switch self {
+        case .text(_, let range), .emphasis(_, let range), .strong(_, let range),
+             .strikethrough(_, let range), .code(_, let range),
+             .link(_, _, _, let range), .image(_, _, _, let range),
+             .autolink(_, _, let range), .footnoteReference(_, let range),
+             .softBreak(let range), .hardBreak(let range), .rawHTML(_, let range):
+            return range
+        }
+    }
+
     var flattened: [MarkdownInline] {
         switch self {
         case .emphasis(let children, _), .strong(let children, _), .strikethrough(let children, _):

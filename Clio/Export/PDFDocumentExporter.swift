@@ -13,7 +13,7 @@ actor PDFDocumentExporter {
     func prepare(
         parsed: ParsedMarkdown,
         request: ExportRequest,
-        collisionChoice: CollisionChoice?
+        collisionResolution: ExportCollisionResolution?
     ) async throws -> StagedDocumentExport {
         try Task.checkCancellation()
         guard request.format == .pdf else {
@@ -26,17 +26,14 @@ actor PDFDocumentExporter {
         let fallbackSettings = await PDFPrintSettingsStore.systemDefault()
         let settings = request.pdfSettings ?? fallbackSettings
         let geometry = try PDFPrintGeometry.resolve(settings, fallback: fallbackSettings)
-        let destination = try ExportDestination.resolve(
+        let reservation = try ExportDestination.resolve(
             requestedURL: request.destinationURL,
-            choice: collisionChoice,
+            resolution: collisionResolution,
             fileManager: fileManager
         )
-        let temporaryURL = destination.clioTemporarySibling()
+        let temporaryURL = reservation.url.clioTemporarySibling()
         do {
-            let attributedDocument = try PDFAttributedDocumentBuilder.build(
-                parsed.document,
-                fallbackSource: request.snapshot.source
-            )
+            let attributedDocument = try PDFAttributedDocumentBuilder.build(parsed.document)
             try render(
                 attributedDocument,
                 title: request.snapshot.filename,
@@ -50,11 +47,10 @@ actor PDFDocumentExporter {
             return StagedDocumentExport(
                 format: .pdf,
                 temporaryURL: temporaryURL,
-                destinationURL: destination,
+                reservation: reservation,
                 byteCount: size,
                 generation: request.snapshot.generation,
-                sourceFingerprint: request.snapshot.sourceFingerprint,
-                replacing: collisionChoice == .replace
+                sourceFingerprint: request.snapshot.sourceFingerprint
             )
         } catch {
             try? fileManager.removeItem(at: temporaryURL)
@@ -173,15 +169,8 @@ private extension PDFDocumentExporter {
 }
 
 enum PDFAttributedDocumentBuilder {
-    static func build(
-        _ document: MarkdownDocumentModel,
-        fallbackSource: String
-    ) throws -> NSAttributedString {
+    static func build(_ document: MarkdownDocumentModel) throws -> NSAttributedString {
         let output = NSMutableAttributedString()
-        if document.blocks.isEmpty, !fallbackSource.isEmpty {
-            try append(fallbackSource, style: bodyStyle(depth: 0), to: output)
-            return output
-        }
         for block in document.blocks {
             try Task.checkCancellation()
             try append(block: block, depth: 0, to: output)
@@ -357,7 +346,9 @@ private extension PDFAttributedDocumentBuilder {
                 var style = base
                 style[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 try append(inlines: content, base: style, to: output)
-                try append(" (\(destination))", style: base, to: output)
+                if let safe = ExportContentPolicy.safeLink(destination) {
+                    try append(" (\(safe))", style: base, to: output)
+                }
             case .image(_, _, let alt, _):
                 try append("[Image: \(try plainText(alt))]", style: base, to: output)
             case .autolink(let text, _, _):

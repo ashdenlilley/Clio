@@ -370,7 +370,9 @@ struct AtomicFileWriter: AtomicFileWriting {
         }
 
         // A third writer touched the destination after our swap. Leave its
-        // bytes in place and retain the displaced inode for recovery.
+        // bytes in place and retain the displaced inode regardless of whether
+        // it matched the approved revision: restoring it would overwrite the
+        // newest occupant, while deleting it would discard external bytes.
         return .revisionMismatch(retainedURL: temporaryURL)
     }
 

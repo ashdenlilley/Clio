@@ -107,9 +107,16 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         )
         let presentation = try parser.parse()
         try cancellation.check()
-        let blocks = applyingExtensions(
-            presentation.extensionBlocks,
-            to: semantics.blocks
+        let extensionBlocks = try MarkdownExtensionModelScanner(
+            snapshot.source,
+            cancellation: cancellation
+        ).scan()
+        try cancellation.check()
+        let blocks = try applyingExtensions(
+            extensionBlocks,
+            to: semantics.blocks,
+            source: snapshot.source,
+            cancellation: cancellation
         )
         return ParsedMarkdown(
             documentID: snapshot.documentID,
@@ -170,9 +177,11 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
             generation: snapshot.generation,
             sourceFingerprint: snapshot.sourceFingerprint,
             sizeMode: snapshot.sizeMode,
-            document: MarkdownDocumentModel(blocks: applyingExtensions(
+            document: MarkdownDocumentModel(blocks: try applyingExtensions(
                 extensionBlocks,
-                to: semanticBlocks
+                to: semanticBlocks,
+                source: snapshot.source,
+                cancellation: cancellation
             )),
             spans: normalizedSpans(visibleSpans + boundedSemanticSpans),
             diagnostics: [diagnostic]
@@ -221,8 +230,10 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
     /// only where their exact source ranges overlap.
     private static func applyingExtensions(
         _ scanned: [MarkdownBlock],
-        to semantic: [MarkdownBlock]
-    ) -> [MarkdownBlock] {
+        to semantic: [MarkdownBlock],
+        source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe
+    ) throws -> [MarkdownBlock] {
         let extensions = scanned.filter { block in
             switch block {
             case .frontMatter, .footnoteDefinition: return true
@@ -230,12 +241,66 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
             }
         }
         guard !extensions.isEmpty else { return semantic }
-        let extensionRanges = extensions.map(\.sourceRange)
-        let retained = semantic.filter { block in
-            !extensionRanges.contains { $0.intersects(block.sourceRange) }
+        let extensionRanges = extensions.map(\.sourceRange).sorted { $0.location < $1.location }
+        let text = source as NSString
+        var retained: [MarkdownBlock] = []
+        var extensionIndex = 0
+        for block in semantic {
+            try Task.checkCancellation()
+            try cancellation.check()
+            let range = block.sourceRange
+            while extensionIndex < extensionRanges.count,
+                  extensionRanges[extensionIndex].upperBound <= range.location {
+                extensionIndex += 1
+            }
+            var cuts: [UTF16Range] = []
+            var probe = extensionIndex
+            while probe < extensionRanges.count,
+                  extensionRanges[probe].location < range.upperBound {
+                if extensionRanges[probe].intersects(range) { cuts.append(extensionRanges[probe]) }
+                probe += 1
+            }
+            guard !cuts.isEmpty else {
+                retained.append(block)
+                continue
+            }
+            var cursor = range.location
+            for cut in cuts {
+                if cursor < cut.location {
+                    retained += try parseSemanticFragment(
+                        NSRange(location: cursor, length: cut.location - cursor),
+                        from: text,
+                        cancellation: cancellation
+                    )
+                }
+                cursor = max(cursor, cut.upperBound)
+            }
+            if cursor < range.upperBound {
+                retained += try parseSemanticFragment(
+                    NSRange(location: cursor, length: range.upperBound - cursor),
+                    from: text,
+                    cancellation: cancellation
+                )
+            }
         }
         return (retained + extensions).sorted {
             $0.sourceRange.location < $1.sourceRange.location
+        }
+    }
+
+    private static func parseSemanticFragment(
+        _ range: NSRange,
+        from source: NSString,
+        cancellation: MarkdownBackgroundWork.CancellationProbe
+    ) throws -> [MarkdownBlock] {
+        guard range.length > 0 else { return [] }
+        try cancellation.check()
+        let parsed = try SwiftMarkdownSemanticParser(
+            source: source.substring(with: range),
+            cancellation: cancellation
+        ).parse()
+        return MarkdownModelRangeMapper.map(parsed.blocks) { local in
+            UTF16Range(location: local.location + range.location, length: local.length)
         }
     }
 }
@@ -455,7 +520,6 @@ private extension UTF16Range {
 }
 
 private struct MarkdownPresentationResult {
-    var extensionBlocks: [MarkdownBlock] = []
     var spans: [MarkdownSpan] = []
     var diagnostics: [MarkdownDiagnostic] = []
 }
@@ -528,8 +592,6 @@ private struct MarkdownPresentationLexer {
             break
         }
         guard let closing else { return false }
-        let range = union(map.lines[0].fullRange, map.lines[closing].fullRange)
-        result.extensionBlocks.append(.frontMatter(source: map.substring(range), range: range.utf16))
         addSpan(.frontMatter, .marker, map.lines[0].contentRange)
         addSpan(.frontMatter, .marker, map.lines[closing].contentRange)
         if closing > 1 {
@@ -662,9 +724,7 @@ private struct MarkdownPresentationLexer {
         let line = map.lines[lineIndex]
         guard let match = firstMatch(#"^ {0,3}\[\^([^\]\r\n]+)\]:[ \t]*(.*)$"#, in: line.text),
               match.numberOfRanges == 3 else { return false }
-        let labelLocal = match.range(at: 1)
         let bodyLocal = match.range(at: 2)
-        let label = (line.text as NSString).substring(with: labelLocal)
         let markerLength = max(0, bodyLocal.location)
         let markerRange = NSRange(location: line.contentRange.location, length: markerLength)
         let firstBodyRange = bodyLocal.offset(by: line.contentRange.location)
@@ -680,13 +740,7 @@ private struct MarkdownPresentationLexer {
         )
         addSpan(.footnote, .marker, markerRange)
         addSpan(.footnote, .content, bodyRange)
-        let content = parseInline(bodyRange)
-        let paragraph = MarkdownBlock.paragraph(content: content, range: bodyRange.utf16)
-        result.extensionBlocks.append(.footnoteDefinition(
-            label: label,
-            blocks: [paragraph],
-            range: union(line.fullRange, map.lines[lastLine].fullRange).utf16
-        ))
+        _ = parseInline(bodyRange)
         lineIndex = lastLine + 1
         return true
     }
