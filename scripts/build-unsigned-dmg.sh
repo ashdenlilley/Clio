@@ -69,7 +69,8 @@ hdiutil create \
     -ov \
     "${DMG_PATH}"
 
-CLIO_EXPECTED_VERSION="${VERSION}" "${SCRIPT_DIR}/verify-unsigned-dmg.sh" "${DMG_PATH}"
+CLIO_EXPECTED_VERSION="${VERSION}" CLIO_EXPECTED_BUILD="${BUILD_NUMBER}" \
+    "${SCRIPT_DIR}/verify-unsigned-dmg.sh" "${DMG_PATH}"
 
 if [[ -d "${BUILT_DSYM_PATH}" ]]; then
     rm -rf "${DSYM_PATH}"

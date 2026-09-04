@@ -16,6 +16,7 @@
 		11BC44C7B6D3E3CF51DA8628 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = C044D4083E6B063E4AC303C9 /* Markdown */; };
 		16F147BD4310E09025D9DA10 /* everything.md in Resources */ = {isa = PBXBuildFile; fileRef = 9DAD4C82CA68E85065EE6902 /* everything.md */; };
 		177D850130F8B5CF5DDA327B /* InterruptedMoveTransaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18CEF38C646629B41A67466E /* InterruptedMoveTransaction.swift */; };
+		1806ACFF4396116ED71A46C6 /* THIRD-PARTY-NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = C366C43526FD379EDE442E52 /* THIRD-PARTY-NOTICES.md */; };
 		205FD4F4C223A05EEE99E768 /* DocumentContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7E353A266B86026DEE626C /* DocumentContracts.swift */; };
 		20C877383D541EEF1BB398BB /* EditorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4553B2CB1DCA7EB7A258A9B2 /* EditorSession.swift */; };
 		20FD29D05435FE4A174206F6 /* IncrementalMarkdownHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E40770D9DEED2B12DCDED8D /* IncrementalMarkdownHighlighter.swift */; };
@@ -83,6 +84,7 @@
 		ECD5F42B095EA0555EB7403C /* WorkspacePerformanceContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4735E45E61E12035230D7397 /* WorkspacePerformanceContractTests.swift */; };
 		F2AF0AAE86D0E6605A57A292 /* delimiters.md in Resources */ = {isa = PBXBuildFile; fileRef = 6C6A6B9017FE5F28EB4153C6 /* delimiters.md */; };
 		F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */; };
+		F3091E3352448BE08252D0FA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F6FB207DBDE7F4475EBCD9A6 /* Assets.xcassets */; };
 		F350CF9501BEFC5D4742E1B5 /* ConflictPreviewBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB455DC14BE8709DADAFB33 /* ConflictPreviewBuilder.swift */; };
 		F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */; };
 		F6E2FFDCABEF71BD602494BB /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F231E037B0C6D9E33330AC /* AppState.swift */; };
@@ -160,6 +162,7 @@
 		B6A196F47311421B310ECB36 /* Document.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Document.swift; sourceTree = "<group>"; };
 		B9479EA878945457CFEF7E01 /* DocumentIdentityIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentityIntegrationTests.swift; sourceTree = "<group>"; };
 		BB9A8DB7F526522AF6C2288D /* MarkdownEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditing.swift; sourceTree = "<group>"; };
+		C366C43526FD379EDE442E52 /* THIRD-PARTY-NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "THIRD-PARTY-NOTICES.md"; sourceTree = "<group>"; };
 		C8625C9328CDB9E6341DF2BD /* CrashRecoveryJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashRecoveryJournal.swift; sourceTree = "<group>"; };
 		CC6B8EE04048FEAE6FD45E1F /* Typography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Typography.swift; sourceTree = "<group>"; };
 		CCC075AEFDED74E31BBF7810 /* ConflictResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictResolver.swift; sourceTree = "<group>"; };
@@ -181,6 +184,7 @@
 		F3696562DFA7E29158D6CDA1 /* MarkdownExtensionModelScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExtensionModelScanner.swift; sourceTree = "<group>"; };
 		F47B1CD2E86D632BED61BC84 /* MarkdownInlineParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineParser.swift; sourceTree = "<group>"; };
 		F54B83A850CC4078A10343AB /* MarkdownIncrementalPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownIncrementalPolicy.swift; sourceTree = "<group>"; };
+		F6FB207DBDE7F4475EBCD9A6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F7BC8CF4558956B63F83A6B6 /* ClioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F817871E775686B218220C3F /* ExperienceContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperienceContracts.swift; sourceTree = "<group>"; };
 		FB38CDA2EE93F624A724B0B4 /* Clio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clio.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -215,7 +219,9 @@
 		45CB4BC46EBD92F16CE07506 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				F6FB207DBDE7F4475EBCD9A6 /* Assets.xcassets */,
 				2606EAA75DBB43ED79C5DFA6 /* Fonts */,
+				C366C43526FD379EDE442E52 /* THIRD-PARTY-NOTICES.md */,
 				388EE481C48FC1C358F3BFFB /* ThirdPartyNotices */,
 			);
 			path = Resources;
@@ -376,8 +382,8 @@
 				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
 				CE03532E7E5B2F8515BCEE74 /* DataSafetyTests.swift */,
 				B9479EA878945457CFEF7E01 /* DocumentIdentityIntegrationTests.swift */,
-				EE9650B91D65E0FC40310E5E /* FilesystemHardeningTests.swift */,
 				8F0880260E073580D21D7E6C /* EditorPerformanceTests.swift */,
+				EE9650B91D65E0FC40310E5E /* FilesystemHardeningTests.swift */,
 				96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */,
 				D37AE6760E23A721CE0A399F /* MarkdownConformanceTests.swift */,
 				31DDB59E4E4182C33DEB7F33 /* MarkdownEditingTests.swift */,
@@ -497,7 +503,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F3091E3352448BE08252D0FA /* Assets.xcassets in Resources */,
 				5403D9FEC2130E342EF759EF /* Fonts in Resources */,
+				1806ACFF4396116ED71A46C6 /* THIRD-PARTY-NOTICES.md in Resources */,
 				61B9B49EC681E11E143D6AE5 /* ThirdPartyNotices in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -576,8 +584,8 @@
 				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,
 				B0800159F3EA5A2E15AF8150 /* DataSafetyTests.swift in Sources */,
 				25970BEDDDDA0331B0610E23 /* DocumentIdentityIntegrationTests.swift in Sources */,
-				A06789B427E6989D65245B46 /* FilesystemHardeningTests.swift in Sources */,
 				9EBA9162B94909C998A4AB40 /* EditorPerformanceTests.swift in Sources */,
+				A06789B427E6989D65245B46 /* FilesystemHardeningTests.swift in Sources */,
 				F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */,
 				93E83F01B75FA876E1645B79 /* MarkdownConformanceTests.swift in Sources */,
 				21CD26219348D2BA03F66678 /* MarkdownEditingTests.swift in Sources */,
