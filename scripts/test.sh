@@ -31,11 +31,11 @@ git diff --exit-code -- Clio.xcodeproj project.yml \
 PACKAGE_RESOLVED="${REPOSITORY_ROOT}/Clio.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 clio_require_exact_package_lock "${PACKAGE_RESOLVED}"
 
-RESULT_ARGUMENTS=()
+set --
 if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
     [[ ! -e "${CLIO_TEST_RESULT_PATH}" && ! -L "${CLIO_TEST_RESULT_PATH}" ]] \
         || clio_die "refusing to overwrite test results: ${CLIO_TEST_RESULT_PATH}"
-    RESULT_ARGUMENTS=(-resultBundlePath "${CLIO_TEST_RESULT_PATH}")
+    set -- -resultBundlePath "${CLIO_TEST_RESULT_PATH}"
 fi
 
 xcodebuild \
@@ -46,7 +46,7 @@ xcodebuild \
     -derivedDataPath "${DERIVED_DATA_PATH}" \
     -onlyUsePackageVersionsFromResolvedFile \
     -disableAutomaticPackageResolution \
-    "${RESULT_ARGUMENTS[@]}" \
+    "$@" \
     CODE_SIGNING_ALLOWED=NO \
     test
 
