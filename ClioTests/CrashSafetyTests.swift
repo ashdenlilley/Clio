@@ -173,30 +173,42 @@ final class CrashSafetyTests: XCTestCase {
   }
 
   func testSIGKILLSubprocessPersistsJournalAndAtomicCandidate() throws {
-    try withRoots { workspaceURL, journalURL, _ in
-      try runCrashSubprocess(mode: "journal", rootURL: journalURL)
-      let journal = CrashRecoveryJournal(rootURL: journalURL)
-      XCTAssertTrue(
-        try journal.validRecords().contains {
-          $0.data == Data("subprocess dirty generation".utf8)
-            && $0.generation.revision == 41
-        })
+    let physicalHome = try XCTUnwrap(
+      FileManager.default.homeDirectory(forUser: NSUserName())
+    )
+    let root = physicalHome
+      .appendingPathComponent("Library/Containers/olympus.clio.mac/Data/tmp", isDirectory: true)
+      .appendingPathComponent("ClioCrashSafety-\(UUID().uuidString)", isDirectory: true)
+    let workspaceURL = root.appendingPathComponent("Workspace", isDirectory: true)
+    let journalURL = root.appendingPathComponent("Journal", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: workspaceURL,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
 
-      let destination = workspaceURL.appendingPathComponent("draft.md")
-      try Data("subprocess outside base".utf8).write(to: destination)
-      try runCrashSubprocess(mode: "atomic-candidate", rootURL: workspaceURL)
-      _ = try AtomicWriteTransactions.recoverInterruptedTransactions(
-        in: workspaceURL,
-        journal: journal
-      )
-      let allBytes = try journal.validRecords().map(\.data)
-      XCTAssertTrue(allBytes.contains(Data("subprocess atomic candidate".utf8)))
-      XCTAssertEqual(
-        try String(contentsOf: destination, encoding: .utf8),
-        "subprocess outside base"
-      )
-      XCTAssertTrue(try transactionArtifacts(in: workspaceURL).isEmpty)
-    }
+    try runCrashSubprocess(mode: "journal", rootURL: journalURL)
+    let journal = CrashRecoveryJournal(rootURL: journalURL)
+    XCTAssertTrue(
+      try journal.validRecords().contains {
+        $0.data == Data("subprocess dirty generation".utf8)
+          && $0.generation.revision == 41
+      })
+
+    let destination = workspaceURL.appendingPathComponent("draft.md")
+    try Data("subprocess outside base".utf8).write(to: destination)
+    try runCrashSubprocess(mode: "atomic-candidate", rootURL: workspaceURL)
+    _ = try AtomicWriteTransactions.recoverInterruptedTransactions(
+      in: workspaceURL,
+      journal: journal
+    )
+    let allBytes = try journal.validRecords().map(\.data)
+    XCTAssertTrue(allBytes.contains(Data("subprocess atomic candidate".utf8)))
+    XCTAssertEqual(
+      try String(contentsOf: destination, encoding: .utf8),
+      "subprocess outside base"
+    )
+    XCTAssertTrue(try transactionArtifacts(in: workspaceURL).isEmpty)
   }
 
   func testMaliciousTransactionManifestAndSymlinkAreLeftUntouched() throws {
