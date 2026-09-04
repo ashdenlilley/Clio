@@ -4,6 +4,25 @@ import XCTest
 
 @MainActor
 final class ExportPresentationTests: XCTestCase {
+    func testWindowOwnsOnePresentationAndTabChangesCancelOnlyThatWindow() {
+        let first = EditorWindowSession(request: .newDocument())
+        let second = EditorWindowSession(request: .newDocument())
+        let originalPresentation = first.exportPresentation
+        first.exportPresentation.requestExport()
+        second.exportPresentation.requestExport()
+
+        let newTab = first.newDocument()
+        XCTAssertTrue(first.exportPresentation === originalPresentation)
+        XCTAssertFalse(first.exportPresentation.isOptionsPresented)
+        XCTAssertTrue(second.exportPresentation.isOptionsPresented)
+
+        first.exportPresentation.requestExport()
+        first.close(tabID: newTab.id)
+        XCTAssertFalse(first.exportPresentation.isOptionsPresented)
+        second.disconnect()
+        XCTAssertFalse(second.exportPresentation.isOptionsPresented)
+    }
+
     func testCommandRouteSupportsAskPDFAndHTML() throws {
         XCTAssertNil(try ExportCommandRoute.format(for: []))
         XCTAssertEqual(try ExportCommandRoute.format(for: ["PDF"]), .pdf)
@@ -139,6 +158,37 @@ final class ExportPresentationTests: XCTestCase {
         }
     }
 
+    func testWindowExportSnapshotFollowsTheSelectedTab() async throws {
+        try await withTemporaryDirectory { directory in
+            let firstURL = directory.appendingPathComponent("First.md")
+            let secondURL = directory.appendingPathComponent("Second.md")
+            try Data("# First tab".utf8).write(to: firstURL)
+            try Data("# Second tab".utf8).write(to: secondURL)
+            let workspace = try Workspace(rootURL: directory, accessSecurityScopedResource: false)
+            let registry = DocumentBufferRegistry(
+                identityStore: DocumentIdentityStore(storageURL: nil)
+            )
+            let first = EditorSession(openingMode: .mostRecent)
+            let second = EditorSession(openingMode: .mostRecent)
+            await first.activateInBackground(in: workspace, documentURLs: [firstURL], registry: registry)
+            await second.activateInBackground(in: workspace, documentURLs: [secondURL], registry: registry)
+            defer {
+                first.deactivate()
+                second.deactivate()
+            }
+            let window = EditorWindowSession(request: .newDocument())
+            window.append(first)
+            window.append(second)
+            let secondSnapshot = try await window.snapshotForExport()
+            XCTAssertEqual(secondSnapshot.source, "# Second tab")
+            XCTAssertEqual(secondSnapshot.documentID, second.document?.id)
+            window.select(tabID: first.id)
+            let firstSnapshot = try await window.snapshotForExport()
+            XCTAssertEqual(firstSnapshot.source, "# First tab")
+            XCTAssertEqual(firstSnapshot.documentID, first.document?.id)
+        }
+    }
+
     func testSnapshotForExportSettlesAnotherEditorBoundToSameDocument() async throws {
         try await withTemporaryDirectory { directory in
             let source = String(repeating: "shared editor text\n", count: 32_768)
@@ -225,8 +275,9 @@ final class ExportPresentationTests: XCTestCase {
         presentation.requestExport()
         presentation.presentPageSetup()
         try await waitUntil { panel.pageSetupContinuation != nil }
+        let priorCancellations = panel.cancellationRequests
         presentation.cancel()
-        XCTAssertEqual(panel.cancellationRequests, 1)
+        XCTAssertEqual(panel.cancellationRequests, priorCancellations + 1)
         panel.pageSetupContinuation?.resume(returning: nil)
         panel.pageSetupContinuation = nil
         await Task.yield()

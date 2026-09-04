@@ -1029,11 +1029,8 @@ final class AppState: ClioCommandDispatching {
         case .folder:
             chooseAnotherWorkspace()
         case .export:
-            NotificationCenter.default.post(
-                name: .clioRequestedExport,
-                object: tab,
-                userInfo: [ClioExportNotificationKey.arguments: invocation.arguments]
-            )
+            guard let window, let tab, tab === window.activeTab else { return }
+            window.exportPresentation.requestExport(arguments: invocation.arguments)
         case .focus:
             isFocusModeEnabled.toggle()
         case .typewriter:
@@ -1226,14 +1223,6 @@ private actor EmptySearchIndex: SearchIndexing {
             continuation.finish()
         }
     }
-}
-
-extension Notification.Name {
-    static let clioRequestedExport = Notification.Name("ClioRequestedExport")
-}
-
-enum ClioExportNotificationKey {
-    static let arguments = "ClioExportArguments"
 }
 
 private extension AppState {

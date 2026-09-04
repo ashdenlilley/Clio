@@ -39,7 +39,12 @@ final class EditorWindowSession: Identifiable {
 
     let id: UUID
     private(set) var tabs: [EditorSession]
-    var activeTabID: UUID?
+    var activeTabID: UUID? {
+        didSet {
+            if activeTabID != oldValue { exportPresentation.cancel() }
+        }
+    }
+    let exportPresentation = DocumentExportPresentation()
     var isSidebarVisible: Bool
     var isSidebarPinned: Bool
     var isFullScreenEnabled: Bool
@@ -120,6 +125,7 @@ final class EditorWindowSession: Identifiable {
             tabs = [tab]
             activeTabID = tab.id
         }
+        exportPresentation.attach(to: self)
     }
 
     deinit {
@@ -170,6 +176,7 @@ final class EditorWindowSession: Identifiable {
     }
 
     func disconnect() {
+        exportPresentation.cancel()
         guard let appState else { return }
         appState.unregister(self)
         self.appState = nil

@@ -152,6 +152,16 @@ final class ExportLargeFileTests: XCTestCase {
             for page in [first, middle, last] {
                 try assertBlackInkOnWhite(page)
             }
+            if FileManager.default.fileExists(atPath: "/tmp/ClioRunPDFVisualFixture") {
+                let preserved = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("ClioExportPaginationFixture.pdf")
+                if FileManager.default.fileExists(atPath: preserved.path) {
+                    try FileManager.default.removeItem(at: preserved)
+                }
+                try FileManager.default.copyItem(at: destination, to: preserved)
+                print("CLIO_PAGINATION_PDF=\(preserved.path)")
+                print("CLIO_PAGINATION_PAGES=\(document.pageCount)")
+            }
         }
     }
 }

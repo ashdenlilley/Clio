@@ -336,6 +336,29 @@ final class DocumentExportPresentation {
         }
     }
 
+    func attach(to windowSession: EditorWindowSession) {
+        attach(
+            snapshotProvider: { [weak windowSession] in
+                guard let windowSession else {
+                    throw ExportPresentationError.noDocument
+                }
+                return try await windowSession.snapshotForExport()
+            },
+            sourceURLProvider: { [weak windowSession] in
+                windowSession?.activeTab?.fileURL
+            },
+            sourceFilenameProvider: { [weak windowSession] in
+                windowSession?.activeTab?.filename ?? "Untitled.md"
+            },
+            windowProvider: { [weak windowSession] in
+                guard let id = windowSession?.id else { return nil }
+                return NSApplication.shared.windows.first {
+                    clioEditorSessionID(for: $0) == id
+                }
+            }
+        )
+    }
+
     /// Test and integration seam for the tabbed editor. Stage 5 updates these
     /// providers whenever the active tab changes, while the export state stays
     /// owned by its window.
@@ -392,6 +415,7 @@ final class DocumentExportPresentation {
     }
 
     func presentPageSetup() {
+        guard !isExporting else { return }
         guard let window = windowProvider?() else {
             failure = ExportFailureMapper.failure(for: ExportPresentationError.noWindow)
             return
@@ -399,6 +423,7 @@ final class DocumentExportPresentation {
         let restoresOptions = isOptionsPresented
         isOptionsPresented = false
         operationTask?.cancel()
+        panelPresenter.cancelPendingPanel()
         operationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             if restoresOptions {
@@ -456,6 +481,7 @@ final class DocumentExportPresentation {
         pendingCollision = nil
         retryRequest = nil
         failure = nil
+        completedReceipt = nil
     }
 
     func dismissFailure() {
@@ -480,6 +506,7 @@ private extension DocumentExportPresentation {
         waitsForOptionsSheet: Bool
     ) {
         operationTask?.cancel()
+        panelPresenter.cancelPendingPanel()
         operationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             if waitsForOptionsSheet {
@@ -595,14 +622,6 @@ extension FocusedValues {
         get { self[DocumentExportPresentationFocusedValueKey.self] }
         set { self[DocumentExportPresentationFocusedValueKey.self] = newValue }
     }
-}
-
-extension Notification.Name {
-    static let clioRequestedExport = Notification.Name("ClioRequestedExport")
-}
-
-enum ClioExportNotificationKey {
-    static let arguments = "ClioExportArguments"
 }
 
 struct DocumentExportPresentationModifier: ViewModifier {
@@ -800,6 +819,13 @@ private extension PDFPrintSettings {
         info.bottomMargin = margins.bottom
         info.rightMargin = margins.trailing
         return info
+    }
+}
+
+extension EditorWindowSession {
+    func snapshotForExport() async throws -> DocumentTextSnapshot {
+        guard let session = activeTab else { throw ExportPresentationError.noDocument }
+        return try await session.snapshotForExport()
     }
 }
 

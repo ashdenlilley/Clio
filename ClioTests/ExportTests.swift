@@ -684,6 +684,18 @@ final class ExportTests: XCTestCase {
             collisionResolution: resolution
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        let htmlDestination = destination.deletingPathExtension()
+            .appendingPathExtension("html")
+        let htmlResolution = try ExportDestination.collision(at: htmlDestination).map {
+            ExportCollisionResolution(collision: $0, choice: .replace)
+        }
+        _ = try await coordinator.export(
+            makeRequest(.html, snapshot: snapshot, destination: htmlDestination),
+            collisionResolution: htmlResolution
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: htmlDestination.path))
+        print("CLIO_VISUAL_PDF=\(destination.path)")
+        print("CLIO_VISUAL_HTML=\(htmlDestination.path)")
     }
 }
 

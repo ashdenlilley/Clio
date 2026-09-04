@@ -1112,19 +1112,15 @@ final class NavigationSessionTests: XCTestCase {
             )
             let window = EditorWindowSession(request: .newDocument())
             window.connect(to: appState)
-            var captured: [String]?
-            let observer = NotificationCenter.default.addObserver(
-                forName: .clioRequestedExport,
-                object: nil,
-                queue: .main
-            ) { notification in
-                captured = notification.userInfo?[ClioExportNotificationKey.arguments]
-                    as? [String]
+            let otherWindow = EditorWindowSession(request: .newDocument())
+            otherWindow.connect(to: appState)
+            defer {
+                window.disconnect()
+                otherWindow.disconnect()
             }
-            defer { NotificationCenter.default.removeObserver(observer) }
 
             await appState.perform(
-                ClioCommandInvocation(command: .export, arguments: ["pdf"]),
+                ClioCommandInvocation(command: .export, arguments: ["html"]),
                 context: ClioCommandContext(
                     windowID: window.id,
                     tabID: window.activeTabID,
@@ -1132,7 +1128,9 @@ final class NavigationSessionTests: XCTestCase {
                 )
             )
 
-            XCTAssertEqual(captured, ["pdf"])
+            XCTAssertEqual(window.exportPresentation.selectedFormat, .html)
+            XCTAssertEqual(otherWindow.exportPresentation.selectedFormat, .pdf)
+            XCTAssertFalse(otherWindow.exportPresentation.isOptionsPresented)
         }
     }
 
