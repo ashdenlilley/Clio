@@ -220,13 +220,14 @@ struct PDFPrintSettings: Codable, Hashable, Sendable {
     var orientation: PaperOrientation
 
     var isValid: Bool {
-        guard margins.top >= 0,
-              margins.leading >= 0,
-              margins.bottom >= 0,
-              margins.trailing >= 0 else { return false }
+        let marginValues = [margins.top, margins.leading, margins.bottom, margins.trailing]
+        guard marginValues.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
         if paperWidthPoints == nil, paperHeightPoints == nil { return true }
         guard let paperWidthPoints, let paperHeightPoints else { return false }
-        guard paperWidthPoints > 0, paperHeightPoints > 0 else { return false }
+        guard paperWidthPoints.isFinite,
+              paperHeightPoints.isFinite,
+              paperWidthPoints > 0,
+              paperHeightPoints > 0 else { return false }
         // Stored dimensions are portrait-normalized; orientation is applied by
         // the exporter after validating the printable area.
         let portraitWidth = min(paperWidthPoints, paperHeightPoints)

@@ -1,3 +1,4 @@
+import AppKit
 import PDFKit
 import XCTest
 @testable import Clio
@@ -54,11 +55,91 @@ final class ExportTests: XCTestCase {
             XCTAssertFalse(html.contains("data:image/svg+xml"))
             XCTAssertFalse(html.contains("<script>"))
             XCTAssertTrue(html.contains("&lt;script&gt;"))
+            XCTAssertTrue(html.contains("Content-Security-Policy"))
             XCTAssertTrue(html.contains("@media print"))
             XCTAssertFalse(html.contains("<link "))
             XCTAssertFalse(html.contains("<script src="))
             XCTAssertEqual(coordinator.phase, .completed(receipt))
         }
+    }
+
+    func testHTMLRendererSanitizesControlsScopesTablesAndUsesSafeFootnoteIDs() throws {
+        let hostileLabel = "bad\" onclick=\"alert(1) ❤️"
+        let text = "before\u{0000}after\u{0085}done"
+        let cell: (String) -> MarkdownTableCell = {
+            MarkdownTableCell(
+                content: [.text(value: $0, range: .init(location: 0, length: $0.utf16.count))],
+                range: .init(location: 0, length: $0.utf16.count)
+            )
+        }
+        let footnoteBody: [MarkdownBlock] = [
+            .paragraph(
+                content: [.text(value: "Footnote body", range: .init(location: 0, length: 13))],
+                range: .init(location: 0, length: 13)
+            ),
+        ]
+        let model = MarkdownDocumentModel(blocks: [
+            .paragraph(
+                content: [
+                    .text(value: text, range: .init(location: 0, length: text.utf16.count)),
+                    .link(
+                        destination: "java\u{0000}script:alert(1)",
+                        title: "\" onmouseover=\"alert(1)",
+                        content: [.text(value: "unsafe link", range: .init(location: 0, length: 11))],
+                        range: .init(location: 0, length: 11)
+                    ),
+                    .link(
+                        destination: " \tjavascript:alert(2)",
+                        title: nil,
+                        content: [.text(value: "padded link", range: .init(location: 0, length: 11))],
+                        range: .init(location: 0, length: 11)
+                    ),
+                    .image(
+                        source: "data:image/png;text/html;base64,PHNjcmlwdD4=",
+                        title: nil,
+                        alt: [.text(value: "fallback", range: .init(location: 0, length: 8))],
+                        range: .init(location: 0, length: 8)
+                    ),
+                    .footnoteReference(label: hostileLabel, range: .init(location: 0, length: 1)),
+                ],
+                range: .init(location: 0, length: text.utf16.count)
+            ),
+            .table(
+                MarkdownTable(
+                    alignments: [.leading, .trailing],
+                    header: [cell("Name"), cell("Value")],
+                    rows: [[cell("one"), cell("two")]],
+                    range: .init(location: 0, length: 16)
+                )
+            ),
+            .footnoteDefinition(
+                label: hostileLabel,
+                blocks: footnoteBody,
+                range: .init(location: 0, length: 1)
+            ),
+            .footnoteDefinition(
+                label: hostileLabel,
+                blocks: footnoteBody,
+                range: .init(location: 0, length: 1)
+            ),
+        ])
+
+        let html = try HTMLDocumentRenderer.render(document: model, title: "Hostile\u{0000}title")
+        let safeID = "fn-" + hostileLabel.utf8.map { String(format: "%02x", $0) }.joined()
+
+        XCTAssertTrue(html.contains("default-src 'none'"))
+        XCTAssertTrue(html.contains("base-uri 'none'"))
+        XCTAssertTrue(html.contains("<th scope=\"col\">Name</th>"))
+        XCTAssertTrue(html.contains("href=\"#\(safeID)\""))
+        XCTAssertTrue(html.contains("id=\"\(safeID)\""))
+        XCTAssertTrue(html.contains("id=\"\(safeID)-2\""))
+        XCTAssertFalse(html.contains("id=\"fn-\(hostileLabel)"))
+        XCTAssertFalse(html.contains("java\u{0000}script"))
+        XCTAssertFalse(html.contains("javascript:alert(2)"))
+        XCTAssertFalse(html.contains("data:image/png;text/html"))
+        XCTAssertFalse(html.unicodeScalars.contains(where: { $0.value == 0 || $0.value == 0x85 }))
+        XCTAssertTrue(html.contains("before�after�done"))
+        XCTAssertTrue(html.contains("<span role=\"img\" aria-label=\"fallback\">fallback</span>"))
     }
 
     func testExportCollisionRequiresAChoiceAndKeepBothUsesParenthesizedNumber() async throws {
@@ -89,6 +170,61 @@ final class ExportTests: XCTestCase {
             )
             XCTAssertEqual(receipt.destinationURL.lastPathComponent, "Notes (2).html")
             XCTAssertEqual(try String(contentsOf: destination), "original")
+        }
+    }
+
+    func testExporterStagesACompleteArtifactBeforeInstallation() async throws {
+        try await withTemporaryDirectory { directory in
+            let snapshot = makeSnapshot(source: "staged")
+            let model = MarkdownDocumentModel(blocks: [
+                .paragraph(
+                    content: [.text(value: "staged", range: .init(location: 0, length: 6))],
+                    range: .init(location: 0, length: 6)
+                ),
+            ])
+            let parsed = try await FixtureParser(model: model).parse(snapshot)
+            let destination = directory.appendingPathComponent("staged.html")
+            let staged = try await HTMLDocumentExporter().prepare(
+                parsed: parsed,
+                request: makeRequest(.html, snapshot: snapshot, destination: destination),
+                collisionChoice: nil
+            )
+            defer { staged.discard() }
+
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: staged.temporaryURL.path))
+            XCTAssertGreaterThan(staged.byteCount, 0)
+
+            let receipt = try staged.install()
+            XCTAssertEqual(receipt.destinationURL, destination)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: staged.temporaryURL.path))
+        }
+    }
+
+    func testLateCollisionCannotOverwriteWithoutExplicitReplace() async throws {
+        try await withTemporaryDirectory { directory in
+            let snapshot = makeSnapshot(source: "staged")
+            let model = MarkdownDocumentModel(blocks: [
+                .paragraph(
+                    content: [.text(value: "staged", range: .init(location: 0, length: 6))],
+                    range: .init(location: 0, length: 6)
+                ),
+            ])
+            let parsed = try await FixtureParser(model: model).parse(snapshot)
+            let destination = directory.appendingPathComponent("late-collision.html")
+            let staged = try await HTMLDocumentExporter().prepare(
+                parsed: parsed,
+                request: makeRequest(.html, snapshot: snapshot, destination: destination),
+                collisionChoice: nil
+            )
+            defer { staged.discard() }
+
+            try Data("arrived later".utf8).write(to: destination)
+
+            XCTAssertThrowsError(try staged.install())
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "arrived later")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: staged.temporaryURL.path))
         }
     }
 
@@ -139,6 +275,103 @@ final class ExportTests: XCTestCase {
         }
     }
 
+    func testPDFPaginationRetainsTheDeterministicTailBoundary() async throws {
+        try await withTemporaryDirectory { directory in
+            let body = (0..<2_500).map { "token-\($0)-café" }.joined(separator: " ")
+            let penultimate = "PENULTIMA"
+            let tail = "TAIL-Z9-END"
+            let snapshot = makeSnapshot(
+                source: body + "\n\n" + penultimate + "\n\n" + tail,
+                filename: "Boundary.md"
+            )
+            let model = MarkdownDocumentModel(blocks: [
+                .paragraph(
+                    content: [.text(value: body, range: .init(location: 0, length: body.utf16.count))],
+                    range: .init(location: 0, length: body.utf16.count)
+                ),
+                .paragraph(
+                    content: [.text(value: penultimate, range: .init(location: 0, length: penultimate.utf16.count))],
+                    range: .init(location: 0, length: penultimate.utf16.count)
+                ),
+                .paragraph(
+                    content: [.text(value: tail, range: .init(location: 0, length: tail.utf16.count))],
+                    range: .init(location: 0, length: tail.utf16.count)
+                ),
+            ])
+            let coordinator = DocumentExportCoordinator(parser: FixtureParser(model: model))
+            let destination = directory.appendingPathComponent("Boundary.pdf")
+            let settings = PDFPrintSettings(
+                paperName: "qa-tail",
+                paperWidthPoints: 216,
+                paperHeightPoints: 216,
+                margins: PrintMargins(top: 18, leading: 18, bottom: 18, trailing: 18),
+                orientation: .portrait
+            )
+
+            _ = try await coordinator.export(
+                makeRequest(.pdf, snapshot: snapshot, destination: destination, settings: settings)
+            )
+            let pdf = try XCTUnwrap(PDFDocument(url: destination))
+            let extracted = try XCTUnwrap(pdf.string)
+
+            XCTAssertGreaterThan(pdf.pageCount, 10)
+            XCTAssertTrue(extracted.contains("token-0-café"))
+            XCTAssertTrue(extracted.contains(penultimate))
+            XCTAssertEqual(extracted.components(separatedBy: tail).count - 1, 1)
+        }
+    }
+
+    func testPDFAttributedBuilderPreservesSoftBreaksAndNestedIndentation() throws {
+        let breakModel = MarkdownDocumentModel(blocks: [
+            .paragraph(
+                content: [
+                    .text(value: "alpha", range: .init(location: 0, length: 5)),
+                    .softBreak(range: .init(location: 5, length: 1)),
+                    .text(value: "beta", range: .init(location: 6, length: 4)),
+                    .hardBreak(range: .init(location: 10, length: 1)),
+                    .text(value: "gamma", range: .init(location: 11, length: 5)),
+                ],
+                range: .init(location: 0, length: 16)
+            ),
+        ])
+        let breaks = try PDFAttributedDocumentBuilder.build(breakModel, fallbackSource: "")
+        XCTAssertEqual(breaks.string, "alpha beta\ngamma\n")
+
+        let nestedModel = MarkdownDocumentModel(blocks: [
+            .list(
+                MarkdownList(
+                    isOrdered: false,
+                    start: nil,
+                    isTight: false,
+                    items: [
+                        MarkdownListItem(
+                            taskState: nil,
+                            blocks: [
+                                .paragraph(
+                                    content: [.text(value: "first", range: .init(location: 0, length: 5))],
+                                    range: .init(location: 0, length: 5)
+                                ),
+                                .paragraph(
+                                    content: [.text(value: "second", range: .init(location: 0, length: 6))],
+                                    range: .init(location: 0, length: 6)
+                                ),
+                            ],
+                            range: .init(location: 0, length: 12)
+                        ),
+                    ],
+                    range: .init(location: 0, length: 12)
+                )
+            ),
+        ])
+        let nested = try PDFAttributedDocumentBuilder.build(nestedModel, fallbackSource: "")
+        let secondLocation = (nested.string as NSString).range(of: "second").location
+        let paragraph = try XCTUnwrap(
+            nested.attribute(.paragraphStyle, at: secondLocation, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(paragraph.headIndent, 18, accuracy: 0.01)
+    }
+
     func testPDFSettingsPersistAndRejectAnUnprintablePage() throws {
         let suite = "ClioExportSettings.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -162,6 +395,63 @@ final class ExportTests: XCTestCase {
             orientation: .portrait
         )
         XCTAssertThrowsError(try store.update(invalid))
+
+        let headerAndFooterCollision = PDFPrintSettings(
+            paperName: "invalid-landscape",
+            paperWidthPoints: 100,
+            paperHeightPoints: 200,
+            margins: PrintMargins(top: 30, leading: 10, bottom: 30, trailing: 10),
+            orientation: .landscape
+        )
+        XCTAssertTrue(headerAndFooterCollision.isValid)
+        XCTAssertThrowsError(try store.update(headerAndFooterCollision))
+
+        let unresolvedWithHugeMargins = PDFPrintSettings(
+            paperName: nil,
+            paperWidthPoints: nil,
+            paperHeightPoints: nil,
+            margins: PrintMargins(top: 10_000, leading: 10_000, bottom: 10_000, trailing: 10_000),
+            orientation: .portrait
+        )
+        XCTAssertThrowsError(try store.update(unresolvedWithHugeMargins))
+
+        let nonFinite = PDFPrintSettings(
+            paperName: "invalid-infinity",
+            paperWidthPoints: .infinity,
+            paperHeightPoints: 792,
+            margins: PrintMargins(top: 54, leading: 54, bottom: 54, trailing: 54),
+            orientation: .portrait
+        )
+        XCTAssertFalse(nonFinite.isValid)
+
+        defaults.set(try JSONEncoder().encode(headerAndFooterCollision), forKey: "export.pdf.printSettings")
+        XCTAssertNotEqual(PDFPrintSettingsStore(defaults: defaults).settings, headerAndFooterCollision)
+    }
+
+    func testPDFDefaultsUseSystemPrintInfoWithRegionalFallback() throws {
+        let canada = PDFPrintSettingsStore.regionalDefault(locale: Locale(identifier: "en_CA"))
+        let australia = PDFPrintSettingsStore.regionalDefault(locale: Locale(identifier: "en_AU"))
+        XCTAssertEqual(canada.paperName, "na-letter")
+        XCTAssertEqual(canada.paperWidthPoints, 612)
+        XCTAssertEqual(australia.paperName, "iso-a4")
+        XCTAssertEqual(australia.paperWidthPoints ?? 0, 595.2756, accuracy: 0.001)
+
+        let printInfo = NSPrintInfo(dictionary: [:])
+        printInfo.paperSize = NSSize(width: 500, height: 700)
+        printInfo.orientation = .landscape
+        printInfo.topMargin = 31
+        printInfo.leftMargin = 32
+        printInfo.bottomMargin = 33
+        printInfo.rightMargin = 34
+        let system = PDFPrintSettingsStore.systemDefault(
+            printInfo: printInfo,
+            locale: Locale(identifier: "en_AU")
+        )
+
+        XCTAssertEqual(system.paperWidthPoints, 500)
+        XCTAssertEqual(system.paperHeightPoints, 700)
+        XCTAssertEqual(system.orientation, .landscape)
+        XCTAssertEqual(system.margins, PrintMargins(top: 31, leading: 32, bottom: 33, trailing: 34))
     }
 
     func testCancellationStopsBeforeInstallingAnExport() async throws {
@@ -184,6 +474,75 @@ final class ExportTests: XCTestCase {
                 XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
                 XCTAssertEqual(coordinator.phase, .cancelled)
             }
+        }
+    }
+
+    func testCancellationDuringLargeHTMLRenderingPreservesExistingDestination() async throws {
+        try await withTemporaryDirectory { directory in
+            let snapshot = makeSnapshot(source: "large cancellation fixture")
+            let largeText = String(repeating: "<&", count: 8_000_000)
+            let model = MarkdownDocumentModel(blocks: [
+                .paragraph(
+                    content: [
+                        .text(
+                            value: largeText,
+                            range: .init(location: 0, length: largeText.utf16.count)
+                        ),
+                    ],
+                    range: .init(location: 0, length: largeText.utf16.count)
+                ),
+            ])
+            let coordinator = DocumentExportCoordinator(parser: FixtureParser(model: model))
+            let destination = directory.appendingPathComponent("cancel-render.html")
+            try Data("original".utf8).write(to: destination)
+
+            let operation = Task {
+                try await coordinator.export(
+                    makeRequest(.html, snapshot: snapshot, destination: destination),
+                    collisionChoice: .replace
+                )
+            }
+            for _ in 0..<2_000 where coordinator.phase != .rendering(.html) {
+                await Task.yield()
+            }
+            XCTAssertEqual(coordinator.phase, .rendering(.html))
+            try await Task.sleep(for: .milliseconds(5))
+            operation.cancel()
+
+            do {
+                _ = try await operation.value
+                XCTFail("Cancellation during rendering should escape to the caller")
+            } catch is CancellationError {
+                XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "original")
+                XCTAssertEqual(coordinator.phase, .cancelled)
+                let temporaryFiles = try FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil
+                ).filter { $0.lastPathComponent.hasPrefix(".clio-export-") }
+                XCTAssertTrue(temporaryFiles.isEmpty)
+            }
+        }
+    }
+
+    func testCancelAfterCommittedExportDoesNotRewriteSuccessfulState() async throws {
+        try await withTemporaryDirectory { directory in
+            let snapshot = makeSnapshot(source: "committed")
+            let model = MarkdownDocumentModel(blocks: [
+                .paragraph(
+                    content: [.text(value: "committed", range: .init(location: 0, length: 9))],
+                    range: .init(location: 0, length: 9)
+                ),
+            ])
+            let coordinator = DocumentExportCoordinator(parser: FixtureParser(model: model))
+            let destination = directory.appendingPathComponent("committed.html")
+            let receipt = try await coordinator.export(
+                makeRequest(.html, snapshot: snapshot, destination: destination)
+            )
+
+            coordinator.cancel()
+
+            XCTAssertEqual(coordinator.phase, .completed(receipt))
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8).isEmpty, false)
         }
     }
 
