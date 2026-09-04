@@ -6,11 +6,14 @@ import Observation
 final class Document: Identifiable {
     enum ReadError: LocalizedError, Equatable {
         case invalidUTF8(URL)
+        case backgroundHydrationRequired(URL)
 
         var errorDescription: String? {
             switch self {
             case .invalidUTF8(let url):
                 "\(url.lastPathComponent) is not a UTF-8 text file."
+            case .backgroundHydrationRequired(let url):
+                "\(url.lastPathComponent) must be opened with Clio’s background document loader."
             }
         }
     }
@@ -19,6 +22,7 @@ final class Document: Identifiable {
         let documentID: DocumentID
         let revision: UInt64
         let text: String
+        let utf8ByteCount: Int
         let fileURL: URL?
         let preferredFilename: String
         let isDirty: Bool
@@ -27,10 +31,12 @@ final class Document: Identifiable {
     }
 
     nonisolated static let defaultFilename = "untitled.md"
+    nonisolated static let maximumSynchronousByteCount = 256 * 1_024
 
     let id: DocumentID
     private(set) var preferredFilename: String
     private(set) var text: String
+    private(set) var utf8ByteCount: Int
     private(set) var fileURL: URL?
     private(set) var isDirty: Bool
     private(set) var revision: UInt64
@@ -49,10 +55,12 @@ final class Document: Identifiable {
         fileURL: URL? = nil,
         preferredFilename: String = Document.defaultFilename,
         id: DocumentID = DocumentID(),
-        expectedDiskRevision: DiskRevision? = nil
+        expectedDiskRevision: DiskRevision? = nil,
+        utf8ByteCount: Int? = nil
     ) {
         self.id = id
         self.text = text
+        self.utf8ByteCount = utf8ByteCount ?? text.utf8.count
         self.fileURL = fileURL?.standardizedFileURL
         self.preferredFilename = preferredFilename.isEmpty
             ? Self.defaultFilename
@@ -68,7 +76,15 @@ final class Document: Identifiable {
 
     convenience init(contentsOf fileURL: URL, id: DocumentID = DocumentID()) throws {
         let standardizedURL = fileURL.standardizedFileURL
-        let disk = try DocumentRevisionReader.documentSnapshot(at: standardizedURL)
+        let disk: (data: Data, revision: DiskRevision)
+        do {
+            disk = try DocumentRevisionReader.snapshot(
+                at: standardizedURL,
+                maximumByteCount: Int64(Self.maximumSynchronousByteCount)
+            )
+        } catch DocumentRevisionReader.RevisionError.fileTooLarge {
+            throw ReadError.backgroundHydrationRequired(standardizedURL)
+        }
         guard let text = String(data: disk.data, encoding: .utf8) else {
             throw ReadError.invalidUTF8(standardizedURL)
         }
@@ -77,7 +93,8 @@ final class Document: Identifiable {
             fileURL: standardizedURL,
             preferredFilename: standardizedURL.lastPathComponent,
             id: id,
-            expectedDiskRevision: disk.revision
+            expectedDiskRevision: disk.revision,
+            utf8ByteCount: disk.data.count
         )
     }
 
@@ -90,9 +107,11 @@ final class Document: Identifiable {
     /// so the editor path can avoid a second whole-buffer equality scan.
     func replaceTextFromEditor(
         with newText: String,
-        revisionAdvance: UInt64 = 1
+        revisionAdvance: UInt64 = 1,
+        utf8ByteCount: Int? = nil
     ) {
         text = newText
+        self.utf8ByteCount = utf8ByteCount ?? newText.utf8.count
         revision &+= max(1, revisionAdvance)
         isDirty = true
         if conflict == nil {
@@ -116,6 +135,7 @@ final class Document: Identifiable {
             documentID: id,
             revision: revision,
             text: text,
+            utf8ByteCount: utf8ByteCount,
             fileURL: fileURL,
             preferredFilename: preferredFilename,
             isDirty: isDirty,
@@ -183,8 +203,13 @@ final class Document: Identifiable {
         syncState = .conflicted(merged)
     }
 
-    func applyExternal(source: String, revision diskRevision: DiskRevision) {
+    func applyExternal(
+        source: String,
+        revision diskRevision: DiskRevision,
+        utf8ByteCount: Int? = nil
+    ) {
         text = source
+        self.utf8ByteCount = utf8ByteCount ?? source.utf8.count
         revision &+= 1
         isDirty = false
         expectedDiskRevision = diskRevision

@@ -95,6 +95,9 @@ final class EditorSession: Identifiable {
     private var editorEditEpoch: UInt64 = 0
 
     @ObservationIgnored
+    private var activationEpoch: UInt64 = 0
+
+    @ObservationIgnored
     private var pendingEditorEdits: [MarkdownTextEdit] = []
 
     @ObservationIgnored
@@ -145,13 +148,28 @@ final class EditorSession: Identifiable {
         preferredRelativePath != nil
     }
 
+    func shouldHydrateInitialDocumentInBackground(
+        from documentURLs: [URL],
+        in workspace: Workspace
+    ) -> Bool {
+        guard let candidate = orderedInitialURLs(documentURLs, in: workspace).first,
+              let byteCount = try? DocumentRevisionReader.byteCount(at: candidate) else {
+            return false
+        }
+        return byteCount > Int64(Document.maximumSynchronousByteCount)
+    }
+
     var draftText: String {
         get { document?.text ?? detachedDraftText }
         set {
             invalidatePendingEditorEdits()
             if let document {
                 document.replaceText(with: newValue)
-                refreshWordCount(for: newValue, revision: document.revision)
+                refreshWordCount(
+                    for: newValue,
+                    revision: document.revision,
+                    utf8ByteCount: document.utf8ByteCount
+                )
             } else {
                 guard newValue != detachedDraftText else { return }
                 detachedDraftText = newValue
@@ -193,7 +211,11 @@ final class EditorSession: Identifiable {
     /// reload. Normal editor changes schedule this directly; the view calls it
     /// when an observed document generation changes through another service.
     func refreshDerivedStateForCurrentRevision() {
-        refreshWordCount(for: draftText, revision: contentRevision)
+        refreshWordCount(
+            for: draftText,
+            revision: contentRevision,
+            utf8ByteCount: document?.utf8ByteCount
+        )
     }
 
     func activate(
@@ -203,59 +225,60 @@ final class EditorSession: Identifiable {
         conflictResolver: ConflictResolver? = nil,
         documentMover: DocumentMover? = nil
     ) {
-        invalidatePendingEditorEdits()
-        editorMaterializationCount = 0
-        editorPublicationCount = 0
-        autosaveErrorMonitor?.cancel()
-        if ownsAutosaver { autosaver?.cancel() }
-        self.registry?.unbind(self)
-        self.registry = registry
-        self.conflictResolver = conflictResolver
-        self.documentMover = documentMover
-
+        activationEpoch &+= 1
         let initialDocument: (document: Document, warning: String?)
-        if let preferredRelativePath,
-           let preferredIndex = documentURLs.firstIndex(where: {
-               workspace.relativePath(for: $0) == preferredRelativePath
-           }) {
-            var preferredFirstURLs = documentURLs
-            let preferredURL = preferredFirstURLs.remove(at: preferredIndex)
-            preferredFirstURLs.insert(preferredURL, at: 0)
-            initialDocument = loadInitialDocument(
-                from: preferredFirstURLs,
-                in: workspace
-            )
+        if openingMode == .newDocument, preferredRelativePath == nil {
+            initialDocument = (Document(), nil)
         } else {
-            switch openingMode {
-            case .newDocument:
-                initialDocument = (Document(), nil)
-            case .mostRecent:
-                initialDocument = loadInitialDocument(
-                    from: documentURLs,
-                    in: workspace
-                )
-            }
+            initialDocument = loadInitialDocument(
+                from: orderedInitialURLs(documentURLs, in: workspace),
+                in: workspace,
+                registry: registry
+            )
         }
-
-        self.workspace = workspace
-        document = initialDocument.document
-        registry?.register(initialDocument.document, in: workspace)
-        registry?.bind(self, to: initialDocument.document)
-        ownsAutosaver = registry == nil
-        autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
-            ?? Autosaver(workspace: workspace)
-        detachedDraftText = ""
-        detachedRevision = 0
-        refreshRelativePath()
-        refreshWordCount(
-            for: initialDocument.document.text,
-            revision: initialDocument.document.revision
+        installInitialDocument(
+            initialDocument,
+            in: workspace,
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
         )
-        errorMessage = initialDocument.warning
-        presentedErrorContext = .general
+    }
+
+    /// Hydrates the initial picker/search/restoration target without blocking
+    /// MainActor. If another activation wins while the read is in flight, its
+    /// result is discarded before it can alter the current buffer.
+    func activateInBackground(
+        in workspace: Workspace,
+        documentURLs: [URL],
+        registry: DocumentBufferRegistry? = nil,
+        conflictResolver: ConflictResolver? = nil,
+        documentMover: DocumentMover? = nil
+    ) async {
+        activationEpoch &+= 1
+        let requestEpoch = activationEpoch
+        let initialDocument: (document: Document, warning: String?)
+        if openingMode == .newDocument, preferredRelativePath == nil {
+            initialDocument = (Document(), nil)
+        } else {
+            initialDocument = await loadInitialDocumentInBackground(
+                from: orderedInitialURLs(documentURLs, in: workspace),
+                in: workspace,
+                registry: registry
+            )
+        }
+        guard activationEpoch == requestEpoch else { return }
+        installInitialDocument(
+            initialDocument,
+            in: workspace,
+            registry: registry,
+            conflictResolver: conflictResolver,
+            documentMover: documentMover
+        )
     }
 
     func deactivate() {
+        activationEpoch &+= 1
         invalidatePendingEditorEdits()
         autosaveErrorMonitor?.cancel()
         wordCountTask?.cancel()
@@ -295,7 +318,7 @@ final class EditorSession: Identifiable {
               let document, let autosaver else { return }
 
         let source = document.text
-        if source.utf8.count <= 256 * 1_024,
+        if document.utf8ByteCount <= Document.maximumSynchronousByteCount,
            editorEditTask == nil,
            pendingEditorEdits.isEmpty {
             guard let updated = MarkdownTextEditApplier.applying(edit, to: source) else {
@@ -356,14 +379,20 @@ final class EditorSession: Identifiable {
         _ newText: String,
         document: Document,
         autosaver: Autosaver,
-        revisionAdvance: UInt64 = 1
+        revisionAdvance: UInt64 = 1,
+        utf8ByteCount: Int? = nil
     ) {
 
         document.replaceTextFromEditor(
             with: newText,
-            revisionAdvance: revisionAdvance
+            revisionAdvance: revisionAdvance,
+            utf8ByteCount: utf8ByteCount
         )
-        refreshWordCount(for: newText, revision: document.revision)
+        refreshWordCount(
+            for: newText,
+            revision: document.revision,
+            utf8ByteCount: document.utf8ByteCount
+        )
         autosaver.documentDidChange(document)
         refreshRelativePath()
 
@@ -390,20 +419,44 @@ final class EditorSession: Identifiable {
             saveAfterEditorEdits = true
             return
         }
-        do {
-            guard let document, let autosaver else { return }
-            try autosaver.flush(
-                document,
-                allowingDetachedRestore: document.requiresExplicitRestore
-            )
-            refreshRelativePath()
-            clearPresentedSaveError()
-        } catch {
-            presentError(
-                "Clio couldn’t save this document. Check that the workspace is available and writable, then try again.",
-                underlying: error,
-                context: .save
-            )
+        if let document, let autosaver,
+           document.utf8ByteCount <= Document.maximumSynchronousByteCount,
+           !autosaver.hasActiveFileIO {
+            do {
+                try autosaver.flush(
+                    document,
+                    allowingDetachedRestore: document.requiresExplicitRestore
+                )
+                refreshRelativePath()
+                clearPresentedSaveError()
+            } catch {
+                presentError(
+                    "Clio couldn’t save this document. Check that the workspace is available and writable, then try again.",
+                    underlying: error,
+                    context: .save
+                )
+            }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, let document = self.document,
+                  let autosaver = self.autosaver else { return }
+            do {
+                try await self.settlePendingEditorEdits()
+                guard self.document === document else { return }
+                try await autosaver.flushAsync(
+                    document,
+                    allowingDetachedRestore: document.requiresExplicitRestore
+                )
+                self.refreshRelativePath()
+                self.clearPresentedSaveError()
+            } catch {
+                self.presentError(
+                    "Clio couldn’t save this document. Check that the workspace is available and writable, then try again.",
+                    underlying: error,
+                    context: .save
+                )
+            }
         }
     }
 
@@ -492,7 +545,11 @@ final class EditorSession: Identifiable {
             workspace: workspace,
             registry: registry
         )
-        refreshWordCount(for: document.text, revision: document.revision)
+        refreshWordCount(
+            for: document.text,
+            revision: document.revision,
+            utf8ByteCount: document.utf8ByteCount
+        )
         refreshRelativePath()
         clearPresentedSaveError()
     }
@@ -558,11 +615,32 @@ final class EditorSession: Identifiable {
 
     func moveToTrash() throws {
         guard let document, let workspace, let documentMover else { return }
-        if registry?.hasUnsettledEditorEdits(for: document.id)
-            ?? hasUnsettledEditorEdits {
+        if (registry?.hasUnsettledEditorEdits(for: document.id)
+            ?? hasUnsettledEditorEdits)
+            || registry?.hasActiveFileIO(for: document.id) == true
+            || autosaver?.hasActiveFileIO == true {
             throw EditorSynchronizationError.editorMaterializationInProgress
         }
         try documentMover.moveToTrash(
+            document,
+            workspace: workspace,
+            registry: registry
+        )
+        refreshRelativePath()
+    }
+
+    /// Async user-command counterpart for large documents. Window-close and
+    /// termination delegates continue using the conservative synchronous
+    /// lifecycle flush, which refuses while durable work is outstanding.
+    func moveToTrashNow() async throws {
+        guard let document, let workspace, let documentMover else { return }
+        if let registry {
+            try await registry.settlePendingEditorEdits(for: document.id)
+        } else {
+            try await settlePendingEditorEdits()
+        }
+        guard self.document === document else { return }
+        try await documentMover.moveToTrashInBackground(
             document,
             workspace: workspace,
             registry: registry
@@ -652,9 +730,11 @@ private extension EditorSession {
                 let baseSource = document.text
                 self.editorMaterializationCount += 1
                 let worker = Task.detached(priority: .userInitiated) {
-                    MarkdownTextEditApplier.applying(edits, to: baseSource)
+                    MarkdownTextEditApplier.applying(edits, to: baseSource).map {
+                        ($0, $0.utf8.count)
+                    }
                 }
-                guard let updated = await worker.value,
+                guard let (updated, utf8ByteCount) = await worker.value,
                       !Task.isCancelled,
                       self.editorEditEpoch == epoch,
                       self.document === document,
@@ -677,7 +757,8 @@ private extension EditorSession {
                     updated,
                     document: document,
                     autosaver: autosaver,
-                    revisionAdvance: revisionAdvance
+                    revisionAdvance: revisionAdvance,
+                    utf8ByteCount: utf8ByteCount
                 )
                 await Task.yield()
             }
@@ -703,7 +784,8 @@ private extension EditorSession {
 
     func loadInitialDocument(
         from documentURLs: [URL],
-        in workspace: Workspace
+        in workspace: Workspace,
+        registry: DocumentBufferRegistry?
     ) -> (document: Document, warning: String?) {
         var failures: [(url: URL, error: Error)] = []
 
@@ -718,6 +800,88 @@ private extension EditorSession {
         }
 
         return (Document(), unreadableDocumentWarning(failures))
+    }
+
+    func loadInitialDocumentInBackground(
+        from documentURLs: [URL],
+        in workspace: Workspace,
+        registry: DocumentBufferRegistry?
+    ) async -> (document: Document, warning: String?) {
+        var failures: [(url: URL, error: Error)] = []
+
+        for documentURL in documentURLs {
+            do {
+                let document: Document
+                if let registry {
+                    document = try await registry.openInBackground(
+                        documentURL,
+                        in: workspace
+                    )
+                } else {
+                    document = try await workspace.loadDocumentInBackground(
+                        at: documentURL
+                    )
+                }
+                return (document, unreadableDocumentWarning(failures))
+            } catch is CancellationError {
+                return (Document(), nil)
+            } catch {
+                failures.append((documentURL, error))
+            }
+        }
+
+        return (Document(), unreadableDocumentWarning(failures))
+    }
+
+    func orderedInitialURLs(
+        _ documentURLs: [URL],
+        in workspace: Workspace
+    ) -> [URL] {
+        guard let preferredRelativePath,
+              let preferredIndex = documentURLs.firstIndex(where: {
+                  workspace.relativePath(for: $0) == preferredRelativePath
+              }) else {
+            return openingMode == .newDocument ? [] : documentURLs
+        }
+        var preferredFirstURLs = documentURLs
+        let preferredURL = preferredFirstURLs.remove(at: preferredIndex)
+        preferredFirstURLs.insert(preferredURL, at: 0)
+        return preferredFirstURLs
+    }
+
+    func installInitialDocument(
+        _ initialDocument: (document: Document, warning: String?),
+        in workspace: Workspace,
+        registry: DocumentBufferRegistry?,
+        conflictResolver: ConflictResolver?,
+        documentMover: DocumentMover?
+    ) {
+        invalidatePendingEditorEdits()
+        editorMaterializationCount = 0
+        editorPublicationCount = 0
+        autosaveErrorMonitor?.cancel()
+        if ownsAutosaver { autosaver?.cancel() }
+        self.registry?.unbind(self)
+        self.registry = registry
+        self.conflictResolver = conflictResolver
+        self.documentMover = documentMover
+        self.workspace = workspace
+        document = initialDocument.document
+        registry?.register(initialDocument.document, in: workspace)
+        registry?.bind(self, to: initialDocument.document)
+        ownsAutosaver = registry == nil
+        autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
+            ?? Autosaver(workspace: workspace)
+        detachedDraftText = ""
+        detachedRevision = 0
+        refreshRelativePath()
+        refreshWordCount(
+            for: initialDocument.document.text,
+            revision: initialDocument.document.revision,
+            utf8ByteCount: initialDocument.document.utf8ByteCount
+        )
+        errorMessage = initialDocument.warning
+        presentedErrorContext = .general
     }
 
     func unreadableDocumentWarning(
@@ -764,14 +928,19 @@ private extension EditorSession {
         }
     }
 
-    func refreshWordCount(for source: String, revision: UInt64) {
+    func refreshWordCount(
+        for source: String,
+        revision: UInt64,
+        utf8ByteCount: Int? = nil
+    ) {
         let request = (documentID: document?.id, revision: revision)
         guard wordCountRequest?.documentID != request.documentID
                 || wordCountRequest?.revision != request.revision else { return }
         wordCountRequest = request
         wordCountTask?.cancel()
 
-        if source.utf8.count <= 256 * 1_024 {
+        if (utf8ByteCount ?? source.utf8.count)
+            <= Document.maximumSynchronousByteCount {
             wordCount = Self.countWords(in: source)
             return
         }

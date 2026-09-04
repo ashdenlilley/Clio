@@ -70,6 +70,99 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         return document
     }
 
+    /// Async hydration path for picker/search/restoration and files above the
+    /// small synchronous compatibility budget. A prepared source is never
+    /// registered unless its authorized path, physical identity, and content
+    /// revision still match after the suspension point.
+    func openInBackground(
+        _ fileURL: URL,
+        in workspace: Workspace,
+        preferredID: DocumentID? = nil
+    ) async throws -> Document {
+        let standardizedURL = fileURL.standardizedFileURL
+        let locator = try workspace.locator(for: standardizedURL)
+        let initialIdentity = PhysicalFileIdentity.authorizedFile(at: standardizedURL)
+        if let existing = document(for: initialIdentity, locator: locator) {
+            try identityStore.bind(
+                existing.id,
+                locator: locator,
+                physicalIdentity: initialIdentity,
+                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
+            )
+            updateAliases(
+                for: existing.id,
+                identity: initialIdentity,
+                locator: locator,
+                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
+            )
+            return existing
+        }
+
+        for _ in 0..<8 {
+            let prepared = try await workspace.prepareDocumentInBackground(
+                at: standardizedURL
+            )
+            guard prepared.fileURL == standardizedURL else { continue }
+
+            if let existing = document(for: prepared.identity, locator: locator) {
+                try identityStore.bind(
+                    existing.id,
+                    locator: locator,
+                    physicalIdentity: prepared.identity,
+                    canonicalPath: prepared.canonicalPath
+                )
+                updateAliases(
+                    for: existing.id,
+                    identity: prepared.identity,
+                    locator: locator,
+                    canonicalPath: prepared.canonicalPath
+                )
+                return existing
+            }
+
+            let storedID = try identityStore.resolve(
+                DocumentIdentityCandidate(
+                    locator: locator,
+                    physicalIdentity: prepared.identity,
+                    canonicalPath: prepared.canonicalPath,
+                    preferredID: preferredID
+                )
+            )
+            guard try await workspace.confirmPreparedDocument(prepared) else {
+                continue
+            }
+            if let existing = document(for: prepared.identity, locator: locator) {
+                return existing
+            }
+
+            let runtimeID = canonicalRuntimeID(
+                for: prepared.identity,
+                locator: locator,
+                preferredID: storedID
+            )
+            if runtimeID != storedID {
+                try identityStore.bind(
+                    runtimeID,
+                    locator: locator,
+                    physicalIdentity: prepared.identity,
+                    canonicalPath: prepared.canonicalPath
+                )
+            }
+            let document = Document(
+                text: prepared.source,
+                fileURL: prepared.fileURL,
+                preferredFilename: prepared.fileURL.lastPathComponent,
+                id: runtimeID,
+                expectedDiskRevision: prepared.revision,
+                utf8ByteCount: prepared.utf8ByteCount
+            )
+            documents[runtimeID] = document
+            return document
+        }
+
+        throw Workspace.WorkspaceError.externalChangeUnstable(standardizedURL)
+    }
+
     func register(_ document: Document, in workspace: Workspace) {
         if let registered = documents[document.id], registered !== document {
             return
@@ -152,6 +245,14 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         autosavers[documentID]?.resumeAfterFileOperation()
     }
 
+    func settlePendingFileIO(for documentID: DocumentID) async {
+        await autosavers[documentID]?.settlePendingFileIO()
+    }
+
+    func hasActiveFileIO(for documentID: DocumentID) -> Bool {
+        autosavers[documentID]?.hasActiveFileIO == true
+    }
+
     /// Keeps the same controller object so every tab/window immediately saves
     /// through the destination workspace after a cross-workspace move.
     func retarget(_ document: Document, to workspace: Workspace) {
@@ -197,9 +298,30 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
 
         repeat {
             try await settlePendingEditorEdits(for: documentID)
+            await settlePendingFileIO(for: documentID)
         } while hasUnsettledEditorEdits(for: documentID)
+            || hasActiveFileIO(for: documentID)
 
         return try operation()
+    }
+
+    /// Async counterpart used by watcher reconciliation and path mutations.
+    /// Autosave remains suspended across every await; the operation itself
+    /// revalidates buffer generations if typing continues while disk I/O runs.
+    func withSettledDocumentIO<T>(
+        for documentID: DocumentID,
+        _ operation: @MainActor () async throws -> T
+    ) async throws -> T {
+        suspendAutosave(for: documentID)
+        defer { resumeAutosave(for: documentID) }
+
+        repeat {
+            try await settlePendingEditorEdits(for: documentID)
+            await settlePendingFileIO(for: documentID)
+        } while hasUnsettledEditorEdits(for: documentID)
+            || hasActiveFileIO(for: documentID)
+
+        return try await operation()
     }
 
     func documentID(

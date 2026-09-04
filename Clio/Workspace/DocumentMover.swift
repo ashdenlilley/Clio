@@ -3,6 +3,11 @@ import Foundation
 
 @MainActor
 final class DocumentMover {
+    private struct SettledSource {
+        let snapshot: Document.Snapshot
+        let disk: (data: Data, revision: DiskRevision)
+    }
+
     enum MoveError: LocalizedError {
         case destinationChanged(URL)
         case sourceChanged(URL)
@@ -48,16 +53,18 @@ final class DocumentMover {
         if let registry {
             repeat {
                 try await registry.settlePendingEditorEdits(for: document.id)
+                await registry.settlePendingFileIO(for: document.id)
             } while registry.hasUnsettledEditorEdits(for: document.id)
+                || registry.hasActiveFileIO(for: document.id)
         }
 
-        guard let sourceURL = document.fileURL else { return .cancelled }
-        _ = try sourceWorkspace.save(document)
-        let sourceAtApproval = try await fileIO.snapshot(at: sourceURL)
-        if let expected = document.expectedDiskRevision,
-           !Workspace.sameContent(sourceAtApproval.revision, expected) {
-            try sourceWorkspace.reconcileExternalChange(for: document)
-            throw MoveError.sourceChanged(sourceURL)
+        var sourceAtApproval = try await settledSourceSnapshot(
+            document,
+            workspace: sourceWorkspace,
+            registry: registry
+        )
+        guard let sourceURL = sourceAtApproval.snapshot.fileURL else {
+            return .cancelled
         }
 
         let filename = Workspace.safeFilename(
@@ -113,10 +120,13 @@ final class DocumentMover {
                     displacedSnapshot = nil
                 }
                 if let displacedSnapshot, displacedSnapshot.isDirty {
+                    let displacedData = await Task.detached(priority: .utility) {
+                        Data(displacedSnapshot.text.utf8)
+                    }.value
                     _ = try await recoveryStore.preserve(
                         documentID: displacedSnapshot.documentID,
                         filename: displacedSnapshot.preferredFilename,
-                        data: Data(displacedSnapshot.text.utf8),
+                        data: displacedData,
                         sourceModificationDate: nil
                     )
                 }
@@ -126,8 +136,13 @@ final class DocumentMover {
                     data: replaced.data,
                     sourceModificationDate: replaced.revision.modificationDate
                 )
-                let installedData = Data(document.text.utf8)
-                let snapshot = document.snapshot()
+                sourceAtApproval = try await settledSourceSnapshot(
+                    document,
+                    workspace: sourceWorkspace,
+                    registry: registry
+                )
+                let installedData = sourceAtApproval.disk.data
+                let snapshot = sourceAtApproval.snapshot
                 let moveTransaction = try await fileIO.beginMoveTransaction(
                     documentID: document.id,
                     generation: BufferGeneration(
@@ -138,7 +153,7 @@ final class DocumentMover {
                     destinationRootURL: destinationWorkspace.rootURL,
                     sourceURL: sourceURL,
                     destinationURL: destinationURL,
-                    sourceRevision: sourceAtApproval.revision,
+                    sourceRevision: sourceAtApproval.disk.revision,
                     destinationRevision: replaced.revision,
                     candidate: installedData
                 )
@@ -170,7 +185,7 @@ final class DocumentMover {
 
                 let recoveryNotice = await quarantineAndValidateSource(
                     moveTransaction,
-                    approvedSource: sourceAtApproval.revision,
+                    approvedSource: sourceAtApproval.disk.revision,
                     document: document,
                     sourceWorkspace: sourceWorkspace
                 )
@@ -194,18 +209,23 @@ final class DocumentMover {
             }
         }
 
-        let installedData = sourceAtApproval.data
+        sourceAtApproval = try await settledSourceSnapshot(
+            document,
+            workspace: sourceWorkspace,
+            registry: registry
+        )
+        let installedData = sourceAtApproval.disk.data
         let moveTransaction = try await fileIO.beginMoveTransaction(
             documentID: document.id,
             generation: BufferGeneration(
                 bufferID: document.id.rawValue,
-                revision: document.snapshot().revision
+                revision: sourceAtApproval.snapshot.revision
             ),
             sourceRootURL: sourceWorkspace.rootURL,
             destinationRootURL: destinationWorkspace.rootURL,
             sourceURL: sourceURL,
             destinationURL: destinationURL,
-            sourceRevision: sourceAtApproval.revision,
+            sourceRevision: sourceAtApproval.disk.revision,
             destinationRevision: nil,
             candidate: installedData
         )
@@ -229,7 +249,7 @@ final class DocumentMover {
         }
         let recoveryNotice = await quarantineAndValidateSource(
             moveTransaction,
-            approvedSource: sourceAtApproval.revision,
+            approvedSource: sourceAtApproval.disk.revision,
             document: document,
             sourceWorkspace: sourceWorkspace
         )
@@ -257,6 +277,10 @@ final class DocumentMover {
         if registry?.hasUnsettledEditorEdits(for: document.id) == true {
             throw EditorSynchronizationError.editorMaterializationInProgress
         }
+        if registry?.hasActiveFileIO(for: document.id) == true
+            || document.utf8ByteCount > Document.maximumSynchronousByteCount {
+            throw Autosaver.SaveError.backgroundSaveInProgress
+        }
         guard let fileURL = document.fileURL else { return nil }
         _ = try workspace.save(document)
         registry?.cancelAutosave(for: document.id)
@@ -274,9 +298,105 @@ final class DocumentMover {
         return resultingURL
     }
 
+    /// Awaitable user-command path. Dirty bytes are durably settled before
+    /// the filesystem mutation, while a synchronous window/quit callback can
+    /// continue to refuse instead of blocking MainActor on a large document.
+    @discardableResult
+    func moveToTrashInBackground(
+        _ document: Document,
+        workspace: Workspace,
+        registry: DocumentBufferRegistry? = nil
+    ) async throws -> URL? {
+        registry?.suspendAutosave(for: document.id)
+        defer { registry?.resumeAutosave(for: document.id) }
+
+        if let registry {
+            repeat {
+                try await registry.settlePendingEditorEdits(for: document.id)
+                await registry.settlePendingFileIO(for: document.id)
+            } while registry.hasUnsettledEditorEdits(for: document.id)
+                || registry.hasActiveFileIO(for: document.id)
+        }
+
+        for _ in 0..<8 {
+            guard let fileURL = document.fileURL else { return nil }
+            if document.isDirty {
+                _ = try await workspace.saveInBackground(document)
+            }
+            if let registry {
+                try await registry.settlePendingEditorEdits(for: document.id)
+            }
+            let snapshot = document.snapshot()
+            guard !snapshot.isDirty,
+                  snapshot.fileURL?.standardizedFileURL
+                    == fileURL.standardizedFileURL else { continue }
+
+            let oldLocator = try workspace.locator(for: fileURL)
+            let resultingURL: URL?
+            if let trashOperation {
+                // Test/custom adapters are expected to be bounded. The app's
+                // real FileManager operation always runs on `fileIO` below.
+                resultingURL = try trashOperation(fileURL)
+            } else {
+                resultingURL = try await fileIO.trash(
+                    at: fileURL,
+                    expectedRevision: snapshot.expectedDiskRevision
+                )
+            }
+            guard document.fileURL?.standardizedFileURL
+                    == fileURL.standardizedFileURL else {
+                throw MoveError.sourceChanged(fileURL)
+            }
+            registry?.cancelAutosave(for: document.id)
+            document.markUnbacked(previous: oldLocator)
+            registry?.detach(document.id, from: oldLocator)
+            return resultingURL
+        }
+
+        throw MoveError.sourceChanged(document.fileURL ?? workspace.rootURL)
+    }
+
     func reveal(_ document: Document) {
         guard let fileURL = document.fileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+
+    private func settledSourceSnapshot(
+        _ document: Document,
+        workspace: Workspace,
+        registry: DocumentBufferRegistry?
+    ) async throws -> SettledSource {
+        for _ in 0..<8 {
+            if let registry {
+                try await registry.settlePendingEditorEdits(for: document.id)
+                await registry.settlePendingFileIO(for: document.id)
+            }
+            if document.isDirty {
+                _ = try await workspace.saveInBackground(document)
+            }
+            if let registry {
+                try await registry.settlePendingEditorEdits(for: document.id)
+            }
+
+            let snapshot = document.snapshot()
+            guard !snapshot.isDirty, let sourceURL = snapshot.fileURL else {
+                continue
+            }
+            let disk = try await fileIO.snapshot(at: sourceURL)
+            guard document.revision == snapshot.revision,
+                  document.fileURL?.standardizedFileURL
+                    == sourceURL.standardizedFileURL,
+                  !document.isDirty else {
+                continue
+            }
+            if let expected = snapshot.expectedDiskRevision,
+               !Workspace.sameContent(disk.revision, expected) {
+                try await workspace.reconcileExternalChangeInBackground(for: document)
+                throw MoveError.sourceChanged(sourceURL)
+            }
+            return SettledSource(snapshot: snapshot, disk: disk)
+        }
+        throw MoveError.sourceChanged(document.fileURL ?? workspace.rootURL)
     }
 
     private func quarantineAndValidateSource(
@@ -298,7 +418,7 @@ final class DocumentMover {
             let quarantined = try await fileIO.quarantinedSnapshot(transaction)
             var journalURL: URL?
             do {
-                journalURL = try sourceWorkspace.checkpointCrashRecovery(
+                journalURL = try await sourceWorkspace.checkpointCrashRecoveryInBackground(
                     data: quarantined.data,
                     documentID: document.id,
                     generation: transaction.manifest.generation,
@@ -354,7 +474,7 @@ final class DocumentMover {
         registry?.removeLocator(oldLocator, for: document.id)
         registry?.updateAliases(for: document, in: destinationWorkspace)
         registry?.retarget(document, to: destinationWorkspace)
-        try destinationWorkspace.reconcileExternalChange(for: document)
+        try await destinationWorkspace.reconcileExternalChangeInBackground(for: document)
         if document.conflict != nil {
             registry?.cancelAutosave(for: document.id)
         }
@@ -408,6 +528,21 @@ private actor FileMutationExecutor {
 
     func remove(at url: URL) throws {
         try fileManager.removeItem(at: url)
+    }
+
+    func trash(
+        at url: URL,
+        expectedRevision: DiskRevision?
+    ) throws -> URL? {
+        if let expectedRevision {
+            let current = try DocumentRevisionReader.revision(at: url)
+            guard Workspace.sameContent(current, expectedRevision) else {
+                throw DocumentMover.MoveError.sourceChanged(url)
+            }
+        }
+        var resultingURL: NSURL?
+        try fileManager.trashItem(at: url, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
     }
 
     func discardRetainedSidecar(at url: URL) throws {

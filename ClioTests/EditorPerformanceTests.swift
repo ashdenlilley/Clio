@@ -151,8 +151,17 @@ final class EditorPerformanceTests: XCTestCase {
                 + String(repeating: "x", count: byteCount % line.utf8.count)
             let fileURL = directoryURL.appendingPathComponent("large-\(mebibytes).md")
             try Data(source.utf8).write(to: fileURL)
+            let registry = DocumentBufferRegistry(
+                identityStore: DocumentIdentityStore(storageURL: nil)
+            )
             let session = EditorSession(openingMode: .mostRecent)
-            session.activate(in: workspace, documentURLs: [fileURL])
+            await session.activateInBackground(
+                in: workspace,
+                documentURLs: [fileURL],
+                registry: registry
+            )
+            let document = try XCTUnwrap(session.document)
+            let autosaver = registry.autosaver(for: document, in: workspace)
 
             let suffix = (0..<100).map { String($0 % 10) }.joined()
             let clock = ContinuousClock()
@@ -186,6 +195,9 @@ final class EditorPerformanceTests: XCTestCase {
             XCTAssertLessThanOrEqual(session.editorMaterializationCount, 2)
             XCTAssertLessThanOrEqual(session.editorPublicationCount, 2)
 
+            try await autosaver.flushAsync(document)
+            XCTAssertLessThanOrEqual(autosaver.backgroundSaveAttemptCount, 2)
+
             let saveDeadline = clock.now.advanced(by: .seconds(5))
             while ((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
                     != expected.utf8.count), clock.now < saveDeadline {
@@ -194,6 +206,328 @@ final class EditorPerformanceTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: fileURL), Data(expected.utf8))
             session.deactivate()
         }
+    }
+
+    @MainActor
+    func testFiftyMiBExternalModifyEventKeepsMainActorResponsive() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioExternalHeartbeat-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioExternalHeartbeatRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recoveryURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let byteCount = 50 * 1_024 * 1_024
+        let fileURL = directoryURL.appendingPathComponent("large.md")
+        try Data(repeating: 0x61, count: byteCount).write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry(
+            identityStore: DocumentIdentityStore(storageURL: nil)
+        )
+        let document = try await registry.openInBackground(fileURL, in: workspace)
+        let defaultsName = "ClioExternalHeartbeat.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let state = AppState(
+            defaults: defaults,
+            initialWorkspace: workspace,
+            recoveryStore: RecoveryStore(rootURL: recoveryURL),
+            documentRegistry: registry
+        )
+
+        var outside = Data(repeating: 0x61, count: byteCount)
+        outside[outside.count - 1] = 0x62
+        try outside.write(to: fileURL, options: .atomic)
+        let event = WorkspaceEvent(
+            workspaceID: workspace.id,
+            kind: .modified,
+            fileURL: fileURL,
+            origin: .external
+        )
+        let clock = ContinuousClock()
+        var startedAt: ContinuousClock.Instant?
+        var finished = false
+        let reconciliation = Task { @MainActor in
+            startedAt = clock.now
+            await state.reconcileWorkspaceEvent(event, in: workspace)
+            finished = true
+        }
+
+        while startedAt == nil { await Task.yield() }
+        let initialReturnGap = startedAt!.duration(to: clock.now)
+        var priorHeartbeat = clock.now
+        var maximumHeartbeatGap = Duration.zero
+        var heartbeatCount = 0
+        while !finished {
+            await Task.yield()
+            let now = clock.now
+            maximumHeartbeatGap = max(maximumHeartbeatGap, priorHeartbeat.duration(to: now))
+            priorHeartbeat = now
+            heartbeatCount += 1
+        }
+        await reconciliation.value
+
+        XCTAssertLessThan(
+            initialReturnGap,
+            .milliseconds(16),
+            "Workspace event did not yield MainActor before reading 50 MiB"
+        )
+        XCTAssertLessThan(
+            startedAt!.duration(to: priorHeartbeat),
+            .seconds(5),
+            "External reconciliation did not complete within the safe-file budget"
+        )
+        XCTAssertLessThan(
+            maximumHeartbeatGap,
+            .milliseconds(16),
+            "50 MiB outside read blocked MainActor for \(maximumHeartbeatGap)"
+        )
+        XCTAssertGreaterThan(heartbeatCount, 0)
+        XCTAssertEqual(document.utf8ByteCount, byteCount)
+        XCTAssertEqual(Data(document.text.utf8), outside)
+    }
+
+    @MainActor
+    func testFiftyMiBAsyncAutosaveYieldsMainActorAndPersistsExactBytes() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioAutosaveHeartbeat-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let byteCount = 50 * 1_024 * 1_024
+        let fileURL = directoryURL.appendingPathComponent("large.md")
+        let original = Data(repeating: 0x61, count: byteCount)
+        try original.write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let document = try await workspace.loadDocumentInBackground(at: fileURL)
+        var expected = original
+        expected[expected.count - 1] = 0x62
+        document.replaceText(with: String(decoding: expected, as: UTF8.self))
+        let autosaver = Autosaver(workspace: workspace, delay: .seconds(30))
+        autosaver.documentDidChange(document)
+
+        let clock = ContinuousClock()
+        var startedAt: ContinuousClock.Instant?
+        var finished = false
+        var saveError: Error?
+        let save = Task { @MainActor in
+            startedAt = clock.now
+            do {
+                try await autosaver.flushAsync(document)
+            } catch {
+                saveError = error
+            }
+            finished = true
+        }
+
+        while startedAt == nil { await Task.yield() }
+        let initialReturnGap = startedAt!.duration(to: clock.now)
+        var priorHeartbeat = clock.now
+        var maximumHeartbeatGap = Duration.zero
+        var heartbeatCount = 0
+        while !finished {
+            await Task.yield()
+            let now = clock.now
+            maximumHeartbeatGap = max(maximumHeartbeatGap, priorHeartbeat.duration(to: now))
+            priorHeartbeat = now
+            heartbeatCount += 1
+        }
+        await save.value
+
+        XCTAssertNil(saveError)
+        XCTAssertLessThan(initialReturnGap, .milliseconds(16))
+        XCTAssertLessThan(maximumHeartbeatGap, .milliseconds(16))
+        XCTAssertGreaterThan(heartbeatCount, 0)
+        XCTAssertEqual(autosaver.backgroundSaveAttemptCount, 1)
+        XCTAssertFalse(document.isDirty)
+        XCTAssertEqual(try Data(contentsOf: fileURL), expected)
+    }
+
+    @MainActor
+    func testFiftyMiBOpenHydratesOffMainAndRegistersExactBuffer() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioOpenHeartbeat-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let byteCount = 50 * 1_024 * 1_024
+        let fileURL = directoryURL.appendingPathComponent("large.md")
+        try Data(repeating: 0x61, count: byteCount).write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry(
+            identityStore: DocumentIdentityStore(storageURL: nil)
+        )
+
+        let clock = ContinuousClock()
+        var startedAt: ContinuousClock.Instant?
+        var finished = false
+        var opened: Document?
+        var openError: Error?
+        let task = Task { @MainActor in
+            startedAt = clock.now
+            do {
+                opened = try await registry.openInBackground(fileURL, in: workspace)
+            } catch {
+                openError = error
+            }
+            finished = true
+        }
+
+        while startedAt == nil { await Task.yield() }
+        let initialReturnGap = startedAt!.duration(to: clock.now)
+        var previous = clock.now
+        var maximumHeartbeatGap = Duration.zero
+        var heartbeatCount = 0
+        while !finished {
+            await Task.yield()
+            let now = clock.now
+            maximumHeartbeatGap = max(maximumHeartbeatGap, previous.duration(to: now))
+            previous = now
+            heartbeatCount += 1
+        }
+        await task.value
+
+        XCTAssertNil(openError)
+        XCTAssertLessThan(initialReturnGap, .milliseconds(16))
+        XCTAssertLessThan(maximumHeartbeatGap, .milliseconds(16))
+        XCTAssertGreaterThan(heartbeatCount, 0)
+        let document = try XCTUnwrap(opened)
+        XCTAssertEqual(document.utf8ByteCount, byteCount)
+        XCTAssertEqual(document.text.utf8.first, 0x61)
+        XCTAssertEqual(document.text.utf8.last, 0x61)
+        XCTAssertTrue(registry.document(at: fileURL, in: workspace) === document)
+    }
+
+    @MainActor
+    func testLegacySynchronousSaveRefusesFiftyMiBOutsideSideBeforeReadingIt() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioSyncRefusal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = directoryURL.appendingPathComponent("draft.md")
+        try Data("base".utf8).write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let document = try workspace.loadDocument(at: fileURL)
+        document.replaceText(with: "local")
+        let outside = Data(repeating: 0x61, count: 50 * 1_024 * 1_024)
+        try outside.write(to: fileURL, options: .atomic)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        XCTAssertThrowsError(try workspace.save(document)) { error in
+            guard let workspaceError = error as? Workspace.WorkspaceError,
+                  case .backgroundOperationRequired(let refusedURL) = workspaceError else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(refusedURL, fileURL)
+        }
+
+        XCTAssertLessThan(started.duration(to: clock.now), .milliseconds(16))
+        XCTAssertTrue(document.isDirty)
+        XCTAssertNil(document.conflict)
+        XCTAssertEqual(try Data(contentsOf: fileURL), outside)
+    }
+
+    @MainActor
+    func testFiftyMiBConflictResolutionYieldsMainActorAndKeepsExactClioBytes() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioConflictHeartbeat-\(UUID().uuidString)", isDirectory: true)
+        let recoveryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClioConflictHeartbeatRecovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recoveryURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: recoveryURL)
+        }
+
+        let byteCount = 50 * 1_024 * 1_024
+        let fileURL = directoryURL.appendingPathComponent("large.md")
+        let original = Data(repeating: 0x61, count: byteCount)
+        try original.write(to: fileURL)
+        let workspace = try Workspace(
+            rootURL: directoryURL,
+            accessSecurityScopedResource: false
+        )
+        let registry = DocumentBufferRegistry(
+            identityStore: DocumentIdentityStore(storageURL: nil)
+        )
+        let document = try await registry.openInBackground(fileURL, in: workspace)
+        var local = original
+        local[local.count - 1] = 0x62
+        document.replaceText(with: String(decoding: local, as: UTF8.self))
+        var outside = original
+        outside[outside.count - 1] = 0x63
+        try outside.write(to: fileURL, options: .atomic)
+        try await workspace.reconcileExternalChangeInBackground(for: document)
+        XCTAssertNotNil(document.conflict)
+        let resolver = ConflictResolver(
+            recoveryStore: RecoveryStore(rootURL: recoveryURL)
+        )
+
+        let clock = ContinuousClock()
+        var startedAt: ContinuousClock.Instant?
+        var finished = false
+        var resolutionError: Error?
+        let resolution = Task { @MainActor in
+            startedAt = clock.now
+            do {
+                _ = try await resolver.resolve(
+                    .keepClio,
+                    document: document,
+                    workspace: workspace,
+                    registry: registry
+                )
+            } catch {
+                resolutionError = error
+            }
+            finished = true
+        }
+
+        while startedAt == nil { await Task.yield() }
+        let initialReturnGap = startedAt!.duration(to: clock.now)
+        var previous = clock.now
+        var maximumHeartbeatGap = Duration.zero
+        var heartbeatCount = 0
+        while !finished {
+            await Task.yield()
+            let now = clock.now
+            maximumHeartbeatGap = max(maximumHeartbeatGap, previous.duration(to: now))
+            previous = now
+            heartbeatCount += 1
+        }
+        await resolution.value
+
+        XCTAssertNil(resolutionError)
+        XCTAssertLessThan(initialReturnGap, .milliseconds(16))
+        XCTAssertLessThan(maximumHeartbeatGap, .milliseconds(16))
+        XCTAssertGreaterThan(heartbeatCount, 0)
+        XCTAssertNil(document.conflict)
+        XCTAssertFalse(document.isDirty)
+        XCTAssertEqual(try Data(contentsOf: fileURL), local)
+        let recoveries = try FileManager.default.contentsOfDirectory(
+            at: recoveryURL,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(recoveries.count, 1)
+        XCTAssertEqual(try Data(contentsOf: recoveries[0]), outside)
     }
 
     @MainActor
@@ -227,7 +561,7 @@ final class EditorPerformanceTests: XCTestCase {
             recoveryStore: RecoveryStore(rootURL: recoveryURL)
         )
         let session = EditorSession(openingMode: .mostRecent)
-        session.activate(
+        await session.activateInBackground(
             in: workspace,
             documentURLs: [sourceURL],
             registry: registry,
@@ -292,7 +626,7 @@ final class EditorPerformanceTests: XCTestCase {
             recoveryStore: RecoveryStore(rootURL: recoveryURL)
         )
         let session = EditorSession(openingMode: .mostRecent)
-        session.activate(
+        await session.activateInBackground(
             in: sourceWorkspace,
             documentURLs: [sourceURL],
             registry: registry,
@@ -346,7 +680,7 @@ final class EditorPerformanceTests: XCTestCase {
             try? FileManager.default.removeItem(at: recoveryURL)
         }
 
-        let source = String(repeating: "trash safety line\n", count: 32_768)
+        let source = String(repeating: "t", count: 50 * 1_024 * 1_024)
         let sourceURL = directoryURL.appendingPathComponent("draft.md")
         let trashedURL = directoryURL.appendingPathComponent("trashed.md")
         try Data(source.utf8).write(to: sourceURL)
@@ -364,7 +698,7 @@ final class EditorPerformanceTests: XCTestCase {
             }
         )
         let session = EditorSession(openingMode: .mostRecent)
-        session.activate(
+        await session.activateInBackground(
             in: workspace,
             documentURLs: [sourceURL],
             documentMover: mover
@@ -384,7 +718,8 @@ final class EditorPerformanceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
 
         try await session.settlePendingEditorEdits()
-        try session.moveToTrash()
+        XCTAssertThrowsError(try session.moveToTrash())
+        try await session.moveToTrashNow()
 
         XCTAssertEqual(trashInvocationCount, 1)
         XCTAssertEqual(try Data(contentsOf: trashedURL), Data((source + suffix).utf8))
@@ -477,7 +812,7 @@ final class EditorPerformanceTests: XCTestCase {
             trashOperation: { _ in XCTFail("Trash must not run"); return nil }
         )
         let session = EditorSession(openingMode: .mostRecent)
-        session.activate(
+        await session.activateInBackground(
             in: workspace,
             documentURLs: [fileURL],
             registry: registry,

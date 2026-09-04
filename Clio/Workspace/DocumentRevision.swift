@@ -64,6 +64,18 @@ enum DocumentRevisionReader {
         try snapshot(at: url, maximumByteCount: maximumDocumentByteCount)
     }
 
+    /// Cheap no-follow size probe used only to route hydration away from the
+    /// UI executor. The actual read repeats every safety check below.
+    static func byteCount(at url: URL) throws -> Int64 {
+        let standardizedURL = url.standardizedFileURL
+        let descriptor = open(standardizedURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw posixError(for: standardizedURL) }
+        defer { close(descriptor) }
+        let status = try fileStatus(descriptor, url: standardizedURL)
+        try validateRegularFile(status, url: standardizedURL)
+        return status.st_size
+    }
+
     static func revision(at url: URL) throws -> DiskRevision {
         let standardizedURL = url.standardizedFileURL
         let descriptor = open(standardizedURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)

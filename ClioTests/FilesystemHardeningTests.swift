@@ -93,8 +93,8 @@ final class FilesystemHardeningTests: XCTestCase {
         }
     }
 
-    func testOversizedSparseDocumentIsRejectedBeforePayloadAllocation() throws {
-        try withDirectory { rootURL in
+    func testOversizedSparseDocumentIsRejectedBeforePayloadAllocation() async throws {
+        try await withDirectory { rootURL in
             let fileURL = rootURL.appendingPathComponent("oversized.md")
             XCTAssertTrue(FileManager.default.createFile(atPath: fileURL.path, contents: nil))
             let handle = try FileHandle(forWritingTo: fileURL)
@@ -103,7 +103,14 @@ final class FilesystemHardeningTests: XCTestCase {
             )
             try handle.close()
 
-            XCTAssertThrowsError(try Document(contentsOf: fileURL)) { error in
+            let workspace = try Workspace(
+                rootURL: rootURL,
+                accessSecurityScopedResource: false
+            )
+            do {
+                _ = try await workspace.loadDocumentInBackground(at: fileURL)
+                XCTFail("Oversized async hydration unexpectedly succeeded")
+            } catch {
                 guard case DocumentRevisionReader.RevisionError.fileTooLarge(
                     let rejectedURL,
                     let byteCount,
@@ -231,6 +238,16 @@ final class FilesystemHardeningTests: XCTestCase {
 }
 
 private extension FilesystemHardeningTests {
+    func withDirectory(_ operation: (URL) async throws -> Void) async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ClioFilesystemHardening-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await operation(url)
+    }
+
     func withDirectory(_ operation: (URL) throws -> Void) throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ClioFilesystemHardening-\(UUID().uuidString)",

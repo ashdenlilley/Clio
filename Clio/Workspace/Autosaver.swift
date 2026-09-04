@@ -4,9 +4,15 @@ import Foundation
 final class Autosaver {
     enum SaveError: LocalizedError {
         case fileOperationInProgress
+        case backgroundSaveInProgress
 
         var errorDescription: String? {
-            "Wait for the current file operation to finish, then save again."
+            switch self {
+            case .fileOperationInProgress:
+                "Wait for the current file operation to finish, then save again."
+            case .backgroundSaveInProgress:
+                "Clio is still saving this large document. Keep it open until the save finishes."
+            }
         }
     }
 
@@ -15,15 +21,21 @@ final class Autosaver {
     let delay: Duration
 
     private(set) var lastError: Error?
+    private(set) var backgroundSaveAttemptCount = 0
 
     var hasPendingSave: Bool {
-        pendingDocument != nil
+        pendingDocument != nil || debounceTask != nil || saveTask != nil
     }
+
+    var hasActiveFileIO: Bool { saveTask != nil }
 
     private var workspace: Workspace
     private weak var registry: DocumentBufferRegistry?
     private var pendingDocument: Document?
+    private var pendingAllowsDetachedRestore = false
     private var debounceTask: Task<Void, Never>?
+    private var saveTask: Task<Void, Never>?
+    private var lastSavedURL: URL?
     private var generation: UInt64 = 0
     private var suspensionDepth = 0
 
@@ -70,13 +82,20 @@ final class Autosaver {
         }
 
         pendingDocument = document
+        pendingAllowsDetachedRestore = false
         lastError = nil
         generation &+= 1
         debounceTask?.cancel()
 
-        if !document.isBackedByFile, !document.text.isEmpty {
+        if saveTask != nil { return }
+
+        if !document.isBackedByFile, document.utf8ByteCount > 0 {
+            if document.utf8ByteCount > Self.maximumSynchronousByteCount {
+                startBackgroundSave()
+                return
+            }
             do {
-                try savePendingDocument()
+                try savePendingDocumentSynchronously()
                 return
             } catch {
                 lastError = error
@@ -95,6 +114,7 @@ final class Autosaver {
     ) throws -> URL? {
         if let document, document.isDirty {
             pendingDocument = document
+            pendingAllowsDetachedRestore = allowingDetachedRestore
         }
 
         guard !isSuspended else {
@@ -105,8 +125,14 @@ final class Autosaver {
         debounceTask?.cancel()
         debounceTask = nil
 
+        guard saveTask == nil,
+              (pendingDocument?.utf8ByteCount ?? 0) <= Self.maximumSynchronousByteCount else {
+            startBackgroundSave()
+            throw SaveError.backgroundSaveInProgress
+        }
+
         do {
-            let url = try savePendingDocument(
+            let url = try savePendingDocumentSynchronously(
                 allowingDetachedRestore: allowingDetachedRestore
             )
             lastError = nil
@@ -117,11 +143,48 @@ final class Autosaver {
         }
     }
 
+    /// Command-S and async file workflows await the one serial durable-write
+    /// pipeline. Rapid edits are coalesced into the latest pending generation;
+    /// at most one 50 MiB snapshot is being materialized or written at a time.
+    @discardableResult
+    func flushAsync(
+        _ document: Document? = nil,
+        allowingDetachedRestore: Bool = false
+    ) async throws -> URL? {
+        if let document, document.isDirty {
+            pendingDocument = document
+            pendingAllowsDetachedRestore = allowingDetachedRestore
+        }
+        guard !isSuspended else { throw SaveError.fileOperationInProgress }
+
+        generation &+= 1
+        debounceTask?.cancel()
+        debounceTask = nil
+        lastError = nil
+        startBackgroundSave()
+
+        while let task = saveTask {
+            await task.value
+        }
+        if let lastError { throw lastError }
+        if pendingDocument != nil { throw SaveError.fileOperationInProgress }
+        return lastSavedURL ?? document?.fileURL
+    }
+
+    /// File moves and watcher reconciliation suspend new autosaves, then await
+    /// the already-started atomic write before inspecting or retargeting paths.
+    func settlePendingFileIO() async {
+        while let task = saveTask {
+            await task.value
+        }
+    }
+
     func cancel() {
         generation &+= 1
         debounceTask?.cancel()
         debounceTask = nil
         pendingDocument = nil
+        pendingAllowsDetachedRestore = false
     }
 
     func retarget(to workspace: Workspace) {
@@ -151,6 +214,10 @@ final class Autosaver {
 }
 
 private extension Autosaver {
+    static var maximumSynchronousByteCount: Int {
+        Document.maximumSynchronousByteCount
+    }
+
     func armDebounce(for scheduledGeneration: UInt64) {
         let delay = delay
         debounceTask = Task { @MainActor [weak self] in
@@ -164,17 +231,13 @@ private extension Autosaver {
                 return
             }
 
-            do {
-                try self.savePendingDocument()
-                self.lastError = nil
-            } catch {
-                self.lastError = error
-            }
+            self.debounceTask = nil
+            self.startBackgroundSave()
         }
     }
 
     @discardableResult
-    func savePendingDocument(
+    func savePendingDocumentSynchronously(
         allowingDetachedRestore: Bool = false
     ) throws -> URL? {
         guard let document = pendingDocument else { return nil }
@@ -205,9 +268,69 @@ private extension Autosaver {
 
         if pendingDocument === document {
             pendingDocument = nil
+            pendingAllowsDetachedRestore = false
             debounceTask = nil
         }
 
         return url
+    }
+
+    func startBackgroundSave() {
+        guard saveTask == nil,
+              !isSuspended,
+              pendingDocument != nil else { return }
+        debounceTask?.cancel()
+        debounceTask = nil
+        saveTask = Task { @MainActor [weak self] in
+            await self?.drainBackgroundSaves()
+        }
+    }
+
+    func drainBackgroundSaves() async {
+        defer {
+            saveTask = nil
+            if !isSuspended, pendingDocument != nil, lastError == nil {
+                armDebounce(for: generation)
+            }
+        }
+
+        while !isSuspended, let document = pendingDocument {
+            let allowingDetachedRestore = pendingAllowsDetachedRestore
+            pendingDocument = nil
+            pendingAllowsDetachedRestore = false
+            backgroundSaveAttemptCount += 1
+
+            do {
+                let url = try await workspace.saveInBackground(
+                    document,
+                    allowingDetachedRestore: allowingDetachedRestore
+                )
+                lastSavedURL = url
+                lastError = nil
+                if url != nil {
+                    registry?.updateAliases(for: document, in: workspace)
+                }
+            } catch let error as Workspace.WorkspaceError {
+                lastError = error
+                switch error {
+                case .externalConflict:
+                    pendingDocument = nil
+                case .documentDeleted:
+                    pendingDocument = nil
+                    if let locator = document.previousLocator {
+                        registry?.detach(document.id, from: locator)
+                    }
+                default:
+                    if document.isDirty { pendingDocument = document }
+                }
+                return
+            } catch {
+                lastError = error
+                if document.isDirty { pendingDocument = document }
+                return
+            }
+
+            await Task.yield()
+        }
     }
 }

@@ -254,13 +254,31 @@ final class AppState {
                 : allDocumentURLs.filter {
                     !openFileURLs.contains($0.standardizedFileURL)
                 }
-            session.activate(
-                in: workspace,
-                documentURLs: availableDocumentURLs,
-                registry: documentRegistry,
-                conflictResolver: conflictResolver,
-                documentMover: documentMover
-            )
+            if session.shouldHydrateInitialDocumentInBackground(
+                from: availableDocumentURLs,
+                in: workspace
+            ) {
+                Task { @MainActor [weak self, weak session] in
+                    guard let self, let session,
+                          self.editorSessions.contains(where: { $0 === session }),
+                          self.workspace === workspace else { return }
+                    await session.activateInBackground(
+                        in: workspace,
+                        documentURLs: availableDocumentURLs,
+                        registry: self.documentRegistry,
+                        conflictResolver: self.conflictResolver,
+                        documentMover: self.documentMover
+                    )
+                }
+            } else {
+                session.activate(
+                    in: workspace,
+                    documentURLs: availableDocumentURLs,
+                    registry: documentRegistry,
+                    conflictResolver: conflictResolver,
+                    documentMover: documentMover
+                )
+            }
         } catch {
             // A transient enumeration failure should not strand the window or
             // discard the valid workspace grant. Keep the blank buffer usable.
@@ -695,10 +713,10 @@ private extension AppState {
                       let document = documentRegistry.document(at: url, in: workspace) else {
                     return
                 }
-                try await documentRegistry.withSettledEditorEdits(for: document.id) {
+                try await documentRegistry.withSettledDocumentIO(for: document.id) {
                     guard document.fileURL?.standardizedFileURL
                             == url.standardizedFileURL else { return }
-                    try workspace.reconcileExternalChange(for: document)
+                    try await workspace.reconcileExternalChangeInBackground(for: document)
                     if document.conflict != nil {
                         documentRegistry.cancelAutosave(for: document.id)
                     } else if document.fileURL != nil {
@@ -714,10 +732,10 @@ private extension AppState {
                       }) ?? documentRegistry.document(at: oldURL, in: workspace) else {
                     return
                 }
-                try await documentRegistry.withSettledEditorEdits(for: document.id) {
+                try await documentRegistry.withSettledDocumentIO(for: document.id) {
                     guard document.fileURL?.standardizedFileURL
                             == oldURL.standardizedFileURL else { return }
-                    try workspace.reconcileExternalMove(
+                    try await workspace.reconcileExternalMoveInBackground(
                         for: document,
                         from: oldURL,
                         to: newURL
@@ -738,7 +756,7 @@ private extension AppState {
                     return
                 }
                 let needsConflictDetachment = try await documentRegistry
-                    .withSettledEditorEdits(for: document.id) {
+                    .withSettledDocumentIO(for: document.id) {
                         let locator = try workspace.locator(for: url)
                         guard document.fileURL?.standardizedFileURL
                                 == url.standardizedFileURL else {
@@ -749,7 +767,7 @@ private extension AppState {
                         }
                         documentRegistry.cancelAutosave(for: document.id)
                         guard document.conflict == nil else { return true }
-                        try workspace.checkpointCrashRecovery(
+                        try await workspace.checkpointCrashRecoveryInBackground(
                             for: document,
                             reason: .externalDeletion
                         )
@@ -771,14 +789,14 @@ private extension AppState {
             case .rescanRequired, .rootChanged:
                 for document in documentRegistry.openDocuments {
                     let needsConflictDetachment = try await documentRegistry
-                        .withSettledEditorEdits(for: document.id) {
+                        .withSettledDocumentIO(for: document.id) {
                             guard let url = document.fileURL,
                                   workspace.contains(url) else { return false }
-                            if !fileManager.fileExists(atPath: url.path) {
+                            if !(await workspace.fileExistsInBackground(at: url)) {
                                 let locator = try workspace.locator(for: url)
                                 documentRegistry.cancelAutosave(for: document.id)
                                 guard document.conflict == nil else { return true }
-                                try workspace.checkpointCrashRecovery(
+                                try await workspace.checkpointCrashRecoveryInBackground(
                                     for: document,
                                     reason: .externalDeletion
                                 )
@@ -786,7 +804,7 @@ private extension AppState {
                                 documentRegistry.detach(document.id, from: locator)
                                 return false
                             }
-                            try workspace.reconcileExternalChange(for: document)
+                            try await workspace.reconcileExternalChangeInBackground(for: document)
                             if document.conflict != nil {
                                 documentRegistry.cancelAutosave(for: document.id)
                             } else if document.fileURL != nil {
@@ -811,11 +829,15 @@ private extension AppState {
                 // A path may be recreated while a correlated delete is still
                 // pending. Treat it as an external revision before autosave
                 // can resume against stale bytes.
-                try workspace.reconcileExternalChange(for: document)
-                if document.conflict != nil {
-                    documentRegistry.cancelAutosave(for: document.id)
-                } else if document.fileURL != nil {
-                    documentRegistry.updateAliases(for: document, in: workspace)
+                try await documentRegistry.withSettledDocumentIO(for: document.id) {
+                    guard document.fileURL?.standardizedFileURL
+                            == url.standardizedFileURL else { return }
+                    try await workspace.reconcileExternalChangeInBackground(for: document)
+                    if document.conflict != nil {
+                        documentRegistry.cancelAutosave(for: document.id)
+                    } else if document.fileURL != nil {
+                        documentRegistry.updateAliases(for: document, in: workspace)
+                    }
                 }
             }
         } catch {

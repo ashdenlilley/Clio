@@ -29,6 +29,54 @@ final class ConflictResolver {
         workspace: Workspace,
         registry: DocumentBufferRegistry? = nil
     ) async throws -> RecoveryReceipt? {
+        if let registry {
+            return try await registry.withSettledDocumentIO(for: document.id) {
+                try await self.resolveSettled(
+                    choice,
+                    document: document,
+                    workspace: workspace,
+                    registry: registry
+                )
+            }
+        }
+        return try await resolveSettled(
+            choice,
+            document: document,
+            workspace: workspace,
+            registry: nil
+        )
+    }
+
+    func detachAfterExternalDeletion(
+        _ document: Document,
+        workspace: Workspace,
+        registry: DocumentBufferRegistry?
+    ) async throws {
+        if let registry {
+            try await registry.withSettledDocumentIO(for: document.id) {
+                try await self.detachSettledAfterExternalDeletion(
+                    document,
+                    workspace: workspace,
+                    registry: registry
+                )
+            }
+            return
+        }
+        try await detachSettledAfterExternalDeletion(
+            document,
+            workspace: workspace,
+            registry: nil
+        )
+    }
+}
+
+private extension ConflictResolver {
+    func resolveSettled(
+        _ choice: ConflictChoice,
+        document: Document,
+        workspace: Workspace,
+        registry: DocumentBufferRegistry?
+    ) async throws -> RecoveryReceipt? {
         guard let conflict = document.conflict,
               let expectedExternal = conflict.external.revision else {
             throw ResolutionError.noConflict
@@ -39,7 +87,7 @@ final class ConflictResolver {
             bufferID: document.id.rawValue,
             revision: document.revision
         )
-        var current = try validatedDiskState(
+        var current = try await validatedDiskState(
             document: document,
             workspace: workspace,
             conflictID: conflictID,
@@ -55,7 +103,7 @@ final class ConflictResolver {
                 documentID: document.id,
                 filename: document.filename
             )
-            current = try validatedDiskState(
+            current = try await validatedDiskState(
                 document: document,
                 workspace: workspace,
                 conflictID: conflictID,
@@ -73,28 +121,41 @@ final class ConflictResolver {
                 data: current.data,
                 sourceModificationDate: current.revision.modificationDate
             )
-            current = try validatedDiskState(
+            current = try await validatedDiskState(
                 document: document,
                 workspace: workspace,
                 conflictID: conflictID,
                 generation: generation,
                 expectedExternal: expectedExternal
             )
-            _ = try workspace.replaceAfterConflict(
-                document,
-                expectedExternalRevision: current.revision
-            )
-            releaseRetainedFiles(in: conflict.external)
+            do {
+                _ = try await workspace.replaceAfterConflictInBackground(
+                    document,
+                    conflictID: conflictID,
+                    expectedExternalRevision: current.revision
+                )
+            } catch Workspace.WorkspaceError.externalConflict {
+                throw ResolutionError.conflictChanged
+            }
+            await releaseRetainedFiles(in: conflict.external)
 
         case .loadExternal:
-            let localData = Data(document.text.utf8)
+            let localSnapshot = document.snapshot()
+            let localData = await Task.detached(priority: .utility) {
+                Data(localSnapshot.text.utf8)
+            }.value
+            try validateDocumentGeneration(
+                document,
+                conflictID: conflictID,
+                generation: generation
+            )
             receipt = try await recoveryStore.preserve(
                 documentID: document.id,
                 filename: document.filename,
                 data: localData,
                 sourceModificationDate: nil
             )
-            current = try validatedDiskState(
+            current = try await validatedDiskState(
                 document: document,
                 workspace: workspace,
                 conflictID: conflictID,
@@ -106,12 +167,13 @@ final class ConflictResolver {
             }
             document.applyExternal(
                 source: source,
-                revision: current.revision
+                revision: current.revision,
+                utf8ByteCount: current.data.count
             )
-            releaseRetainedFiles(in: conflict.external)
+            await releaseRetainedFiles(in: conflict.external)
 
         case .keepBoth:
-            _ = try validatedDiskState(
+            current = try await validatedDiskState(
                 document: document,
                 workspace: workspace,
                 conflictID: conflictID,
@@ -119,21 +181,29 @@ final class ConflictResolver {
                 expectedExternal: expectedExternal
             )
             receipt = nil
-            _ = try workspace.saveConflictCopy(document)
+            do {
+                _ = try await workspace.saveConflictCopyInBackground(
+                    document,
+                    conflictID: conflictID,
+                    expectedExternalRevision: current.revision
+                )
+            } catch Workspace.WorkspaceError.externalConflict {
+                throw ResolutionError.conflictChanged
+            }
             registry?.detach(document.id, from: conflict.locator)
-            releaseRetainedFiles(in: conflict.external)
+            await releaseRetainedFiles(in: conflict.external)
         }
 
         registry?.updateAliases(for: document, in: workspace)
         return receipt
     }
 
-    func detachAfterExternalDeletion(
+    func detachSettledAfterExternalDeletion(
         _ document: Document,
         workspace: Workspace,
         registry: DocumentBufferRegistry?
     ) async throws {
-        try workspace.checkpointCrashRecovery(
+        try await workspace.checkpointCrashRecoveryInBackground(
             for: document,
             reason: .externalDeletion
         )
@@ -143,37 +213,38 @@ final class ConflictResolver {
         while let conflict = document.conflict {
             locator = conflict.locator
             let versions = (conflict.additionalExternalVersions ?? []) + [conflict.external]
-            let pending = versions.filter {
-                !preservedDigests.contains(Self.digest(for: $0))
+            var pending: [(side: ConflictSide, digest: String)] = []
+            for side in versions {
+                let digest = await Self.digest(for: side)
+                if !preservedDigests.contains(digest) {
+                    pending.append((side, digest))
+                }
             }
             guard !pending.isEmpty else { break }
-            for side in pending {
+            for item in pending {
                 _ = try await preserveAndRelease(
-                    side,
+                    item.side,
                     documentID: document.id,
                     filename: document.filename
                 )
-                preservedDigests.insert(Self.digest(for: side))
+                preservedDigests.insert(item.digest)
             }
         }
 
         guard let finalConflict = document.conflict, let locator else { return }
         if let fileURL = document.fileURL,
-           FileManager.default.fileExists(atPath: fileURL.path) {
-            try workspace.reconcileExternalChange(for: document)
+           await workspace.fileExistsInBackground(at: fileURL) {
+            try await workspace.reconcileExternalChangeInBackground(for: document)
             throw ResolutionError.conflictChanged
         }
-        for side in (finalConflict.additionalExternalVersions ?? []) + [finalConflict.external]
-        where preservedDigests.contains(Self.digest(for: side)) {
-            releaseRetainedFiles(in: side)
+        for side in (finalConflict.additionalExternalVersions ?? []) + [finalConflict.external] {
+            if preservedDigests.contains(await Self.digest(for: side)) {
+                await releaseRetainedFiles(in: side)
+            }
         }
         document.markUnbacked(previous: locator)
         registry?.detach(document.id, from: locator)
     }
-}
-
-private extension ConflictResolver {
-    typealias CurrentDiskState = (data: Data, source: String?, revision: DiskRevision)
 
     func validatedDiskState(
         document: Document,
@@ -181,18 +252,33 @@ private extension ConflictResolver {
         conflictID: UUID,
         generation: BufferGeneration,
         expectedExternal: DiskRevision
-    ) throws -> CurrentDiskState {
-        let current = try workspace.readDiskSnapshot(for: document)
+    ) async throws -> WorkspaceDiskState {
+        let current = try await workspace.readDiskSnapshotInBackground(
+            for: document,
+            conflictID: conflictID
+        )
         if !Workspace.sameContent(current.revision, expectedExternal) {
-            try workspace.reconcileExternalChange(for: document)
+            try await workspace.reconcileExternalChangeInBackground(for: document)
             throw ResolutionError.conflictChanged
         }
+        try validateDocumentGeneration(
+            document,
+            conflictID: conflictID,
+            generation: generation
+        )
+        return current
+    }
+
+    func validateDocumentGeneration(
+        _ document: Document,
+        conflictID: UUID,
+        generation: BufferGeneration
+    ) throws {
         guard document.conflict?.id == conflictID,
               document.id.rawValue == generation.bufferID,
               document.revision == generation.revision else {
             throw ResolutionError.conflictChanged
         }
-        return current
     }
 
     func preserveAndRelease(
@@ -206,22 +292,29 @@ private extension ConflictResolver {
             data: side.data,
             sourceModificationDate: side.modificationDate
         )
-        releaseRetainedFiles(in: side)
+        await releaseRetainedFiles(in: side)
         return receipt
     }
 
-    func releaseRetainedFiles(in side: ConflictSide) {
-        for url in side.retainedURLs {
-            if url.lastPathComponent.hasPrefix(AtomicWriteTransactions.temporaryPrefix) {
-                try? AtomicWriteTransactions.discardRetainedSidecar(at: url)
-            } else {
-                try? FileManager.default.removeItem(at: url)
+    func releaseRetainedFiles(in side: ConflictSide) async {
+        let retainedURLs = side.retainedURLs
+        await Task.detached(priority: .utility) {
+            for url in retainedURLs {
+                if url.lastPathComponent.hasPrefix(AtomicWriteTransactions.temporaryPrefix) {
+                    try? AtomicWriteTransactions.discardRetainedSidecar(at: url)
+                } else {
+                    try? FileManager.default.removeItem(at: url)
+                }
             }
-        }
+        }.value
     }
 
-    nonisolated static func digest(for side: ConflictSide) -> String {
-        side.revision?.contentDigest ?? DocumentRevisionReader.digest(side.data)
+    nonisolated static func digest(for side: ConflictSide) async -> String {
+        if let digest = side.revision?.contentDigest { return digest }
+        let data = side.data
+        return await Task.detached(priority: .utility) {
+            DocumentRevisionReader.digest(data)
+        }.value
     }
 }
 

@@ -114,6 +114,24 @@ final class WorkspaceCatalog {
         return try registry.open(url, in: workspace, preferredID: file.documentID)
     }
 
+    func openDocumentInBackground(
+        for file: WorkspaceFile,
+        registry: DocumentBufferRegistry
+    ) async throws -> Document {
+        guard let workspace = activeWorkspaces[file.locator.workspaceID] else {
+            throw CatalogError.workspaceUnavailable(file.locator.workspaceID)
+        }
+        guard file.relativePath == file.locator.relativePath else {
+            throw CatalogError.mismatchedWorkspaceReference
+        }
+        let url = try workspace.fileURL(for: file.locator)
+        return try await registry.openInBackground(
+            url,
+            in: workspace,
+            preferredID: file.documentID
+        )
+    }
+
     func openDocument(
         for result: WorkspaceSearchResult,
         registry: DocumentBufferRegistry
@@ -127,6 +145,25 @@ final class WorkspaceCatalog {
         )
         let url = try workspace.fileURL(for: locator)
         return try registry.open(url, in: workspace, preferredID: result.documentID)
+    }
+
+    func openDocumentInBackground(
+        for result: WorkspaceSearchResult,
+        registry: DocumentBufferRegistry
+    ) async throws -> Document {
+        guard let workspace = activeWorkspaces[result.workspaceID] else {
+            throw CatalogError.workspaceUnavailable(result.workspaceID)
+        }
+        let locator = try DocumentLocator(
+            workspaceID: result.workspaceID,
+            relativePath: result.relativePath
+        )
+        let url = try workspace.fileURL(for: locator)
+        return try await registry.openInBackground(
+            url,
+            in: workspace,
+            preferredID: result.documentID
+        )
     }
 
     func descriptor(containing fileURL: URL) -> WorkspaceDescriptor? {
