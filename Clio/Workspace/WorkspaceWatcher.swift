@@ -18,6 +18,12 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         let byteCount: Int64
     }
 
+    private enum SnapshotScanResult {
+        case complete([PhysicalFileIdentity: FileState])
+        case incomplete
+        case rootUnavailable
+    }
+
     private let workspaceID: WorkspaceID
     private let rootURL: URL
     private let eventRootPath: String
@@ -103,12 +109,15 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
     }
 
     private func loadInitialSnapshot() {
-        guard let initial = scanFiles() else {
+        switch scanFiles() {
+        case .complete(let initial):
+            replaceSnapshot(with: initial)
+        case .incomplete:
+            emit(kind: .rescanRequired, fileURL: rootURL)
+        case .rootUnavailable:
             emit(kind: .accessLost, fileURL: rootURL)
             shutdownOnQueue()
-            return
         }
-        replaceSnapshot(with: initial)
     }
 
     private func scheduleScan() {
@@ -127,15 +136,20 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
             return
         }
 
-        guard let next = scanFiles() else {
+        switch scanFiles() {
+        case .complete(let next):
+            if !emitChanges(from: snapshot, to: next) {
+                emit(kind: .rescanRequired, fileURL: rootURL)
+            }
+            replaceSnapshot(with: next)
+        case .incomplete:
+            // A partial traversal cannot prove a deletion. Retain the last
+            // complete snapshot and request a higher-level audit instead.
+            emit(kind: .rescanRequired, fileURL: rootURL)
+        case .rootUnavailable:
             emit(kind: .accessLost, fileURL: rootURL)
             shutdownOnQueue()
-            return
         }
-        if !emitChanges(from: snapshot, to: next) {
-            emit(kind: .rescanRequired, fileURL: rootURL)
-        }
-        replaceSnapshot(with: next)
     }
 
     private func emitChanges(
@@ -188,7 +202,7 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
         return didEmit
     }
 
-    private func scanFiles() -> [PhysicalFileIdentity: FileState]? {
+    private func scanFiles() -> SnapshotScanResult {
         fullScanObserver?()
         let keys: [URLResourceKey] = [
             .isDirectoryKey,
@@ -197,16 +211,32 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
             .contentModificationDateKey,
             .fileSizeKey,
         ]
-        guard FileManager.default.isReadableFile(atPath: rootURL.path),
-              let enumerator = FileManager.default.enumerator(
+        guard rootIsReadableDirectory() else {
+            return .rootUnavailable
+        }
+        var traversalWasIncomplete = false
+        guard let enumerator = FileManager.default.enumerator(
             at: rootURL,
             includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants]
-        ) else { return nil }
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, error in
+                if WorkspaceScanner.isRacedDisappearance(error) { return true }
+                traversalWasIncomplete = true
+                return false
+            }
+        ) else { return .rootUnavailable }
 
         var files: [PhysicalFileIdentity: FileState] = [:]
         for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            let values: URLResourceValues
+            do {
+                values = try url.resourceValues(forKeys: Set(keys))
+            } catch where WorkspaceScanner.isRacedDisappearance(error) {
+                continue
+            } catch {
+                traversalWasIncomplete = true
+                break
+            }
             if values.isSymbolicLink == true {
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
@@ -223,7 +253,17 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
                 byteCount: Int64(values.fileSize ?? 0)
             )
         }
-        return files
+        guard rootIsReadableDirectory() else { return .rootUnavailable }
+        return traversalWasIncomplete ? .incomplete : .complete(files)
+    }
+
+    private func rootIsReadableDirectory() -> Bool {
+        var isDirectory = ObjCBool(false)
+        return FileManager.default.fileExists(
+            atPath: rootURL.path,
+            isDirectory: &isDirectory
+        ) && isDirectory.boolValue
+            && FileManager.default.isReadableFile(atPath: rootURL.path)
     }
 
     private func replaceSnapshot(with next: [PhysicalFileIdentity: FileState]) {
@@ -427,9 +467,15 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
                snapshotKeyByPath[url.standardizedFileURL.path] != nil {
                 updateSnapshotEntry(at: url)
                 emit(kind: .modified, fileURL: url)
-            } else {
+            } else if snapshotKeyByPath[url.standardizedFileURL.path] != nil {
                 removeSnapshotEntry(at: url)
                 emit(kind: .deleted, fileURL: url)
+            } else {
+                // An incomplete initial/audit scan cannot establish that this
+                // path was a tracked file. Reconcile through a full audit so
+                // an unknown coalesced event never detaches a live buffer.
+                emit(kind: .rescanRequired, fileURL: rootURL)
+                scheduleScan()
             }
         } else if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated) != 0 {
             let alreadyTracked = snapshotKeyByPath[url.standardizedFileURL.path] != nil

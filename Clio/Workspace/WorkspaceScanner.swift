@@ -51,7 +51,7 @@ actor WorkspaceScanner {
 
             if policy.respectsGitIgnore, directory.inheritedExclusion == nil {
                 let ignoreURL = directory.url.appendingPathComponent(".gitignore")
-                if let source = try? String(contentsOf: ignoreURL, encoding: .utf8) {
+                if let source = Self.gitIgnoreSource(at: ignoreURL) {
                     matcher.appendGitIgnore(
                         source: source,
                         sourceURL: ignoreURL,
@@ -214,7 +214,7 @@ actor WorkspaceScanner {
             try Task.checkCancellation()
             if policy.respectsGitIgnore, inheritedExclusion == nil {
                 let ignoreURL = directoryURL.appendingPathComponent(".gitignore")
-                if let source = try? String(contentsOf: ignoreURL, encoding: .utf8) {
+                if let source = Self.gitIgnoreSource(at: ignoreURL) {
                     matcher.appendGitIgnore(
                         source: source,
                         sourceURL: ignoreURL,
@@ -285,6 +285,8 @@ actor WorkspaceScanner {
 }
 
 extension WorkspaceScanner {
+    static let maximumGitIgnoreByteCount: Int64 = 4 * 1_024 * 1_024
+
     static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey,
         .isRegularFileKey,
@@ -315,6 +317,16 @@ extension WorkspaceScanner {
         let filePath = fileURL.standardizedFileURL.path
         guard filePath.hasPrefix(rootPath + "/") else { return "" }
         return String(filePath.dropFirst(rootPath.count + 1))
+    }
+
+    static func gitIgnoreSource(at url: URL) -> String? {
+        guard let snapshot = try? DocumentRevisionReader.snapshot(
+            at: url,
+            maximumByteCount: maximumGitIgnoreByteCount
+        ) else {
+            return nil
+        }
+        return String(data: snapshot.data, encoding: .utf8)
     }
 
     nonisolated static func isRacedDisappearance(_ error: Error) -> Bool {

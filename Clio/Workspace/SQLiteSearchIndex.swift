@@ -30,6 +30,9 @@ actor SQLiteSearchIndex: SearchIndexing {
     private let fileManager: FileManager
     private let scanner: WorkspaceScanner
     private let identityStore: DocumentIdentityStore
+    private let documentSnapshot: @Sendable (
+        URL
+    ) throws -> (data: Data, revision: DiskRevision)
     private var database: OpaquePointer?
     private var indexedWorkspaces: [WorkspaceDescriptor] = []
     private var discoveryPolicy = DiscoveryPolicy.default
@@ -39,11 +42,17 @@ actor SQLiteSearchIndex: SearchIndexing {
     init(
         databaseURL: URL = SQLiteSearchIndex.defaultDatabaseURL,
         fileManager: FileManager = .default,
-        identityStore: DocumentIdentityStore = .shared
+        identityStore: DocumentIdentityStore = .shared,
+        documentSnapshot: @escaping @Sendable (
+            URL
+        ) throws -> (data: Data, revision: DiskRevision) = {
+            try DocumentRevisionReader.documentSnapshot(at: $0)
+        }
     ) throws {
         self.databaseURL = databaseURL
         self.fileManager = fileManager
         self.identityStore = identityStore
+        self.documentSnapshot = documentSnapshot
         scanner = WorkspaceScanner(
             fileManager: fileManager,
             identityStore: identityStore
@@ -759,13 +768,16 @@ private extension SQLiteSearchIndex {
     }
 
     func index(file: WorkspaceFile, workspace: WorkspaceDescriptor) throws {
-        guard file.byteCount <= Int64(PerformanceContract.safeLargeFileByteLimit) else { return }
         let fileURL = workspace.rootURL.appendingPathComponent(file.relativePath)
-        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
         try deleteDocument(
             workspaceID: workspace.id,
             relativePath: file.relativePath
         )
+        guard file.byteCount <= Int64(PerformanceContract.safeLargeFileByteLimit),
+              let snapshot = try? documentSnapshot(fileURL),
+              let content = String(data: snapshot.data, encoding: .utf8) else {
+            return
+        }
 
         let insertDocument = """
         INSERT OR REPLACE INTO documents (
@@ -781,8 +793,8 @@ private extension SQLiteSearchIndex {
                 workspace.id.rawValue.uuidString,
                 file.relativePath,
                 content,
-                String(file.modificationDate.timeIntervalSince1970),
-                String(file.byteCount),
+                String(snapshot.revision.modificationDate.timeIntervalSince1970),
+                String(snapshot.revision.byteCount),
                 file.exclusionReason?.pattern,
                 file.exclusionReason?.sourceURL?.path,
                 file.exclusionReason?.line.map(String.init),

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import Clio
 
@@ -140,6 +141,47 @@ final class WorkspaceIndexTests: XCTestCase {
                 Set(snapshot.files.map(\.relativePath)),
                 ["note.md", ".note.md", "node_modules/readme.md"]
             )
+        }
+    }
+
+    func testScannerSkipsOversizedAndSymlinkedGitIgnoreFilesDeterministically() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let noteURL = rootURL.appendingPathComponent("visible.md")
+            let ignoreURL = rootURL.appendingPathComponent(".gitignore")
+            try write("visible search token", to: noteURL)
+            try write("*.md\n", to: ignoreURL)
+            let handle = try FileHandle(forWritingTo: ignoreURL)
+            try handle.truncate(
+                atOffset: UInt64(WorkspaceScanner.maximumGitIgnoreByteCount + 1)
+            )
+            try handle.close()
+
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let scanner = WorkspaceScanner()
+            let oversized = try await scanner.scan(
+                workspace: workspace,
+                policy: .default
+            )
+            XCTAssertTrue(oversized.files.contains { $0.relativePath == "visible.md" })
+
+            try FileManager.default.removeItem(at: ignoreURL)
+            let linkedRulesURL = rootURL.appendingPathComponent("rules.ignore")
+            try write("*.md\n", to: linkedRulesURL)
+            try FileManager.default.createSymbolicLink(
+                at: ignoreURL,
+                withDestinationURL: linkedRulesURL
+            )
+            let symlinked = try await scanner.scan(
+                workspace: workspace,
+                policy: .default
+            )
+            XCTAssertTrue(symlinked.files.contains { $0.relativePath == "visible.md" })
+            let incremental = try await scanner.file(
+                at: noteURL,
+                workspace: workspace,
+                policy: .default
+            )
+            XCTAssertNotNil(incremental)
         }
     }
 
@@ -410,6 +452,135 @@ final class WorkspaceIndexTests: XCTestCase {
                 from: await index.search(WorkspaceSearchQuery(text: "short lived"))
             )
             XCTAssertTrue(results.results.isEmpty)
+        }
+    }
+
+    func testIndexRejectsFileThatGrowsPastLimitAfterScannerMetadataCheck() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let documentURL = rootURL.appendingPathComponent("growing.md")
+            try write("stale bounded token", to: documentURL)
+            let mutation = OneShotURLMutation()
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: rootURL.appendingPathComponent("growth.sqlite3"),
+                documentSnapshot: { url in
+                    try mutation.performIfArmed(at: url)
+                    return try DocumentRevisionReader.documentSnapshot(at: url)
+                }
+            )
+            try await index.rebuild(workspaces: [workspace], policy: .default)
+            mutation.arm { url in
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.truncate(
+                    atOffset: UInt64(DocumentRevisionReader.maximumDocumentByteCount + 1)
+                )
+                try handle.close()
+            }
+
+            try await index.apply([
+                WorkspaceEvent(
+                    workspaceID: workspace.id,
+                    kind: .modified,
+                    fileURL: documentURL,
+                    origin: .external
+                ),
+            ])
+
+            let results = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "stale bounded token"))
+            )
+            XCTAssertTrue(results.results.isEmpty)
+            XCTAssertGreaterThan(
+                try documentURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0,
+                PerformanceContract.safeLargeFileByteLimit
+            )
+        }
+    }
+
+    func testIndexStoresSnapshotRevisionAfterPostScanReplacement() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let documentURL = rootURL.appendingPathComponent("revision.md")
+            let databaseURL = rootURL.appendingPathComponent("revision.sqlite3")
+            try write("old", to: documentURL)
+            let mutation = OneShotURLMutation()
+            mutation.arm { url in
+                try Data("new snapshot revision token".utf8).write(to: url, options: .atomic)
+            }
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: databaseURL,
+                documentSnapshot: { url in
+                    try mutation.performIfArmed(at: url)
+                    return try DocumentRevisionReader.documentSnapshot(at: url)
+                }
+            )
+
+            try await index.rebuild(workspaces: [workspace], policy: .default)
+
+            let results = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "snapshot revision token"))
+            )
+            XCTAssertEqual(results.results.first?.relativePath, "revision.md")
+            let actual = try DocumentRevisionReader.revision(at: documentURL)
+            let stored = try indexedMetadata(
+                databaseURL: databaseURL,
+                workspaceID: workspace.id,
+                relativePath: "revision.md"
+            )
+            XCTAssertEqual(stored?.byteCount, actual.byteCount)
+            XCTAssertEqual(
+                stored?.modificationTime ?? 0,
+                actual.modificationDate.timeIntervalSince1970,
+                accuracy: 0.001
+            )
+        }
+    }
+
+    func testIndexRejectsSymlinkRepointAfterScannerMetadataCheck() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let documentURL = rootURL.appendingPathComponent("repointed.md")
+            let targetURL = rootURL.appendingPathComponent("outside.rules")
+            try write("old canonical token", to: documentURL)
+            try write("linked secret token", to: targetURL)
+            let mutation = OneShotURLMutation()
+            let workspace = WorkspaceDescriptor(rootURL: rootURL)
+            let index = try SQLiteSearchIndex(
+                databaseURL: rootURL.appendingPathComponent("repoint.sqlite3"),
+                documentSnapshot: { url in
+                    try mutation.performIfArmed(at: url)
+                    return try DocumentRevisionReader.documentSnapshot(at: url)
+                }
+            )
+            try await index.rebuild(workspaces: [workspace], policy: .default)
+            mutation.arm { url in
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.createSymbolicLink(
+                    at: url,
+                    withDestinationURL: targetURL
+                )
+            }
+
+            try await index.apply([
+                WorkspaceEvent(
+                    workspaceID: workspace.id,
+                    kind: .modified,
+                    fileURL: documentURL,
+                    origin: .external
+                ),
+            ])
+
+            let old = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "old canonical token"))
+            )
+            let linked = try await finalBatch(
+                from: await index.search(WorkspaceSearchQuery(text: "linked secret token"))
+            )
+            XCTAssertTrue(old.results.isEmpty)
+            XCTAssertTrue(linked.results.isEmpty)
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: documentURL.path),
+                targetURL.path
+            )
         }
     }
 
@@ -1854,6 +2025,43 @@ private extension WorkspaceIndexTests {
         )
     }
 
+    func indexedMetadata(
+        databaseURL: URL,
+        workspaceID: WorkspaceID,
+        relativePath: String
+    ) throws -> (modificationTime: Double, byteCount: Int64)? {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT modification_time, byte_count FROM documents WHERE workspace_id = ? AND relative_path = ?",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        _ = workspaceID.rawValue.uuidString.withCString {
+            sqlite3_bind_text(statement, 1, $0, -1, transient)
+        }
+        _ = relativePath.withCString {
+            sqlite3_bind_text(statement, 2, $0, -1, transient)
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return (
+            sqlite3_column_double(statement, 0),
+            sqlite3_column_int64(statement, 1)
+        )
+    }
+
     var gitExecutableURL: URL? {
         [
             "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
@@ -2116,5 +2324,23 @@ private final class DisappearingRootFileManager: FileManager, @unchecked Sendabl
             includingPropertiesForKeys: keys,
             options: mask
         )
+    }
+}
+
+private final class OneShotURLMutation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable (URL) throws -> Void)?
+
+    func arm(_ action: @escaping @Sendable (URL) throws -> Void) {
+        lock.withLock { self.action = action }
+    }
+
+    func performIfArmed(at url: URL) throws {
+        let pending = lock.withLock {
+            let pending = action
+            action = nil
+            return pending
+        }
+        try pending?(url)
     }
 }

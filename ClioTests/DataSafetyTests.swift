@@ -970,6 +970,124 @@ final class DataSafetyTests: XCTestCase {
         }
     }
 
+    func testWatcherPartialTraversalKeepsLastSnapshotWithoutFalseDeletion() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let restrictedURL = workspaceURL.appendingPathComponent("restricted", isDirectory: true)
+            let noteURL = restrictedURL.appendingPathComponent("retained.md")
+            try FileManager.default.createDirectory(
+                at: restrictedURL,
+                withIntermediateDirectories: true
+            )
+            try Data("retain this canonical file".utf8).write(to: noteURL)
+            let scans = LockedCounter()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                fullScanObserver: { scans.increment() }
+            )
+            let recorder = DetailedEventRecorder()
+            let collector = Task {
+                for await event in await watcher.events() {
+                    await recorder.record(event)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(180))
+            let completeScanCount = scans.value
+            XCTAssertGreaterThanOrEqual(completeScanCount, 1)
+
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0],
+                ofItemAtPath: restrictedURL.path
+            )
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: restrictedURL.path
+                )
+                collector.cancel()
+            }
+            try FileManager.default.createDirectory(
+                at: workspaceURL.appendingPathComponent("trigger", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+
+            for _ in 0..<150 {
+                if scans.value > completeScanCount,
+                   await recorder.contains(kind: .rescanRequired) {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            XCTAssertGreaterThan(scans.value, completeScanCount)
+            let sawRescan = await recorder.contains(kind: .rescanRequired)
+            let sawFalseDeletion = await recorder.contains(
+                kind: .deleted,
+                fileURL: noteURL
+            )
+            XCTAssertTrue(sawRescan)
+            XCTAssertFalse(sawFalseDeletion)
+        }
+    }
+
+    func testWatcherUnknownRemovalAfterPartialStartupRequestsAudit() async throws {
+        try await withDirectories { workspaceURL, _ in
+            let restrictedURL = workspaceURL.appendingPathComponent("restricted", isDirectory: true)
+            let noteURL = restrictedURL.appendingPathComponent("unknown.md")
+            try FileManager.default.createDirectory(
+                at: restrictedURL,
+                withIntermediateDirectories: true
+            )
+            try Data("not yet in a complete snapshot".utf8).write(to: noteURL)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0],
+                ofItemAtPath: restrictedURL.path
+            )
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: restrictedURL.path
+                )
+            }
+
+            let scans = LockedCounter()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                fullScanObserver: { scans.increment() }
+            )
+            let recorder = DetailedEventRecorder()
+            let collector = Task {
+                for await event in await watcher.events() {
+                    await recorder.record(event)
+                }
+            }
+            defer { collector.cancel() }
+            for _ in 0..<100 {
+                if scans.value >= 1,
+                   await recorder.contains(kind: .rescanRequired) {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: restrictedURL.path
+            )
+            try FileManager.default.removeItem(at: noteURL)
+            try await Task.sleep(for: .milliseconds(300))
+
+            let sawAudit = await recorder.contains(kind: .rescanRequired)
+            let sawFalseDeletion = await recorder.contains(
+                kind: .deleted,
+                fileURL: noteURL
+            )
+            XCTAssertTrue(sawAudit)
+            XCTAssertFalse(sawFalseDeletion)
+        }
+    }
+
     func testWatcherOverflowAlwaysLeavesAFullRescanMarker() async throws {
         try await withDirectories { workspaceURL, _ in
             let watcher = WorkspaceWatcher(
@@ -1010,6 +1128,22 @@ private extension DataSafetyTests {
         func record(_ kind: WorkspaceEventKind) { kinds.append(kind) }
         func contains(_ kind: WorkspaceEventKind) -> Bool { kinds.contains(kind) }
         var all: [WorkspaceEventKind] { kinds }
+    }
+
+    actor DetailedEventRecorder {
+        private var events: [WorkspaceEvent] = []
+
+        func record(_ event: WorkspaceEvent) {
+            events.append(event)
+        }
+
+        func contains(kind: WorkspaceEventKind, fileURL: URL? = nil) -> Bool {
+            events.contains {
+                $0.kind == kind
+                    && (fileURL == nil
+                        || $0.fileURL?.standardizedFileURL == fileURL?.standardizedFileURL)
+            }
+        }
     }
 
     final class RawEventRecorder: @unchecked Sendable {
