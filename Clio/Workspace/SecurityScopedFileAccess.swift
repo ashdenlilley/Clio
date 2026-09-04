@@ -62,8 +62,8 @@ struct SecurityScopedFileAccessController: Sendable {
     private let stopAccess: @Sendable (URL) -> Void
 
     init(
-        bookmarkMaker: @escaping @Sendable (URL) throws -> Data = Workspace.makeSecurityScopedBookmark,
-        bookmarkResolver: @escaping @Sendable (Data) throws -> Workspace.BookmarkResolution = Workspace.resolveSecurityScopedBookmark,
+        bookmarkMaker: @escaping @Sendable (URL) throws -> Data = { try Workspace.makeSecurityScopedBookmark(for: $0) },
+        bookmarkResolver: @escaping @Sendable (Data) throws -> Workspace.BookmarkResolution = { try Workspace.resolveSecurityScopedBookmark($0) },
         startAccess: @escaping @Sendable (URL) -> Bool = {
             $0.startAccessingSecurityScopedResource()
         },
