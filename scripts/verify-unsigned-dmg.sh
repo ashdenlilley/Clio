@@ -5,6 +5,7 @@ set -euo pipefail
 DMG_PATH="${1:-}"
 EXPECTED_BUNDLE_ID="${CLIO_EXPECTED_BUNDLE_ID:-olympus.clio.mac}"
 EXPECTED_VERSION="${CLIO_EXPECTED_VERSION:-0.1.0}"
+EXPECTED_BUILD="${CLIO_EXPECTED_BUILD:-1}"
 
 if [[ -z "${DMG_PATH}" || ! -f "${DMG_PATH}" ]]; then
     echo "usage: $0 /absolute/path/to/Clio-<version>-unsigned.dmg" >&2
@@ -40,6 +41,7 @@ EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/Clio"
 
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${PLIST_PATH}")"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${PLIST_PATH}")"
+BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${PLIST_PATH}")"
 ARCHITECTURES="$(lipo -archs "${EXECUTABLE_PATH}")"
 
 [[ "${BUNDLE_ID}" == "${EXPECTED_BUNDLE_ID}" ]] || {
@@ -48,6 +50,10 @@ ARCHITECTURES="$(lipo -archs "${EXECUTABLE_PATH}")"
 }
 [[ "${VERSION}" == "${EXPECTED_VERSION}" ]] || {
     echo "error: expected version ${EXPECTED_VERSION}, found ${VERSION}" >&2
+    exit 1
+}
+[[ "${BUILD}" == "${EXPECTED_BUILD}" ]] || {
+    echo "error: expected build ${EXPECTED_BUILD}, found ${BUILD}" >&2
     exit 1
 }
 [[ " ${ARCHITECTURES} " == *" arm64 "* && " ${ARCHITECTURES} " == *" x86_64 "* ]] || {
@@ -64,6 +70,19 @@ find "${APP_PATH}/Contents/Resources" -name 'LICENSE-Hack.md' -print -quit | gre
     echo "error: bundled Hack licence is missing" >&2
     exit 1
 }
+[[ -f "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" ]] || {
+    echo "error: third-party notices are missing" >&2
+    exit 1
+}
+[[ -f "${APP_PATH}/Contents/Resources/AppIcon.icns" ]] || {
+    echo "error: compiled application icon is missing" >&2
+    exit 1
+}
 
-echo "Verified unsigned Clio ${VERSION} (${BUNDLE_ID}) [${ARCHITECTURES}]"
+MARKDOWN_DOCUMENT_TYPE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSItemContentTypes:0' "${PLIST_PATH}")"
+[[ "${MARKDOWN_DOCUMENT_TYPE}" == "net.daringfireball.markdown" ]] || {
+    echo "error: Markdown document registration is missing" >&2
+    exit 1
+}
 
+echo "Verified unsigned Clio ${VERSION} (${BUILD}; ${BUNDLE_ID}) [${ARCHITECTURES}]"
