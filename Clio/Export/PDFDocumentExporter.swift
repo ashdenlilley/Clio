@@ -31,7 +31,10 @@ actor PDFDocumentExporter {
             resolution: collisionResolution,
             fileManager: fileManager
         )
-        let temporaryURL = reservation.url.clioTemporarySibling()
+        let temporaryURL = try reservation.url.clioExportStagingURL(
+            format: .pdf,
+            fileManager: fileManager
+        )
         do {
             let attributedDocument = try PDFAttributedDocumentBuilder.build(parsed.document)
             try render(
@@ -44,11 +47,19 @@ actor PDFDocumentExporter {
             try Task.checkCancellation()
             let attributes = try fileManager.attributesOfItem(atPath: temporaryURL.path)
             let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            guard size <= AtomicWriteTransactions.maximumRecoverableByteCount else {
+                throw DocumentExportError.artifactTooLarge(
+                    reservation.url,
+                    byteCount: size,
+                    maximumByteCount: AtomicWriteTransactions.maximumRecoverableByteCount
+                )
+            }
             return StagedDocumentExport(
                 format: .pdf,
                 temporaryURL: temporaryURL,
                 reservation: reservation,
                 byteCount: size,
+                documentID: request.snapshot.documentID,
                 generation: request.snapshot.generation,
                 sourceFingerprint: request.snapshot.sourceFingerprint
             )

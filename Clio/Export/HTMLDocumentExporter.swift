@@ -25,22 +25,24 @@ actor HTMLDocumentExporter {
             resolution: collisionResolution,
             fileManager: fileManager
         )
-        let html = try HTMLDocumentRenderer.render(
-            document: parsed.document,
-            title: request.snapshot.filename
+        let temporaryURL = try reservation.url.clioExportStagingURL(
+            format: .html,
+            fileManager: fileManager
         )
-        try Task.checkCancellation()
-        let temporaryURL = reservation.url.clioTemporarySibling()
         do {
-            try Data(html.utf8).write(to: temporaryURL, options: .atomic)
+            let size = try HTMLDocumentStreamRenderer.write(
+                document: parsed.document,
+                title: request.snapshot.filename,
+                to: temporaryURL,
+                reportingDestination: reservation.url
+            )
             try Task.checkCancellation()
-            let attributes = try fileManager.attributesOfItem(atPath: temporaryURL.path)
-            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
             return StagedDocumentExport(
                 format: .html,
                 temporaryURL: temporaryURL,
                 reservation: reservation,
                 byteCount: size,
+                documentID: request.snapshot.documentID,
                 generation: request.snapshot.generation,
                 sourceFingerprint: request.snapshot.sourceFingerprint
             )
@@ -91,7 +93,7 @@ enum HTMLDocumentRenderer {
     }
 }
 
-private extension HTMLDocumentRenderer {
+fileprivate extension HTMLDocumentRenderer {
     static let stylesheet = """
             :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
             * { box-sizing: border-box; }
@@ -342,5 +344,392 @@ private extension HTMLDocumentRenderer {
     static func isDisallowedControl(_ value: UInt32) -> Bool {
         (value < 0x20 && value != 0x09 && value != 0x0a && value != 0x0d)
             || (0x7f...0x9f).contains(value)
+    }
+}
+
+/// Production rendering writes bounded UTF-8 chunks directly to the staging
+/// file. `HTMLDocumentRenderer.render` remains a convenient in-memory oracle
+/// for focused semantic tests, but is never used by the export workflow.
+enum HTMLDocumentStreamRenderer {
+    @discardableResult
+    static func write(
+        document: MarkdownDocumentModel,
+        title: String,
+        to url: URL,
+        reportingDestination destinationURL: URL,
+        maximumByteCount: Int64 = AtomicWriteTransactions.maximumRecoverableByteCount
+    ) throws -> Int64 {
+        let sink = try HTMLFileSink(
+            url: url,
+            reportingDestination: destinationURL,
+            maximumByteCount: maximumByteCount
+        )
+        do {
+            try sink.raw("<!doctype html>\n<html lang=\"")
+            try sink.escaped(
+                Locale.current.language.languageCode?.identifier ?? "en"
+            )
+            try sink.raw("\">\n<head>\n  <meta charset=\"utf-8\">\n")
+            try sink.raw("  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'\">\n")
+            try sink.raw("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>")
+            try sink.escaped(title)
+            try sink.raw("</title>\n  <style>\n")
+            try sink.raw(HTMLDocumentRenderer.stylesheet)
+            try sink.raw("\n  </style>\n</head>\n<body>\n  <main class=\"document\">\n")
+            var footnoteDefinitionCounts: [String: Int] = [:]
+            for block in document.blocks {
+                try Task.checkCancellation()
+                try write(
+                    block: block,
+                    footnoteDefinitionCounts: &footnoteDefinitionCounts,
+                    to: sink
+                )
+            }
+            try sink.raw("\n  </main>\n</body>\n</html>")
+            return try sink.finish()
+        } catch {
+            sink.abort()
+            throw error
+        }
+    }
+}
+
+private extension HTMLDocumentStreamRenderer {
+    static func write(
+        block: MarkdownBlock,
+        footnoteDefinitionCounts: inout [String: Int],
+        to sink: HTMLFileSink
+    ) throws {
+        switch block {
+        case .paragraph(let content, _):
+            try sink.raw("    <p>")
+            try write(inlines: content, to: sink)
+            try sink.raw("</p>\n")
+        case .heading(let level, let content, _):
+            let safeLevel = min(max(level, 1), 6)
+            try sink.raw("    <h\(safeLevel)>")
+            try write(inlines: content, to: sink)
+            try sink.raw("</h\(safeLevel)>\n")
+        case .blockquote(let blocks, _):
+            try sink.raw("    <blockquote>")
+            for nested in blocks {
+                try Task.checkCancellation()
+                try write(
+                    block: nested,
+                    footnoteDefinitionCounts: &footnoteDefinitionCounts,
+                    to: sink
+                )
+            }
+            try sink.raw("</blockquote>\n")
+        case .list(let list):
+            try write(
+                list: list,
+                footnoteDefinitionCounts: &footnoteDefinitionCounts,
+                to: sink
+            )
+        case .codeFence(let language, let source, _):
+            try sink.raw("    <pre><code")
+            if let language {
+                try sink.raw(" class=\"language-")
+                try sink.escaped(language)
+                try sink.raw("\"")
+            }
+            try sink.raw(">")
+            try sink.escaped(source)
+            try sink.raw("</code></pre>\n")
+        case .table(let table):
+            try write(table: table, to: sink)
+        case .thematicBreak:
+            try sink.raw("    <hr>\n")
+        case .frontMatter(let source, _):
+            try sink.raw("    <aside class=\"frontmatter\" aria-label=\"Document metadata\"><pre>")
+            try sink.escaped(source)
+            try sink.raw("</pre></aside>\n")
+        case .footnoteDefinition(let label, let blocks, _):
+            let occurrence = (footnoteDefinitionCounts[label] ?? 0) + 1
+            footnoteDefinitionCounts[label] = occurrence
+            let baseID = try HTMLDocumentRenderer.safeFootnoteID(label)
+            let definitionID = occurrence == 1 ? baseID : "\(baseID)-\(occurrence)"
+            try sink.raw("    <section class=\"footnote\" id=\"")
+            try sink.escaped(definitionID)
+            try sink.raw("\" aria-label=\"Footnote ")
+            try sink.escaped(label)
+            try sink.raw("\">")
+            for nested in blocks {
+                try Task.checkCancellation()
+                try write(
+                    block: nested,
+                    footnoteDefinitionCounts: &footnoteDefinitionCounts,
+                    to: sink
+                )
+            }
+            try sink.raw("</section>\n")
+        case .rawHTML(let source, _):
+            try sink.raw("    <pre class=\"raw-html\" aria-label=\"Unrendered HTML\">")
+            try sink.escaped(source)
+            try sink.raw("</pre>\n")
+        }
+    }
+
+    static func write(
+        list: MarkdownList,
+        footnoteDefinitionCounts: inout [String: Int],
+        to sink: HTMLFileSink
+    ) throws {
+        let tag = list.isOrdered ? "ol" : "ul"
+        try sink.raw("    <\(tag)")
+        if list.isOrdered, let start = list.start, start != 1 {
+            try sink.raw(" start=\"\(start)\"")
+        }
+        try sink.raw(">\n")
+        for item in list.items {
+            try Task.checkCancellation()
+            try sink.raw("      <li")
+            if item.taskState != nil { try sink.raw(" class=\"task\"") }
+            try sink.raw(">")
+            switch item.taskState {
+            case .checked:
+                try sink.raw("<span class=\"task-marker\" aria-label=\"Completed\">☑</span>")
+            case .unchecked:
+                try sink.raw("<span class=\"task-marker\" aria-label=\"Not completed\">☐</span>")
+            case nil:
+                break
+            }
+            for nested in item.blocks {
+                try write(
+                    block: nested,
+                    footnoteDefinitionCounts: &footnoteDefinitionCounts,
+                    to: sink
+                )
+            }
+            try sink.raw("</li>\n")
+        }
+        try sink.raw("    </\(tag)>\n")
+    }
+
+    static func write(table: MarkdownTable, to sink: HTMLFileSink) throws {
+        func writeCell(
+            _ cell: MarkdownTableCell,
+            index: Int,
+            tag: String,
+            scope: String = ""
+        ) throws {
+            let alignment = index < table.alignments.count
+                ? table.alignments[index]
+                : .none
+            let className: String
+            switch alignment {
+            case .center: className = " class=\"align-center\""
+            case .trailing: className = " class=\"align-trailing\""
+            case .none, .leading: className = ""
+            }
+            try sink.raw("<\(tag)\(scope)\(className)>")
+            try write(inlines: cell.content, to: sink)
+            try sink.raw("</\(tag)>")
+        }
+
+        try sink.raw("    <table>\n      <thead><tr>")
+        for (index, cell) in table.header.enumerated() {
+            try Task.checkCancellation()
+            try writeCell(cell, index: index, tag: "th", scope: " scope=\"col\"")
+        }
+        try sink.raw("</tr></thead>\n      <tbody>\n")
+        for row in table.rows {
+            try Task.checkCancellation()
+            try sink.raw("      <tr>")
+            for (index, cell) in row.enumerated() {
+                try writeCell(cell, index: index, tag: "td")
+            }
+            try sink.raw("</tr>\n")
+        }
+        try sink.raw("      </tbody>\n    </table>\n")
+    }
+
+    static func write(inlines: [MarkdownInline], to sink: HTMLFileSink) throws {
+        for inline in inlines {
+            try Task.checkCancellation()
+            switch inline {
+            case .text(let value, _):
+                try sink.escaped(value)
+            case .emphasis(let content, _):
+                try sink.raw("<em>")
+                try write(inlines: content, to: sink)
+                try sink.raw("</em>")
+            case .strong(let content, _):
+                try sink.raw("<strong>")
+                try write(inlines: content, to: sink)
+                try sink.raw("</strong>")
+            case .strikethrough(let content, _):
+                try sink.raw("<del>")
+                try write(inlines: content, to: sink)
+                try sink.raw("</del>")
+            case .code(let value, _):
+                try sink.raw("<code>")
+                try sink.escaped(value)
+                try sink.raw("</code>")
+            case .link(let destination, let title, let content, _):
+                guard let safe = ExportContentPolicy.safeLink(destination) else {
+                    try write(inlines: content, to: sink)
+                    continue
+                }
+                try sink.raw("<a href=\"")
+                try sink.escaped(safe)
+                try sink.raw("\"")
+                if let title {
+                    try sink.raw(" title=\"")
+                    try sink.escaped(title)
+                    try sink.raw("\"")
+                }
+                try sink.raw(">")
+                try write(inlines: content, to: sink)
+                try sink.raw("</a>")
+            case .image(_, _, let alt, _):
+                try sink.raw("<span role=\"img\" aria-label=\"")
+                try writePlainText(alt, to: sink)
+                try sink.raw("\">")
+                try writePlainText(alt, to: sink)
+                try sink.raw("</span>")
+            case .autolink(let text, let destination, _):
+                guard let safe = ExportContentPolicy.safeLink(destination) else {
+                    try sink.escaped(text)
+                    continue
+                }
+                try sink.raw("<a href=\"")
+                try sink.escaped(safe)
+                try sink.raw("\">")
+                try sink.escaped(text)
+                try sink.raw("</a>")
+            case .footnoteReference(let label, _):
+                try sink.raw("<sup><a href=\"#")
+                try sink.escaped(HTMLDocumentRenderer.safeFootnoteID(label))
+                try sink.raw("\" aria-label=\"Footnote ")
+                try sink.escaped(label)
+                try sink.raw("\">")
+                try sink.escaped(label)
+                try sink.raw("</a></sup>")
+            case .softBreak:
+                try sink.raw("\n")
+            case .hardBreak:
+                try sink.raw("<br>\n")
+            case .rawHTML(let source, _):
+                try sink.escaped(source)
+            }
+        }
+    }
+
+    static func writePlainText(
+        _ inlines: [MarkdownInline],
+        to sink: HTMLFileSink
+    ) throws {
+        for inline in inlines {
+            try Task.checkCancellation()
+            switch inline {
+            case .text(let value, _), .code(let value, _):
+                try sink.escaped(value)
+            case .emphasis(let content, _),
+                 .strong(let content, _),
+                 .strikethrough(let content, _):
+                try writePlainText(content, to: sink)
+            case .link(_, _, let content, _):
+                try writePlainText(content, to: sink)
+            case .image(_, _, let alt, _):
+                try writePlainText(alt, to: sink)
+            case .autolink(let text, _, _):
+                try sink.escaped(text)
+            case .footnoteReference(let label, _):
+                try sink.raw("[")
+                try sink.escaped(label)
+                try sink.raw("]")
+            case .softBreak, .hardBreak:
+                try sink.raw("\n")
+            case .rawHTML(let source, _):
+                try sink.escaped(source)
+            }
+        }
+    }
+}
+
+private final class HTMLFileSink {
+    private static let escapeBufferByteCount = 16 * 1_024
+
+    private let url: URL
+    private let reportingDestination: URL
+    private let maximumByteCount: Int64
+    private let handle: FileHandle
+    private(set) var byteCount: Int64 = 0
+    private var isClosed = false
+
+    init(
+        url: URL,
+        reportingDestination: URL,
+        maximumByteCount: Int64
+    ) throws {
+        self.url = url
+        self.reportingDestination = reportingDestination
+        self.maximumByteCount = maximumByteCount
+        try Data().write(to: url, options: .withoutOverwriting)
+        handle = try FileHandle(forWritingTo: url)
+    }
+
+    func raw(_ value: String) throws {
+        try write(Data(value.utf8))
+    }
+
+    func escaped(_ value: String) throws {
+        var buffer = ""
+        buffer.reserveCapacity(Self.escapeBufferByteCount)
+        for (offset, scalar) in value.unicodeScalars.enumerated() {
+            if offset.isMultiple(of: 2_048) { try Task.checkCancellation() }
+            switch scalar.value {
+            case 0x26: buffer += "&amp;"
+            case 0x3c: buffer += "&lt;"
+            case 0x3e: buffer += "&gt;"
+            case 0x22: buffer += "&quot;"
+            case 0x27: buffer += "&#39;"
+            case let value where HTMLDocumentRenderer.isDisallowedControl(value):
+                buffer += "�"
+            default:
+                buffer.unicodeScalars.append(scalar)
+            }
+            if buffer.utf8.count >= Self.escapeBufferByteCount {
+                try raw(buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        if !buffer.isEmpty { try raw(buffer) }
+    }
+
+    func finish() throws -> Int64 {
+        guard !isClosed else { return byteCount }
+        try handle.synchronize()
+        try handle.close()
+        isClosed = true
+        return byteCount
+    }
+
+    func abort() {
+        if !isClosed {
+            try? handle.close()
+            isClosed = true
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    deinit {
+        if !isClosed { try? handle.close() }
+    }
+
+    private func write(_ data: Data) throws {
+        try Task.checkCancellation()
+        let nextCount = byteCount + Int64(data.count)
+        guard nextCount <= maximumByteCount else {
+            throw DocumentExportError.artifactTooLarge(
+                reportingDestination,
+                byteCount: nextCount,
+                maximumByteCount: maximumByteCount
+            )
+        }
+        try handle.write(contentsOf: data)
+        byteCount = nextCount
     }
 }

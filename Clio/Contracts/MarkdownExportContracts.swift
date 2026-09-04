@@ -244,6 +244,21 @@ struct ExportRequest: Sendable {
     let snapshot: DocumentTextSnapshot
     let destinationURL: URL
     let pdfSettings: PDFPrintSettings?
+    let recoveryStrategy: ExportRecoveryStrategy
+
+    init(
+        format: ExportFormat,
+        snapshot: DocumentTextSnapshot,
+        destinationURL: URL,
+        pdfSettings: PDFPrintSettings?,
+        recoveryStrategy: ExportRecoveryStrategy = .directoryTransaction
+    ) {
+        self.format = format
+        self.snapshot = snapshot
+        self.destinationURL = destinationURL
+        self.pdfSettings = pdfSettings
+        self.recoveryStrategy = recoveryStrategy
+    }
 }
 
 /// The exact destination state presented to the user when an export collides.
