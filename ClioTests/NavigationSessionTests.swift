@@ -712,10 +712,11 @@ final class NavigationSessionTests: XCTestCase {
                 let catalog = makeCatalog(defaults: defaults)
                 let sourceWorkspace = try catalog.addAuthorizedFolder(sourceFolder)
                 let destinationWorkspace = try catalog.addAuthorizedFolder(destinationFolder)
+                let index = RecordingSearchIndex()
                 let appState = AppState(
                     defaults: defaults,
                     workspaceCatalog: catalog,
-                    searchIndex: nil
+                    searchIndex: index
                 )
                 let window = EditorWindowSession(request: .mostRecent())
                 window.connect(to: appState)
@@ -766,6 +767,11 @@ final class NavigationSessionTests: XCTestCase {
                 for _ in 0..<100 where !FileManager.default.fileExists(atPath: destinationURL.path) {
                     try await Task.sleep(for: .milliseconds(20))
                 }
+                for _ in 0..<100 {
+                    if await index.recordedEvents().count >= 2 { break }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                let indexEvents = await index.recordedEvents()
                 XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
                 XCTAssertTrue(FileManager.default.fileExists(atPath: destinationURL.path))
                 XCTAssertEqual(window.activeTab?.fileURL, destinationURL)
@@ -773,6 +779,16 @@ final class NavigationSessionTests: XCTestCase {
                 XCTAssertEqual(window.activeTab?.documentID, originalDocumentID)
                 XCTAssertTrue(window.activeTab?.document === originalDocument)
                 XCTAssertTrue(secondWindow.activeTab?.document === originalDocument)
+                XCTAssertTrue(indexEvents.contains {
+                    $0.workspaceID == sourceWorkspace.id
+                        && $0.kind == .deleted
+                        && $0.fileURL == sourceURL
+                })
+                XCTAssertTrue(indexEvents.contains {
+                    $0.workspaceID == destinationWorkspace.id
+                        && $0.kind == .created
+                        && $0.fileURL == destinationURL
+                })
             }
         }
     }
@@ -999,13 +1015,16 @@ final class NavigationSessionTests: XCTestCase {
 
 private actor RecordingSearchIndex: SearchIndexing {
     private var queries: [WorkspaceSearchQuery] = []
+    private var appliedEvents: [WorkspaceEvent] = []
 
     func rebuild(
         workspaces _: [WorkspaceDescriptor],
         policy _: DiscoveryPolicy
     ) async throws {}
 
-    func apply(_: [WorkspaceEvent]) async throws {}
+    func apply(_ events: [WorkspaceEvent]) async throws {
+        appliedEvents.append(contentsOf: events)
+    }
 
     func quickOpen(
         _ query: WorkspaceSearchQuery
@@ -1023,6 +1042,10 @@ private actor RecordingSearchIndex: SearchIndexing {
 
     func recordedQueries() -> [WorkspaceSearchQuery] {
         queries
+    }
+
+    func recordedEvents() -> [WorkspaceEvent] {
+        appliedEvents
     }
 
     private func stream() -> AsyncThrowingStream<SearchBatch, Error> {

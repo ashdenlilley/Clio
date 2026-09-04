@@ -25,7 +25,6 @@ final class AppState: ClioCommandDispatching {
     private(set) var recoveredCrashBufferCount = 0
     private(set) var crashRecoveryMessage: String?
     private(set) var isCrashRecoveryDurabilityCompromised = false
-    private(set) var workspaceTrees: [WorkspaceID: WorkspaceTreeSnapshot] = [:]
     private(set) var isRefreshingWorkspaces = false
 
     let workspaceCatalog: WorkspaceCatalog
@@ -114,10 +113,7 @@ final class AppState: ClioCommandDispatching {
     private var editorWindows: [EditorWindowSession] = []
 
     @ObservationIgnored
-    private let workspaceScanner: WorkspaceScanner
-
-    @ObservationIgnored
-    private let searchIndex: (any SearchIndexing)?
+    private let workspaceIndexCoordinator: WorkspaceIndexCoordinator
 
     @ObservationIgnored
     private var discoveryTask: Task<Void, Never>?
@@ -163,8 +159,25 @@ final class AppState: ClioCommandDispatching {
             )
         self.discoverySettings = discoverySettings
             ?? WorkspaceDiscoverySettings(defaults: defaults)
-        workspaceScanner = WorkspaceScanner(fileManager: fileManager)
-        self.searchIndex = searchIndex ?? (try? SQLiteSearchIndex())
+        let appStateReference = AppStateReference()
+        let activeSearchIndex = searchIndex
+            ?? (try? SQLiteSearchIndex(
+                identityStore: documentRegistry.identityStore
+            ))
+            ?? EmptySearchIndex()
+        workspaceIndexCoordinator = WorkspaceIndexCoordinator(
+            catalog: self.workspaceCatalog,
+            registry: documentRegistry,
+            searchIndex: activeSearchIndex,
+            scanner: WorkspaceScanner(
+                fileManager: fileManager,
+                identityStore: documentRegistry.identityStore
+            ),
+            eventReconciler: { [appStateReference] event, workspace in
+                guard let appState = appStateReference.value else { return }
+                await appState.handleWorkspaceEvent(event, in: workspace)
+            }
+        )
 
         fontSize = Self.clamp(
             Self.double(forKey: Keys.fontSize, default: 14, in: defaults),
@@ -211,6 +224,7 @@ final class AppState: ClioCommandDispatching {
            let accent = AccentPreset(rawValue: storedAccent) {
             self.accent = accent
         }
+        appStateReference.value = self
 
         if let initialWorkspace {
             workspace = initialWorkspace
@@ -263,6 +277,10 @@ final class AppState: ClioCommandDispatching {
 
     var workspaceRootPath: String? {
         primaryWorkspace?.workspace.rootURL.path
+    }
+
+    var workspaceTrees: [WorkspaceID: WorkspaceTreeSnapshot] {
+        workspaceIndexCoordinator.treeSnapshots
     }
 
     var workspaceDescriptors: [WorkspaceDescriptor] {
@@ -454,7 +472,6 @@ final class AppState: ClioCommandDispatching {
     func removeWorkspace(_ id: WorkspaceID) {
         let removedRoot = workspaceCatalog.workspace(id: id)?.rootURL
         workspaceCatalog.remove(id)
-        workspaceTrees[id] = nil
         if workspace?.rootURL == removedRoot {
             workspace = workspaceCatalog.workspaces.first
         }
@@ -488,35 +505,13 @@ final class AppState: ClioCommandDispatching {
 
     func refreshWorkspaceDiscovery() {
         discoveryTask?.cancel()
-        let descriptors = workspaceDescriptors
         let policy = discoverySettings.policy
-        guard !descriptors.isEmpty else {
-            workspaceTrees = [:]
-            isRefreshingWorkspaces = false
-            return
-        }
-
         isRefreshingWorkspaces = true
         discoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var snapshots: [WorkspaceID: WorkspaceTreeSnapshot] = [:]
             do {
-                for descriptor in descriptors {
-                    try Task.checkCancellation()
-                    snapshots[descriptor.id] = try await self.workspaceScanner.scan(
-                        workspace: descriptor,
-                        policy: policy,
-                        includesIgnored: self.discoverySettings.temporarilyShowsIgnored
-                    )
-                }
+                try await self.workspaceIndexCoordinator.synchronize(policy: policy)
                 try Task.checkCancellation()
-                self.workspaceTrees = snapshots
-                if let searchIndex = self.searchIndex {
-                    try await searchIndex.rebuild(
-                        workspaces: descriptors,
-                        policy: policy
-                    )
-                }
                 self.isRefreshingWorkspaces = false
             } catch is CancellationError {
                 return
@@ -534,12 +529,7 @@ final class AppState: ClioCommandDispatching {
         _ text: String,
         workspaceFilter: WorkspaceID?
     ) async -> AsyncThrowingStream<SearchBatch, Error> {
-        guard let searchIndex else {
-            return AsyncThrowingStream { continuation in
-                continuation.finish()
-            }
-        }
-        return await searchIndex.search(
+        return await workspaceIndexCoordinator.search(
             WorkspaceSearchQuery(
                 text: text,
                 workspaceFilter: workspaceFilter,
@@ -553,12 +543,7 @@ final class AppState: ClioCommandDispatching {
         _ text: String,
         workspaceFilter: WorkspaceID?
     ) async -> AsyncThrowingStream<SearchBatch, Error> {
-        guard let searchIndex else {
-            return AsyncThrowingStream { continuation in
-                continuation.finish()
-            }
-        }
-        return await searchIndex.quickOpen(
+        return await workspaceIndexCoordinator.quickOpen(
             WorkspaceSearchQuery(
                 text: text,
                 workspaceFilter: workspaceFilter,
@@ -765,8 +750,20 @@ final class AppState: ClioCommandDispatching {
                         registry: self.documentRegistry
                     )
                 }
-                if case .completed = outcome {
-                    self.refreshWorkspaceDiscovery()
+                if case let .completed(destination) = outcome {
+                    do {
+                        try await self.workspaceIndexCoordinator.recordCommittedMove(
+                            documentID: document.id,
+                            from: payload.locator,
+                            to: destination
+                        )
+                    } catch {
+                        self.presentError(
+                            "The document moved safely, but Clio couldn’t update navigation immediately.",
+                            underlying: error
+                        )
+                        self.refreshWorkspaceDiscovery()
+                    }
                 }
             } catch {
                 self.presentError("Clio couldn’t move that document.", underlying: error)
@@ -852,12 +849,34 @@ final class AppState: ClioCommandDispatching {
         _ tab: EditorSession,
         from window: EditorWindowSession
     ) -> Bool {
+        let priorLocator = tab.locator
+        let priorURL = tab.fileURL
         do {
             // DocumentMover flushes first and only detaches the canonical
             // buffer after the Trash operation succeeds.
             try tab.moveToTrash()
             window.closeAfterSuccessfulFileMutation(tabID: tab.id)
-            refreshWorkspaceDiscovery()
+            if let priorLocator, let priorURL {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.workspaceIndexCoordinator.apply([
+                            WorkspaceEvent(
+                                workspaceID: priorLocator.workspaceID,
+                                kind: .deleted,
+                                fileURL: priorURL,
+                                origin: .clio
+                            ),
+                        ])
+                    } catch {
+                        self.presentError(
+                            "The document is in Trash, but Clio couldn’t update navigation immediately.",
+                            underlying: error
+                        )
+                        self.refreshWorkspaceDiscovery()
+                    }
+                }
+            }
             return true
         } catch {
             presentError(
@@ -891,6 +910,39 @@ final class AppState: ClioCommandDispatching {
                 "Clio couldn’t retain access to that recovery folder. Choose it again.",
                 underlying: error
             )
+        }
+    }
+}
+
+@MainActor
+private final class AppStateReference {
+    weak var value: AppState?
+}
+
+private actor EmptySearchIndex: SearchIndexing {
+    func rebuild(
+        workspaces _: [WorkspaceDescriptor],
+        policy _: DiscoveryPolicy
+    ) async throws {}
+
+    func apply(_: [WorkspaceEvent]) async throws {}
+
+    func quickOpen(
+        _: WorkspaceSearchQuery
+    ) async -> AsyncThrowingStream<SearchBatch, Error> {
+        emptyStream()
+    }
+
+    func search(
+        _: WorkspaceSearchQuery
+    ) async -> AsyncThrowingStream<SearchBatch, Error> {
+        emptyStream()
+    }
+
+    private func emptyStream() -> AsyncThrowingStream<SearchBatch, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(SearchBatch(results: [], isFinal: true))
+            continuation.finish()
         }
     }
 }
@@ -1236,12 +1288,29 @@ private extension AppState {
             proposedName += ".\(sourceURL.pathExtension)"
         }
         guard !proposedName.isEmpty, proposedName != sourceURL.lastPathComponent else { return }
+        let sourceLocator = tab.locator
         Task { @MainActor [weak self, weak tab] in
             guard let self, let tab else { return }
             do {
                 let outcome = try await tab.rename(to: proposedName)
-                if case .completed = outcome {
-                    self.refreshWorkspaceDiscovery()
+                if case let .completed(destination) = outcome {
+                    if let sourceLocator {
+                        do {
+                            try await self.workspaceIndexCoordinator.recordCommittedMove(
+                                documentID: tab.documentID,
+                                from: sourceLocator,
+                                to: destination
+                            )
+                        } catch {
+                            self.presentError(
+                                "The document was renamed, but Clio couldn’t update navigation immediately.",
+                                underlying: error
+                            )
+                            self.refreshWorkspaceDiscovery()
+                        }
+                    } else {
+                        self.refreshWorkspaceDiscovery()
+                    }
                 }
             } catch {
                 self.presentError("Clio couldn’t rename that document.", underlying: error)
@@ -1429,6 +1498,8 @@ private extension AppState {
                 )
                 workspace = workspaceCatalog.workspace(id: descriptor.id)
                 legacyWorkspaceDescriptor = nil
+                stopLegacyWorkspaceWatcher()
+                refreshWorkspaceDiscovery()
                 defaults.removeObject(forKey: Keys.workspaceBookmark)
                 defaults.removeObject(forKey: Keys.legacyWorkspaceID)
             }
@@ -1549,7 +1620,7 @@ private extension AppState {
     }
 
     func beginWatching(_ workspace: Workspace) {
-        workspaceWatchTask?.cancel()
+        stopLegacyWorkspaceWatcher()
         let watcher = WorkspaceWatcher(
             workspaceID: workspace.id,
             rootURL: workspace.rootURL
@@ -1565,6 +1636,12 @@ private extension AppState {
                 await self.handleWorkspaceEvent(event, in: workspace)
             }
         }
+    }
+
+    func stopLegacyWorkspaceWatcher() {
+        workspaceWatchTask?.cancel()
+        workspaceWatchTask = nil
+        workspaceWatcher = nil
     }
 
     func handleWorkspaceEvent(
