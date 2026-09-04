@@ -24,6 +24,7 @@ final class EditorTextView: NSTextView {
     var onUserScroll: (() -> Void)?
     var onKeyEventBegan: (() -> Void)?
     var onKeyEventEnded: (() -> Void)?
+    var onMarkdownAction: ((MarkdownEditorAction) -> Bool)?
 
     private var retainedTextKitStack: AnyObject?
 
@@ -38,8 +39,42 @@ final class EditorTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         onKeyEventBegan?()
+        defer { onKeyEventEnded?() }
+        if let action = markdownShortcut(for: event), onMarkdownAction?(action) == true {
+            return
+        }
         super.keyDown(with: event)
-        onKeyEventEnded?()
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        guard onMarkdownAction?(.newline) != true else { return }
+        super.insertNewline(sender)
+    }
+
+    override func insertTab(_ sender: Any?) {
+        guard onMarkdownAction?(.indent) != true else { return }
+        super.insertTab(sender)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        guard onMarkdownAction?(.outdent) != true else { return }
+        super.insertBacktab(sender)
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        if selectedRange().length > 0,
+           let value = insertString as? String,
+           let style = wrapStyle(forTypedMarker: value),
+           onMarkdownAction?(.wrap(style)) == true {
+            return
+        }
+        super.insertText(insertString, replacementRange: replacementRange)
+    }
+
+    override func paste(_ sender: Any?) {
+        if let value = NSPasteboard.general.string(forType: .string),
+           onMarkdownAction?(.paste(value)) == true { return }
+        super.paste(sender)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -141,5 +176,26 @@ final class EditorTextView: NSTextView {
             .paragraphStyle: paragraphStyle,
             .ligature: 0
         ]
+    }
+
+    private func markdownShortcut(for event: NSEvent) -> MarkdownEditorAction? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.contains(.command),
+              let key = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+        if key == "b", modifiers.subtracting(.command).isEmpty { return .wrap(.strong) }
+        if key == "i", modifiers.subtracting(.command).isEmpty { return .wrap(.emphasis) }
+        if key == "x", modifiers.contains(.shift) { return .wrap(.strikethrough) }
+        if key == "k", modifiers.contains(.shift) { return .wrap(.code) }
+        return nil
+    }
+
+    private func wrapStyle(forTypedMarker marker: String) -> MarkdownWrapStyle? {
+        switch marker {
+        case "*": return .emphasis
+        case "_": return .emphasisUnderscore
+        case "~": return .strikethrough
+        case "`": return .code
+        default: return nil
+        }
     }
 }
