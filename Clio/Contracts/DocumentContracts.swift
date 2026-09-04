@@ -304,10 +304,20 @@ struct FileMoveRequest: Sendable, Equatable {
     let destinationParentRelativePath: String
     let preferredFilename: String
     let collisionChoice: CollisionChoice?
+    let approvedCollision: FileCollision?
+}
+
+/// A move reached its destination but retained the source inode or a durable
+/// journal copy because final cleanup could not be proven safe.
+struct FileRecoveryNotice: Sendable, Equatable {
+    let transactionID: UUID
+    let sourceURL: URL
+    let retainedURL: URL?
 }
 
 enum FileMutationOutcome: Sendable, Equatable {
     case completed(DocumentLocator)
+    case completedWithRecovery(DocumentLocator, FileRecoveryNotice)
     case collision(FileCollision)
     case cancelled
 }

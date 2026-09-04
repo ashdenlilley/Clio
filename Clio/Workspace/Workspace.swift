@@ -60,6 +60,7 @@ final class Workspace {
 
     private let fileManager: FileManager
     private let atomicWriter: any AtomicFileWriting
+    private let crashRecoveryJournal: CrashRecoveryJournal?
     private var selfWrites: [String: SelfWriteRecord] = [:]
     private let securityScopedURL: URL?
 
@@ -68,7 +69,8 @@ final class Workspace {
         rootURL: URL,
         accessSecurityScopedResource: Bool = true,
         fileManager: FileManager = .default,
-        atomicWriter: any AtomicFileWriting = AtomicFileWriter()
+        atomicWriter: any AtomicFileWriting = AtomicFileWriter(),
+        crashRecoveryJournal: CrashRecoveryJournal? = nil
     ) throws {
         let scopedURL = rootURL.standardizedFileURL
         let didStartSecurityScopedAccess = accessSecurityScopedResource
@@ -98,8 +100,19 @@ final class Workspace {
             self.rootURL = resolvedURL
             self.fileManager = fileManager
             self.atomicWriter = atomicWriter
+            self.crashRecoveryJournal = crashRecoveryJournal
             isSecurityScopedAccessActive = didStartSecurityScopedAccess
             securityScopedURL = didStartSecurityScopedAccess ? scopedURL : nil
+            if let crashRecoveryJournal {
+                _ = try AtomicWriteTransactions.recoverInterruptedTransactions(
+                    in: resolvedURL,
+                    journal: crashRecoveryJournal
+                )
+                _ = try InterruptedMoveTransactions.recover(
+                    in: resolvedURL,
+                    journal: crashRecoveryJournal
+                )
+            }
         } catch {
             if didStartSecurityScopedAccess {
                 scopedURL.stopAccessingSecurityScopedResource()
@@ -260,6 +273,8 @@ final class Workspace {
             return snapshot.fileURL
         }
 
+        try checkpointCrashRecovery(snapshot, reason: .dirtyBuffer)
+
         if let conflict = document.conflict {
             throw WorkspaceError.externalConflict(conflict)
         }
@@ -358,7 +373,55 @@ final class Workspace {
             expiresAt: Date().addingTimeInterval(5)
         )
         document.didWrite(snapshot, to: destinationURL, revision: diskRevision)
+        crashRecoveryJournal?.clear(
+            documentID: snapshot.documentID,
+            through: snapshot.revision
+        )
         return destinationURL
+    }
+
+    func scheduleCrashRecovery(for document: Document) {
+        guard let crashRecoveryJournal else { return }
+        let snapshot = document.snapshot()
+        guard snapshot.isDirty else { return }
+        crashRecoveryJournal.schedule(CrashRecoverySnapshot(
+            documentID: snapshot.documentID,
+            generation: BufferGeneration(
+                bufferID: snapshot.documentID.rawValue,
+                revision: snapshot.revision
+            ),
+            filename: snapshot.preferredFilename,
+            targetURL: snapshot.fileURL,
+            reason: .dirtyBuffer,
+            source: snapshot.text
+        ))
+    }
+
+    func checkpointCrashRecovery(
+        for document: Document,
+        reason: CrashRecoveryReason
+    ) throws {
+        try checkpointCrashRecovery(document.snapshot(), reason: reason)
+    }
+
+    @discardableResult
+    func checkpointCrashRecovery(
+        data: Data,
+        documentID: DocumentID,
+        generation: BufferGeneration,
+        filename: String,
+        targetURL: URL?,
+        reason: CrashRecoveryReason
+    ) throws -> URL? {
+        guard let crashRecoveryJournal else { return nil }
+        return try crashRecoveryJournal.checkpoint(CrashRecoveryRecord(
+            documentID: documentID,
+            generation: generation,
+            filename: filename,
+            targetURL: targetURL,
+            reason: reason,
+            data: data
+        ))
     }
 
     /// Returns the originating token once for a matching recent Clio write.
@@ -394,6 +457,7 @@ final class Workspace {
         }
 
         if document.isDirty {
+            try checkpointCrashRecovery(for: document, reason: .externalConflict)
             let conflict = try makeConflict(
                 document: document,
                 snapshot: document.snapshot(),
@@ -439,6 +503,7 @@ final class Workspace {
         }
 
         if prior.isDirty {
+            try checkpointCrashRecovery(prior, reason: .externalConflict)
             let movedSnapshot = document.snapshot()
             let conflict = try makeConflict(
                 document: document,
@@ -485,6 +550,7 @@ final class Workspace {
             throw WorkspaceError.documentDeleted(destinationURL)
         }
         let snapshot = document.snapshot()
+        try checkpointCrashRecovery(snapshot, reason: .externalConflict)
         document.willWrite(snapshot)
         do {
             let replaceOutcome = try atomicWriter.replace(
@@ -523,6 +589,10 @@ final class Workspace {
             expiresAt: Date().addingTimeInterval(5)
         )
         document.didWrite(snapshot, to: destinationURL, revision: revision)
+        crashRecoveryJournal?.clear(
+            documentID: snapshot.documentID,
+            through: snapshot.revision
+        )
         return destinationURL
     }
 
@@ -540,6 +610,10 @@ final class Workspace {
             expiresAt: Date().addingTimeInterval(5)
         )
         document.didWrite(snapshot, to: destinationURL, revision: revision)
+        crashRecoveryJournal?.clear(
+            documentID: snapshot.documentID,
+            through: snapshot.revision
+        )
         return destinationURL
     }
 }
@@ -644,6 +718,31 @@ extension Workspace {
             revision: retained.revision,
             data: retained.data,
             retainedURLs: [url]
+        )
+    }
+
+    func checkpointCrashRecovery(
+        _ snapshot: Document.Snapshot,
+        reason: CrashRecoveryReason
+    ) throws {
+        guard let crashRecoveryJournal else { return }
+        _ = try crashRecoveryJournal.checkpoint(recoveryRecord(snapshot, reason: reason))
+    }
+
+    func recoveryRecord(
+        _ snapshot: Document.Snapshot,
+        reason: CrashRecoveryReason
+    ) -> CrashRecoveryRecord {
+        CrashRecoveryRecord(
+            documentID: snapshot.documentID,
+            generation: BufferGeneration(
+                bufferID: snapshot.documentID.rawValue,
+                revision: snapshot.revision
+            ),
+            filename: snapshot.preferredFilename,
+            targetURL: snapshot.fileURL,
+            reason: reason,
+            data: Data(snapshot.text.utf8)
         )
     }
 

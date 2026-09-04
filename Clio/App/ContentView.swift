@@ -64,12 +64,13 @@ struct ContentView: View {
                             restore: editorSession.saveNow
                         )
                     } else if let errorMessage = editorSession.errorMessage
+                        ?? appState.crashRecoveryMessage
                         ?? appState.workspaceErrorMessage {
                         WorkspaceErrorBanner(
                             message: errorMessage,
                             dismiss: {
                                 editorSession.dismissError()
-                                appState.dismissWorkspaceError()
+                                appState.dismissTransientMessage()
                             }
                         )
                     }

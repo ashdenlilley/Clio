@@ -133,6 +133,10 @@ final class ConflictResolver {
         workspace: Workspace,
         registry: DocumentBufferRegistry?
     ) async throws {
+        try workspace.checkpointCrashRecovery(
+            for: document,
+            reason: .externalDeletion
+        )
         var preservedDigests: Set<String> = []
         var locator = document.conflict?.locator ?? document.previousLocator
 
@@ -208,7 +212,11 @@ private extension ConflictResolver {
 
     func releaseRetainedFiles(in side: ConflictSide) {
         for url in side.retainedURLs {
-            try? FileManager.default.removeItem(at: url)
+            if url.lastPathComponent.hasPrefix(AtomicWriteTransactions.temporaryPrefix) {
+                try? AtomicWriteTransactions.discardRetainedSidecar(at: url)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 

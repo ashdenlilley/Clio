@@ -298,7 +298,8 @@ final class EditorSession: Identifiable {
 
     func rename(
         to filename: String,
-        collisionChoice: CollisionChoice? = nil
+        collisionChoice: CollisionChoice? = nil,
+        approvedCollision: FileCollision? = nil
     ) async throws -> FileMutationOutcome {
         guard let document, let workspace, let documentMover else {
             return .cancelled
@@ -309,9 +310,10 @@ final class EditorSession: Identifiable {
             to: workspace,
             preferredFilename: filename,
             collisionChoice: collisionChoice,
+            approvedCollision: approvedCollision,
             registry: registry
         )
-        if case .collision(let collision) = outcome, collisionChoice == nil {
+        if case .collision(let collision) = outcome {
             pendingCollision = collision
             pendingRenameFilename = filename
         } else {
@@ -323,7 +325,8 @@ final class EditorSession: Identifiable {
     }
 
     func resolveCollision(_ choice: CollisionChoice) {
-        guard let filename = pendingRenameFilename else { return }
+        guard let filename = pendingRenameFilename,
+              let approvedCollision = pendingCollision else { return }
         if choice == .cancel {
             pendingCollision = nil
             pendingRenameFilename = nil
@@ -333,7 +336,8 @@ final class EditorSession: Identifiable {
             do {
                 _ = try await self?.rename(
                     to: filename,
-                    collisionChoice: choice
+                    collisionChoice: choice,
+                    approvedCollision: approvedCollision
                 )
             } catch {
                 self?.presentError(

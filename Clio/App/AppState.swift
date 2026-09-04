@@ -20,6 +20,10 @@ final class AppState {
     private(set) var workspace: Workspace?
     private(set) var workspaceErrorMessage: String?
     private(set) var needsRecoveryAuthorization = false
+    private(set) var pendingCrashRecoveryCount = 0
+    private(set) var recoveredCrashBufferCount = 0
+    private(set) var crashRecoveryMessage: String?
+    private(set) var isCrashRecoveryDurabilityCompromised = false
 
     var fontSize: Double = 14 {
         didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
@@ -70,6 +74,12 @@ final class AppState {
     private let fileManager: FileManager
 
     @ObservationIgnored
+    private let crashRecoveryJournal: CrashRecoveryJournal
+
+    @ObservationIgnored
+    private var recoveryStore: any RecoveryPersisting
+
+    @ObservationIgnored
     private var editorSessions: [EditorSession] = []
 
     @ObservationIgnored
@@ -87,17 +97,29 @@ final class AppState {
     @ObservationIgnored
     private var workspaceWatchTask: Task<Void, Never>?
 
+    @ObservationIgnored
+    private var crashRecoveryTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var crashRecoveryRescanRequested = false
+
+    @ObservationIgnored
+    private var nonDurableCrashDocuments = Set<DocumentID>()
+
     init(
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
         initialWorkspace: Workspace? = nil,
-        recoveryStore: RecoveryStore? = nil
+        recoveryStore: RecoveryStore? = nil,
+        crashRecoveryJournal: CrashRecoveryJournal = .shared
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
+        self.crashRecoveryJournal = crashRecoveryJournal
         let activeRecoveryStore = recoveryStore
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
+        self.recoveryStore = activeRecoveryStore
         documentRegistry = DocumentBufferRegistry()
         conflictResolver = ConflictResolver(recoveryStore: activeRecoveryStore)
         documentMover = DocumentMover(
@@ -164,7 +186,17 @@ final class AppState {
             needsRecoveryAuthorization = true
         }
 
+        crashRecoveryJournal.setStatusHandler { [weak self] documentID, errorMessage in
+            Task { @MainActor [weak self] in
+                self?.updateCrashRecoveryStatus(
+                    documentID: documentID,
+                    errorMessage: errorMessage
+                )
+            }
+        }
+
         Task { try? await activeRecoveryStore.pruneExpired() }
+        scheduleCrashRecoveryMigration()
     }
 
     var isWorkspaceReady: Bool {
@@ -325,6 +357,14 @@ final class AppState {
         workspaceErrorMessage = nil
     }
 
+    func dismissTransientMessage() {
+        workspaceErrorMessage = nil
+        if pendingCrashRecoveryCount == 0,
+           !isCrashRecoveryDurabilityCompromised {
+            crashRecoveryMessage = nil
+        }
+    }
+
     func chooseRecoveryFolder() {
         let panel = configuredFolderPanel(
             title: "Choose Clio Recovery Folder",
@@ -387,6 +427,101 @@ private extension AppState {
         static let recoveryBookmark = "recovery.securityScopedBookmark"
     }
 
+    func scheduleCrashRecoveryMigration() {
+        guard crashRecoveryTask == nil else {
+            crashRecoveryRescanRequested = true
+            return
+        }
+        crashRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.crashRecoveryRescanRequested = false
+                await self.recoverPendingCrashBuffers()
+            } while self.crashRecoveryRescanRequested
+            self.crashRecoveryTask = nil
+        }
+    }
+
+    func updateCrashRecoveryStatus(
+        documentID: DocumentID,
+        errorMessage: String?
+    ) {
+        if let errorMessage {
+            nonDurableCrashDocuments.insert(documentID)
+            isCrashRecoveryDurabilityCompromised = true
+            crashRecoveryMessage = "Clio could not durably protect the latest edit (\(errorMessage)). Keep the document open and choose a writable location."
+            return
+        }
+        guard nonDurableCrashDocuments.remove(documentID) != nil else { return }
+        isCrashRecoveryDurabilityCompromised = !nonDurableCrashDocuments.isEmpty
+        if !isCrashRecoveryDurabilityCompromised {
+            crashRecoveryMessage = "Durable crash recovery is active again."
+        }
+    }
+
+    func recoverPendingCrashBuffers() async {
+        let journal = crashRecoveryJournal
+        let records: [CrashRecoveryRecord]
+        do {
+            records = try await Task.detached(priority: .utility) {
+                try journal.validRecords()
+            }.value
+        } catch {
+            crashRecoveryMessage = "Clio could not inspect its crash-recovery journal. No journal files were removed."
+            return
+        }
+
+        var pending = 0
+        var recovered = 0
+        for record in records {
+            let targetIsAuthorized = record.targetURL.map {
+                workspace?.contains($0) == true
+            } ?? false
+            let alreadyCanonical = await Task.detached(priority: .utility) {
+                guard targetIsAuthorized,
+                      let targetURL = record.targetURL,
+                      let values = try? targetURL.resourceValues(forKeys: [
+                          .isRegularFileKey,
+                          .isSymbolicLinkKey,
+                      ]),
+                      values.isRegularFile == true,
+                      values.isSymbolicLink != true,
+                      let snapshot = try? DocumentRevisionReader.snapshot(at: targetURL) else {
+                    return false
+                }
+                return snapshot.revision.byteCount == Int64(record.data.count)
+                    && snapshot.revision.contentDigest == record.contentDigest
+            }.value
+            if alreadyCanonical {
+                journal.remove(recordID: record.id)
+                continue
+            }
+
+            do {
+                _ = try await recoveryStore.preserve(
+                    documentID: record.documentID,
+                    filename: record.filename,
+                    data: record.data,
+                    sourceModificationDate: record.createdAt
+                )
+                journal.remove(recordID: record.id)
+                recovered += 1
+            } catch {
+                pending += 1
+            }
+        }
+
+        pendingCrashRecoveryCount = pending
+        recoveredCrashBufferCount += recovered
+        if pending > 0 {
+            crashRecoveryMessage = "Clio found \(pending) unsaved crash-recovery \(pending == 1 ? "buffer" : "buffers"). Authorize a writable recovery folder; the app-owned journal remains intact."
+        } else if recovered > 0 {
+            crashRecoveryMessage = "Clio recovered \(recovered) unsaved \(recovered == 1 ? "buffer" : "buffers") into Clio Recovery."
+        } else {
+            crashRecoveryMessage = nil
+        }
+    }
+
     func restoreWorkspaceIfAvailable() {
         guard let bookmark = defaults.data(forKey: Keys.workspaceBookmark) else {
             return
@@ -422,6 +557,7 @@ private extension AppState {
 
     func activateRecovery(from bookmark: Data) throws {
         let restored = try RecoveryAuthorization.restore(bookmark: bookmark)
+        recoveryStore = restored.store
         conflictResolver = ConflictResolver(recoveryStore: restored.store)
         documentMover = DocumentMover(
             recoveryStore: restored.store,
@@ -435,6 +571,7 @@ private extension AppState {
         }
         defaults.set(restored.bookmarkToPersist, forKey: Keys.recoveryBookmark)
         needsRecoveryAuthorization = false
+        scheduleCrashRecoveryMigration()
     }
 
     func activateWorkspace(
@@ -450,7 +587,10 @@ private extension AppState {
 
         do {
             resolution = try Workspace.resolveSecurityScopedBookmark(bookmark)
-            newWorkspace = try Workspace(rootURL: resolution.url)
+            newWorkspace = try Workspace(
+                rootURL: resolution.url,
+                crashRecoveryJournal: crashRecoveryJournal
+            )
         } catch {
             throw WorkspaceActivationError.authorization(error)
         }
@@ -495,6 +635,7 @@ private extension AppState {
 
         workspaceErrorMessage = nil
         defaults.set(bookmarkToStore, forKey: Keys.workspaceBookmark)
+        scheduleCrashRecoveryMigration()
     }
 
     func flushEditorSessionsBeforeWorkspaceChange() throws {
@@ -573,6 +714,10 @@ private extension AppState {
                         registry: documentRegistry
                     )
                 } else {
+                    try workspace.checkpointCrashRecovery(
+                        for: document,
+                        reason: .externalDeletion
+                    )
                     document.markUnbacked(previous: locator)
                     documentRegistry.detach(document.id, from: locator)
                 }
@@ -593,6 +738,10 @@ private extension AppState {
                                 registry: documentRegistry
                             )
                         } else {
+                            try workspace.checkpointCrashRecovery(
+                                for: document,
+                                reason: .externalDeletion
+                            )
                             document.markUnbacked(previous: locator)
                             documentRegistry.detach(document.id, from: locator)
                         }

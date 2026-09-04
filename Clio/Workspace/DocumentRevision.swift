@@ -63,26 +63,32 @@ enum AtomicReplaceOutcome: Equatable {
 struct AtomicFileWriter: AtomicFileWriting {
     var beforeSwap: (() throws -> Void)?
     var afterSwap: (() throws -> Void)?
+    var phaseHook: ((AtomicWritePhase) throws -> Void)?
 
     func replace(
         contents data: Data,
         at destinationURL: URL,
         onlyIf revision: DiskRevision? = nil
     ) throws -> AtomicReplaceOutcome {
-        let temporaryURL = temporaryURL(beside: destinationURL)
+        let transaction = try AtomicWriteTransactions.begin(
+            contents: data,
+            destinationURL: destinationURL,
+            operation: .replace,
+            expectedRevision: revision
+        )
+        try phaseHook?(.manifestSynced)
+        let temporaryURL = transaction.manifest.temporaryURL
         try writeAndSync(data, to: temporaryURL)
-        var shouldRemoveTemporary = true
-        defer {
-            if shouldRemoveTemporary {
-                try? FileManager.default.removeItem(at: temporaryURL)
-            }
-        }
+        try phaseHook?(.candidateSynced)
 
         guard let revision else {
             guard rename(temporaryURL.path, destinationURL.path) == 0 else {
                 throw posixError(for: destinationURL)
             }
+            try phaseHook?(.swapped)
             try syncParent(of: destinationURL)
+            try phaseHook?(.parentSynced)
+            try AtomicWriteTransactions.finish(transaction, removeTemporary: false)
             return .replaced
         }
 
@@ -93,17 +99,13 @@ struct AtomicFileWriter: AtomicFileWriting {
             }
         }
         guard swapResult == 0 else { throw posixError(for: destinationURL) }
-        // From this point the temporary URL owns the exact displaced inode.
-        // Retain it by default across every exceptional path until we have
-        // positively established that deleting it is safe.
-        shouldRemoveTemporary = false
+        try phaseHook?(.swapped)
         do {
             try afterSwap?()
         } catch {
             // The destination now contains Clio's candidate and the temporary
             // file contains the exact displaced inode. Never erase those
             // outside bytes if an injected post-swap operation fails.
-            shouldRemoveTemporary = false
             throw error
         }
 
@@ -115,10 +117,12 @@ struct AtomicFileWriter: AtomicFileWriting {
             contentDigest: DocumentRevisionReader.digest(data)
         )
         let destinationStillContainsLocal = Workspace.sameContent(installed, localRevision)
+        try phaseHook?(.validated)
 
         if Workspace.sameContent(displaced, revision), destinationStillContainsLocal {
             try syncParent(of: destinationURL)
-            shouldRemoveTemporary = true
+            try phaseHook?(.parentSynced)
+            try AtomicWriteTransactions.finish(transaction, removeTemporary: true)
             return .replaced
         }
 
@@ -131,24 +135,28 @@ struct AtomicFileWriter: AtomicFileWriting {
             guard restoreResult == 0 else {
                 return .revisionMismatch(retainedURL: temporaryURL)
             }
-            shouldRemoveTemporary = true
             try syncParent(of: destinationURL)
+            try phaseHook?(.parentSynced)
+            try AtomicWriteTransactions.finish(transaction, removeTemporary: true)
             return .revisionMismatch(retainedURL: nil)
         }
 
         // A third writer touched the destination after our swap. Leave its
-        // bytes in place and retain any unexpected displaced revision.
-        if !Workspace.sameContent(displaced, revision) {
-            return .revisionMismatch(retainedURL: temporaryURL)
-        }
-        shouldRemoveTemporary = true
-        return .revisionMismatch(retainedURL: nil)
+        // bytes in place and retain the displaced inode for recovery.
+        return .revisionMismatch(retainedURL: temporaryURL)
     }
 
     func create(contents data: Data, at destinationURL: URL) throws -> Bool {
-        let temporaryURL = temporaryURL(beside: destinationURL)
+        let transaction = try AtomicWriteTransactions.begin(
+            contents: data,
+            destinationURL: destinationURL,
+            operation: .create,
+            expectedRevision: nil
+        )
+        try phaseHook?(.manifestSynced)
+        let temporaryURL = transaction.manifest.temporaryURL
         try writeAndSync(data, to: temporaryURL)
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try phaseHook?(.candidateSynced)
 
         let result = temporaryURL.withUnsafeFileSystemRepresentation { sourcePath in
             destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
@@ -156,10 +164,16 @@ struct AtomicFileWriter: AtomicFileWriting {
             }
         }
         if result == 0 {
+            try phaseHook?(.swapped)
             try syncParent(of: destinationURL)
+            try phaseHook?(.parentSynced)
+            try AtomicWriteTransactions.finish(transaction, removeTemporary: false)
             return true
         }
-        if errno == EEXIST { return false }
+        if errno == EEXIST {
+            try AtomicWriteTransactions.finish(transaction, removeTemporary: true)
+            return false
+        }
         throw posixError(for: destinationURL)
     }
 
@@ -176,13 +190,6 @@ struct AtomicFileWriter: AtomicFileWriting {
         guard descriptor >= 0 else { throw posixError(for: url) }
         defer { close(descriptor) }
         guard fsync(descriptor) == 0 else { throw posixError(for: url) }
-    }
-
-    private func temporaryURL(beside destinationURL: URL) -> URL {
-        destinationURL.deletingLastPathComponent().appendingPathComponent(
-            ".clio-save-\(UUID().uuidString)",
-            isDirectory: false
-        )
     }
 
     private func posixError(for url: URL) -> NSError {

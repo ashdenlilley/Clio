@@ -5,11 +5,14 @@ import Foundation
 final class DocumentMover {
     enum MoveError: LocalizedError {
         case destinationChanged(URL)
+        case sourceChanged(URL)
 
         var errorDescription: String? {
             switch self {
             case .destinationChanged(let url):
                 "\(url.lastPathComponent) changed while Clio was preparing the move. Nothing was replaced."
+            case .sourceChanged(let url):
+                "\(url.lastPathComponent) changed outside Clio while the move was being prepared. Review the conflict before moving it."
             }
         }
     }
@@ -37,10 +40,17 @@ final class DocumentMover {
         parentRelativePath: String = "",
         preferredFilename: String? = nil,
         collisionChoice: CollisionChoice? = nil,
+        approvedCollision: FileCollision? = nil,
         registry: DocumentBufferRegistry? = nil
     ) async throws -> FileMutationOutcome {
         guard let sourceURL = document.fileURL else { return .cancelled }
         _ = try sourceWorkspace.save(document)
+        let sourceAtApproval = try await fileIO.snapshot(at: sourceURL)
+        if let expected = document.expectedDiskRevision,
+           !Workspace.sameContent(sourceAtApproval.revision, expected) {
+            try sourceWorkspace.reconcileExternalChange(for: document)
+            throw MoveError.sourceChanged(sourceURL)
+        }
         registry?.suspendAutosave(for: document.id)
         defer { registry?.resumeAutosave(for: document.id) }
 
@@ -73,6 +83,14 @@ final class DocumentMover {
                 destinationURL = try await fileIO.availableSibling(for: destinationURL)
             case .replace:
                 let replaced = try await fileIO.snapshot(at: destinationURL)
+                guard approvedCollision?.proposedLocator == proposedLocator,
+                      let approvedRevision = approvedCollision?.existingRevision,
+                      replaced.revision == approvedRevision else {
+                    return .collision(FileCollision(
+                        proposedLocator: proposedLocator,
+                        existingRevision: replaced.revision
+                    ))
+                }
                 let displacedDocument = registry?.document(
                     at: destinationURL,
                     in: destinationWorkspace
@@ -94,11 +112,32 @@ final class DocumentMover {
                     sourceModificationDate: replaced.revision.modificationDate
                 )
                 let installedData = Data(document.text.utf8)
-                let replaceOutcome = try await fileIO.replace(
-                    contents: installedData,
-                    at: destinationURL,
-                    onlyIf: replaced.revision
+                let snapshot = document.snapshot()
+                let moveTransaction = try await fileIO.beginMoveTransaction(
+                    documentID: document.id,
+                    generation: BufferGeneration(
+                        bufferID: document.id.rawValue,
+                        revision: snapshot.revision
+                    ),
+                    sourceRootURL: sourceWorkspace.rootURL,
+                    destinationRootURL: destinationWorkspace.rootURL,
+                    sourceURL: sourceURL,
+                    destinationURL: destinationURL,
+                    sourceRevision: sourceAtApproval.revision,
+                    destinationRevision: replaced.revision,
+                    candidate: installedData
                 )
+                let replaceOutcome: AtomicReplaceOutcome
+                do {
+                    replaceOutcome = try await fileIO.replace(
+                        contents: installedData,
+                        at: destinationURL,
+                        onlyIf: replaced.revision
+                    )
+                } catch {
+                    _ = try? await fileIO.abortMoveTransactionIfUncommitted(moveTransaction)
+                    throw error
+                }
                 guard case .replaced = replaceOutcome else {
                     if case .revisionMismatch(let retainedURL?) = replaceOutcome {
                         let retained = try await fileIO.snapshot(at: retainedURL)
@@ -108,16 +147,23 @@ final class DocumentMover {
                             data: retained.data,
                             sourceModificationDate: retained.revision.modificationDate
                         )
-                        try await fileIO.remove(at: retainedURL)
+                        try await fileIO.discardRetainedSidecar(at: retainedURL)
                     }
+                    _ = try? await fileIO.abortMoveTransactionIfUncommitted(moveTransaction)
                     throw MoveError.destinationChanged(destinationURL)
                 }
-                try await fileIO.remove(at: sourceURL)
+
+                let recoveryNotice = await quarantineAndValidateSource(
+                    moveTransaction,
+                    approvedSource: sourceAtApproval.revision,
+                    document: document,
+                    sourceWorkspace: sourceWorkspace
+                )
                 if let displacedDocument, displacedDocument !== document {
                     displacedDocument.markUnbacked(previous: proposedLocator)
                     registry?.detach(displacedDocument.id, from: proposedLocator)
                 }
-                return try await finishMove(
+                let result = try await finishMove(
                     document,
                     sourceURL: sourceURL,
                     destinationURL: destinationURL,
@@ -126,19 +172,65 @@ final class DocumentMover {
                     installedData: installedData,
                     registry: registry
                 )
+                if let recoveryNotice, case .completed(let locator) = result {
+                    return .completedWithRecovery(locator, recoveryNotice)
+                }
+                return result
             }
         }
 
-        try await fileIO.move(from: sourceURL, to: destinationURL)
-        return try await finishMove(
+        let installedData = sourceAtApproval.data
+        let moveTransaction = try await fileIO.beginMoveTransaction(
+            documentID: document.id,
+            generation: BufferGeneration(
+                bufferID: document.id.rawValue,
+                revision: document.snapshot().revision
+            ),
+            sourceRootURL: sourceWorkspace.rootURL,
+            destinationRootURL: destinationWorkspace.rootURL,
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            sourceRevision: sourceAtApproval.revision,
+            destinationRevision: nil,
+            candidate: installedData
+        )
+        let created: Bool
+        do {
+            created = try await fileIO.create(contents: installedData, at: destinationURL)
+        } catch {
+            _ = try? await fileIO.abortMoveTransactionIfUncommitted(moveTransaction)
+            throw error
+        }
+        guard created else {
+            try? await fileIO.finishMoveTransaction(
+                moveTransaction,
+                removeQuarantine: false
+            )
+            let locator = try destinationWorkspace.locator(for: destinationURL)
+            return .collision(FileCollision(
+                proposedLocator: locator,
+                existingRevision: try? await fileIO.revision(at: destinationURL)
+            ))
+        }
+        let recoveryNotice = await quarantineAndValidateSource(
+            moveTransaction,
+            approvedSource: sourceAtApproval.revision,
+            document: document,
+            sourceWorkspace: sourceWorkspace
+        )
+        let result = try await finishMove(
             document,
             sourceURL: sourceURL,
             destinationURL: destinationURL,
             sourceWorkspace: sourceWorkspace,
             destinationWorkspace: destinationWorkspace,
-            installedData: nil,
+            installedData: installedData,
             registry: registry
         )
+        if let recoveryNotice, case .completed(let locator) = result {
+            return .completedWithRecovery(locator, recoveryNotice)
+        }
+        return result
     }
 
     @discardableResult
@@ -167,6 +259,60 @@ final class DocumentMover {
     func reveal(_ document: Document) {
         guard let fileURL = document.fileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+
+    private func quarantineAndValidateSource(
+        _ transaction: InterruptedMoveContext,
+        approvedSource: DiskRevision,
+        document: Document,
+        sourceWorkspace: Workspace
+    ) async -> FileRecoveryNotice? {
+        let sourceURL = transaction.manifest.sourceURL
+        do {
+            try await fileIO.quarantineSource(transaction)
+            if try await fileIO.finishMoveTransactionIfSourceMatches(
+                transaction,
+                revision: approvedSource
+            ) {
+                return nil
+            }
+
+            let quarantined = try await fileIO.quarantinedSnapshot(transaction)
+            var journalURL: URL?
+            do {
+                journalURL = try sourceWorkspace.checkpointCrashRecovery(
+                    data: quarantined.data,
+                    documentID: document.id,
+                    generation: transaction.manifest.generation,
+                    filename: sourceURL.lastPathComponent,
+                    targetURL: sourceURL,
+                    reason: .interruptedMove
+                )
+                if journalURL != nil {
+                    try await fileIO.finishMoveTransaction(
+                        transaction,
+                        removeQuarantine: true
+                    )
+                }
+            } catch {
+                // The manifest and quarantine remain discoverable. If the WAL
+                // write succeeded, report that durable location even when
+                // subsequent cleanup failed.
+            }
+            return FileRecoveryNotice(
+                transactionID: transaction.manifest.id,
+                sourceURL: sourceURL,
+                retainedURL: journalURL ?? transaction.manifest.quarantineURL
+            )
+        } catch {
+            return FileRecoveryNotice(
+                transactionID: transaction.manifest.id,
+                sourceURL: sourceURL,
+                retainedURL: fileManager.fileExists(
+                    atPath: transaction.manifest.quarantineURL.path
+                ) ? transaction.manifest.quarantineURL : sourceURL
+            )
+        }
     }
 
     private func finishMove(
@@ -238,8 +384,78 @@ private actor FileMutationExecutor {
         try writer.replace(contents: contents, at: url, onlyIf: revision)
     }
 
+    func create(contents: Data, at url: URL) throws -> Bool {
+        try writer.create(contents: contents, at: url)
+    }
+
     func remove(at url: URL) throws {
         try fileManager.removeItem(at: url)
+    }
+
+    func discardRetainedSidecar(at url: URL) throws {
+        try AtomicWriteTransactions.discardRetainedSidecar(at: url)
+    }
+
+    func beginMoveTransaction(
+        documentID: DocumentID,
+        generation: BufferGeneration,
+        sourceRootURL: URL,
+        destinationRootURL: URL,
+        sourceURL: URL,
+        destinationURL: URL,
+        sourceRevision: DiskRevision,
+        destinationRevision: DiskRevision?,
+        candidate: Data
+    ) throws -> InterruptedMoveContext {
+        try InterruptedMoveTransactions.begin(
+            documentID: documentID,
+            generation: generation,
+            sourceRootURL: sourceRootURL,
+            destinationRootURL: destinationRootURL,
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            sourceRevision: sourceRevision,
+            destinationRevision: destinationRevision,
+            candidate: candidate
+        )
+    }
+
+    func quarantineSource(_ context: InterruptedMoveContext) throws {
+        try InterruptedMoveTransactions.quarantineSource(context)
+    }
+
+    func quarantinedSnapshot(
+        _ context: InterruptedMoveContext
+    ) throws -> (data: Data, revision: DiskRevision) {
+        try DocumentRevisionReader.snapshot(at: context.manifest.quarantineURL)
+    }
+
+    func finishMoveTransactionIfSourceMatches(
+        _ context: InterruptedMoveContext,
+        revision expected: DiskRevision
+    ) throws -> Bool {
+        let current = try DocumentRevisionReader.revision(
+            at: context.manifest.quarantineURL
+        )
+        guard Workspace.sameContent(current, expected) else { return false }
+        try InterruptedMoveTransactions.finish(context, removeQuarantine: true)
+        return true
+    }
+
+    func finishMoveTransaction(
+        _ context: InterruptedMoveContext,
+        removeQuarantine: Bool
+    ) throws {
+        try InterruptedMoveTransactions.finish(
+            context,
+            removeQuarantine: removeQuarantine
+        )
+    }
+
+    func abortMoveTransactionIfUncommitted(
+        _ context: InterruptedMoveContext
+    ) throws -> Bool {
+        try InterruptedMoveTransactions.abortIfDestinationUnchanged(context)
     }
 
     func move(from sourceURL: URL, to destinationURL: URL) throws {

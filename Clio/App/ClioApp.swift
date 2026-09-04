@@ -87,6 +87,9 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     let appState: AppState
 
     override init() {
+        #if DEBUG
+        CrashTestDriver.runIfRequested()
+        #endif
         appState = AppState()
         super.init()
     }

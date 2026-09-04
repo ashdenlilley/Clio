@@ -45,6 +45,7 @@ final class Autosaver {
     /// document is materialized immediately; normal revisions are debounced.
     func documentDidChange(_ document: Document) {
         guard document.isDirty else { return }
+        workspace.scheduleCrashRecovery(for: document)
 
         if isSuspended {
             pendingDocument = document

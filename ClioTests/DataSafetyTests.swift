@@ -517,11 +517,21 @@ final class DataSafetyTests: XCTestCase {
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
             )
 
+            let proposal = try await mover.move(
+                document,
+                from: source,
+                to: destination,
+                registry: registry
+            )
+            guard case .collision(let approvedCollision) = proposal else {
+                return XCTFail("Expected collision approval")
+            }
             _ = try await mover.move(
                 document,
                 from: source,
                 to: destination,
                 collisionChoice: .replace,
+                approvedCollision: approvedCollision,
                 registry: registry
             )
 
@@ -555,11 +565,21 @@ final class DataSafetyTests: XCTestCase {
                 recoveryStore: RecoveryStore(rootURL: recoveryURL)
             )
 
+            let proposal = try await mover.move(
+                moving,
+                from: source,
+                to: destination,
+                registry: registry
+            )
+            guard case .collision(let approvedCollision) = proposal else {
+                return XCTFail("Expected collision approval")
+            }
             _ = try await mover.move(
                 moving,
                 from: source,
                 to: destination,
                 collisionChoice: .replace,
+                approvedCollision: approvedCollision,
                 registry: registry
             )
 

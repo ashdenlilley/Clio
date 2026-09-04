@@ -621,12 +621,22 @@ extension DataSafetyAuditTests {
                 )
             }
             let document = try XCTUnwrap(first.document)
+            let proposal = try await mover.move(
+                document,
+                from: source,
+                to: destination,
+                registry: registry
+            )
+            guard case .collision(let approvedCollision) = proposal else {
+                return XCTFail("Expected collision approval")
+            }
             let moving = Task { @MainActor in
                 try await mover.move(
                     document,
                     from: source,
                     to: destination,
                     collisionChoice: .replace,
+                    approvedCollision: approvedCollision,
                     registry: registry
                 )
             }
