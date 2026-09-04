@@ -52,8 +52,10 @@ private struct EditorWindowRoot: View {
     var body: some View {
         ContentView()
             .environment(windowSession)
+            .environment(windowSession.exportPresentation)
             .focusedSceneValue(\.editorWindowSession, windowSession)
             .focusedSceneValue(\.editorSession, windowSession.activeTab)
+            .focusedSceneValue(\.documentExportPresentation, windowSession.exportPresentation)
             .onAppear {
                 windowSession.connect(to: appState)
             }

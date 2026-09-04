@@ -25,6 +25,7 @@ func isClioEditorWindow(_ window: NSWindow) -> Bool {
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @Environment(EditorWindowSession.self) private var windowSession
+    @Environment(DocumentExportPresentation.self) private var exportPresentation
 
     var body: some View {
         Group {
@@ -136,6 +137,16 @@ struct ContentView: View {
             }
         } message: { collision in
             Text("\(collision.proposedLocator.relativePath) is already present. Replace it or keep both using the next “name (2).md” variant.")
+        }
+        .modifier(DocumentExportPresentationModifier())
+        .onReceive(
+            NotificationCenter.default.publisher(for: .clioRequestedExport)
+        ) { notification in
+            guard let requestedSession = notification.object as? EditorSession,
+                  requestedSession === windowSession.activeTab else { return }
+            let arguments = notification.userInfo?[ClioExportNotificationKey.arguments]
+                as? [String] ?? []
+            exportPresentation.requestExport(arguments: arguments)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { notification in
             guard let window = notification.object as? NSWindow,

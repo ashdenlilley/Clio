@@ -26,6 +26,7 @@ struct ClioCommands: Commands {
     @Bindable private var appState: AppState
     @FocusedValue(\.editorSession) private var editorSession
     @FocusedValue(\.editorWindowSession) private var editorWindowSession
+    @FocusedValue(\.documentExportPresentation) private var exportPresentation
 
     init(appState: AppState) {
         self.appState = appState
@@ -74,6 +75,30 @@ struct ClioCommands: Commands {
             }
             .keyboardShortcut("f", modifiers: [.command, .shift])
             .disabled(editorWindowSession == nil)
+        }
+
+        CommandGroup(after: .saveItem) {
+            Button("Export…") {
+                exportPresentation?.requestExport()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(editorSession?.isReady != true || exportPresentation == nil)
+
+            Menu("Export As") {
+                Button("PDF…") {
+                    exportPresentation?.requestExport(as: .pdf)
+                }
+                Button("HTML…") {
+                    exportPresentation?.requestExport(as: .html)
+                }
+            }
+            .disabled(editorSession?.isReady != true || exportPresentation == nil)
+
+            Button("Page Setup…") {
+                exportPresentation?.presentPageSetup()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(exportPresentation == nil)
         }
 
         CommandMenu("Writing") {
