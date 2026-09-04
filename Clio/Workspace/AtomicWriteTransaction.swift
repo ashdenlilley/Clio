@@ -109,14 +109,18 @@ enum AtomicWriteTransactions {
   @discardableResult
   static func recoverInterruptedTransactions(
     in rootURL: URL,
-    journal: CrashRecoveryJournal
+    journal: CrashRecoveryJournal,
+    recursively: Bool = true
   ) throws -> Int {
     let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+    let options: FileManager.DirectoryEnumerationOptions = recursively
+      ? [.skipsPackageDescendants]
+      : [.skipsPackageDescendants, .skipsSubdirectoryDescendants]
     guard
       let enumerator = FileManager.default.enumerator(
         at: root,
         includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-        options: [.skipsPackageDescendants]
+        options: options
       )
     else { return 0 }
 
