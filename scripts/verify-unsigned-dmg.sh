@@ -89,8 +89,7 @@ grep -q 'swift-cmark' "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" ||
 
 UNEXPECTED_DEPENDENCIES="$(
     otool -L "${EXECUTABLE_PATH}" \
-        | tail -n +2 \
-        | awk '{ print $1 }' \
+        | awk '/^[[:space:]]/ { print $1 }' \
         | grep -Ev '^(/System/Library/|/usr/lib/)' \
         || true
 )"
