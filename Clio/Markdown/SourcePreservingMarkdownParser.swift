@@ -11,9 +11,8 @@ enum MarkdownParserError: LocalizedError, Equatable {
     }
 }
 
-/// A bundled parser whose ranges always address the original UTF-16 source.
-/// It produces semantic structure and presentation spans without rewriting a
-/// byte or hiding syntax markers.
+/// Source-preserving facade over the revision-pinned swift-markdown/cmark-gfm
+/// semantic parser and Clio's marker-aware presentation lexer.
 struct SourcePreservingMarkdownParser: MarkdownParsing {
     static let reducedHighlightUTF16Limit = 1_048_576
 
@@ -23,42 +22,54 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
             throw MarkdownParserError.sourceExceedsSafeLimit(snapshot.source.utf8.count)
         }
 
+        let semantics = try SwiftMarkdownSemanticParser(source: snapshot.source).parse()
+        try Task.checkCancellation()
+
         if snapshot.sizeMode == .safeLargeFile {
-            var parser = MarkdownBlockParser(
-                source: snapshot.source,
-                mode: .reduced,
-                spanLimit: Self.reducedHighlightUTF16Limit
-            )
-            var result = try parser.parse()
-            result.diagnostics.append(MarkdownDiagnostic(
+            let visibleSpans = try Self.reducedHighlightingSpans(in: snapshot.source)
+            let boundedSemanticSpans = semantics.spans.filter {
+                $0.range.upperBound <= Self.reducedHighlightUTF16Limit
+            }
+            let extensionBlocks = try MarkdownExtensionModelScanner(snapshot.source).scan()
+            let diagnostic = MarkdownDiagnostic(
                 severity: .note,
                 message: "Reduced highlighting is active for this large document.",
                 range: nil
-            ))
+            )
             return ParsedMarkdown(
                 documentID: snapshot.documentID,
                 generation: snapshot.generation,
                 sourceFingerprint: snapshot.sourceFingerprint,
                 sizeMode: snapshot.sizeMode,
-                document: MarkdownDocumentModel(blocks: result.blocks),
-                spans: result.spans.sorted(by: Self.spanOrder),
-                diagnostics: result.diagnostics
+                document: MarkdownDocumentModel(blocks: Self.applyingExtensions(
+                    extensionBlocks,
+                    to: semantics.blocks
+                )),
+                spans: Self.normalizedSpans(visibleSpans + boundedSemanticSpans),
+                diagnostics: [diagnostic]
             )
         }
 
-        var parser = MarkdownBlockParser(
+        var parser = MarkdownPresentationLexer(
             source: snapshot.source,
             mode: MarkdownHighlightingMode(sizeMode: snapshot.sizeMode)
         )
-        let result = try parser.parse()
+        let presentation = try parser.parse()
+        let blocks = Self.applyingExtensions(
+            presentation.extensionBlocks,
+            to: semantics.blocks
+        )
         return ParsedMarkdown(
             documentID: snapshot.documentID,
             generation: snapshot.generation,
             sourceFingerprint: snapshot.sourceFingerprint,
             sizeMode: snapshot.sizeMode,
-            document: MarkdownDocumentModel(blocks: result.blocks),
-            spans: result.spans.sorted(by: Self.spanOrder),
-            diagnostics: result.diagnostics
+            document: MarkdownDocumentModel(blocks: blocks),
+            spans: Self.normalizedSpans(
+                presentation.spans.filter { !Self.semanticDelimiterKinds.contains($0.kind) }
+                    + semantics.spans
+            ),
+            diagnostics: presentation.diagnostics
         )
     }
 
@@ -71,12 +82,14 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         let prefixEnd = composedCap > 0
             ? NSMaxRange(text.lineRange(for: NSRange(location: composedCap - 1, length: 0)))
             : 0
-        var parser = MarkdownBlockParser(
+        var parser = MarkdownPresentationLexer(
             source: text.substring(to: min(prefixEnd, text.length)),
             mode: .reduced,
             spanLimit: reducedHighlightUTF16Limit
         )
-        return try parser.parse().spans
+        return try parser.parse().spans.filter {
+            !semanticDelimiterKinds.contains($0.kind)
+        }
     }
 
     static func parse(
@@ -90,14 +103,45 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
             generation: generation,
             filename: filename,
             source: source,
-            sourceFingerprint: StableSourceFingerprint.make(source)
+            sourceFingerprint: try StableSourceFingerprint.makeCheckingCancellation(source)
         ))
     }
 
-    private static func spanOrder(_ lhs: MarkdownSpan, _ rhs: MarkdownSpan) -> Bool {
+    static func spanOrder(_ lhs: MarkdownSpan, _ rhs: MarkdownSpan) -> Bool {
         if lhs.range.location != rhs.range.location { return lhs.range.location < rhs.range.location }
         if lhs.range.length != rhs.range.length { return lhs.range.length > rhs.range.length }
         return String(describing: lhs.role) < String(describing: rhs.role)
+    }
+
+    static func normalizedSpans(_ spans: [MarkdownSpan]) -> [MarkdownSpan] {
+        Array(Set(spans)).sorted(by: spanOrder)
+    }
+
+    private static let semanticDelimiterKinds: Set<MarkdownSemanticKind> = [
+        .emphasis, .strong, .strikethrough,
+    ]
+
+    /// Front matter and footnotes are intentional Clio extensions layered on
+    /// top of CommonMark/GFM. Extension blocks replace native interpretations
+    /// only where their exact source ranges overlap.
+    private static func applyingExtensions(
+        _ scanned: [MarkdownBlock],
+        to semantic: [MarkdownBlock]
+    ) -> [MarkdownBlock] {
+        let extensions = scanned.filter { block in
+            switch block {
+            case .frontMatter, .footnoteDefinition: return true
+            default: return false
+            }
+        }
+        guard !extensions.isEmpty else { return semantic }
+        let extensionRanges = extensions.map(\.sourceRange)
+        let retained = semantic.filter { block in
+            !extensionRanges.contains { $0.intersects(block.sourceRange) }
+        }
+        return (retained + extensions).sorted {
+            $0.sourceRange.location < $1.sourceRange.location
+        }
     }
 }
 
@@ -112,19 +156,58 @@ enum StableSourceFingerprint {
         }
         return String(value, radix: 16)
     }
+
+    static func makeCheckingCancellation(_ source: String) throws -> String {
+        var value: UInt64 = 14_695_981_039_346_656_037
+        var scanned = 0
+        for byte in source.utf8 {
+            value ^= UInt64(byte)
+            value &*= 1_099_511_628_211
+            scanned += 1
+            if scanned == 65_536 {
+                try Task.checkCancellation()
+                scanned = 0
+            }
+        }
+        try Task.checkCancellation()
+        return String(value, radix: 16)
+    }
 }
 
-private struct MarkdownParseResult {
-    var blocks: [MarkdownBlock] = []
+private extension MarkdownBlock {
+    var sourceRange: UTF16Range {
+        switch self {
+        case .paragraph(_, let range), .heading(_, _, let range),
+             .blockquote(_, let range), .codeFence(_, _, let range),
+             .thematicBreak(let range), .frontMatter(_, let range),
+             .footnoteDefinition(_, _, let range), .rawHTML(_, let range):
+            return range
+        case .list(let list): return list.range
+        case .table(let table): return table.range
+        }
+    }
+}
+
+private extension UTF16Range {
+    func intersects(_ other: UTF16Range) -> Bool {
+        location < other.upperBound && other.location < upperBound
+    }
+}
+
+private struct MarkdownPresentationResult {
+    var extensionBlocks: [MarkdownBlock] = []
     var spans: [MarkdownSpan] = []
     var diagnostics: [MarkdownDiagnostic] = []
 }
 
-private struct MarkdownBlockParser {
+/// Marker-aware lexer only. CommonMark/GFM semantics always come from
+/// SwiftMarkdownSemanticParser; the only model nodes emitted here are Clio's
+/// front-matter and footnote extensions.
+private struct MarkdownPresentationLexer {
     private let map: MarkdownSource
     private let mode: MarkdownHighlightingMode
     private let spanLimit: Int?
-    private var result = MarkdownParseResult()
+    private var result = MarkdownPresentationResult()
     private var lineIndex = 0
 
     init(source: String, mode: MarkdownHighlightingMode, spanLimit: Int? = nil) {
@@ -133,13 +216,13 @@ private struct MarkdownBlockParser {
         self.spanLimit = spanLimit
     }
 
-    mutating func parse() throws -> MarkdownParseResult {
+    mutating func parse() throws -> MarkdownPresentationResult {
         if parseFrontMatter() { lineIndex += 1 }
         while lineIndex < map.lines.count {
             if lineIndex.isMultiple(of: 256) { try Task.checkCancellation() }
             if map.lines[lineIndex].isBlank {
                 lineIndex += 1
-            } else if parseFence() {
+            } else if try parseFence() {
                 continue
             } else if parseATXHeading() {
                 continue
@@ -161,6 +244,7 @@ private struct MarkdownBlockParser {
                 parseParagraph()
             }
         }
+        try Task.checkCancellation()
         return result
     }
 
@@ -174,7 +258,7 @@ private struct MarkdownBlockParser {
         }
         guard let closing else { return false }
         let range = union(map.lines[0].fullRange, map.lines[closing].fullRange)
-        result.blocks.append(.frontMatter(source: map.substring(range), range: range.utf16))
+        result.extensionBlocks.append(.frontMatter(source: map.substring(range), range: range.utf16))
         addSpan(.frontMatter, .marker, map.lines[0].contentRange)
         addSpan(.frontMatter, .marker, map.lines[closing].contentRange)
         if closing > 1 {
@@ -188,7 +272,7 @@ private struct MarkdownBlockParser {
         return true
     }
 
-    private mutating func parseFence() -> Bool {
+    private mutating func parseFence() throws -> Bool {
         let openingLine = map.lines[lineIndex]
         guard let opening = openingLine.fence else { return false }
         var closingIndex: Int?
@@ -209,11 +293,6 @@ private struct MarkdownBlockParser {
         let bodyEnd = closingIndex.map { map.lines[$0].fullRange.location } ?? NSMaxRange(range)
         let bodyRange = NSRange(location: bodyStart, length: max(0, bodyEnd - bodyStart))
         let language = opening.infoRange.map { map.substring($0).trimmingCharacters(in: .whitespaces) }
-        result.blocks.append(.codeFence(
-            language: language?.isEmpty == false ? language : nil,
-            source: map.substring(bodyRange),
-            range: range.utf16
-        ))
         addSpan(.codeFence, .marker, opening.markerRange)
         if let info = opening.infoRange { addSpan(.codeFence, .infoString, info) }
         if let closingIndex, let closing = map.lines[closingIndex].fence {
@@ -228,7 +307,7 @@ private struct MarkdownBlockParser {
         if bodyRange.length > 0 {
             addSpan(.codeFence, .content, bodyRange)
             if mode == .full {
-                result.spans.append(contentsOf: MarkdownCodeTokenizer.spans(
+                result.spans.append(contentsOf: try MarkdownCodeTokenizer.spans(
                     in: map.substring(bodyRange),
                     offset: bodyRange.location,
                     language: language
@@ -269,9 +348,8 @@ private struct MarkdownBlockParser {
             location: line.contentRange.location + cursor,
             length: max(0, end - cursor)
         )
-        let content = parseInline(contentRange)
+        _ = parseInline(contentRange)
         addSpan(.heading, .content, contentRange, level: level)
-        result.blocks.append(.heading(level: level, content: content, range: line.fullRange.utf16))
         lineIndex += 1
         return true
     }
@@ -282,14 +360,9 @@ private struct MarkdownBlockParser {
               let level = setextLevel(map.lines[lineIndex + 1]) else { return false }
         let contentLine = map.lines[lineIndex]
         let ruleLine = map.lines[lineIndex + 1]
-        let content = parseInline(contentLine.contentRange)
+        _ = parseInline(contentLine.contentRange)
         addSpan(.heading, .content, contentLine.contentRange, level: level)
         addSpan(.heading, .marker, ruleLine.contentRange, level: level)
-        result.blocks.append(.heading(
-            level: level,
-            content: content,
-            range: union(contentLine.fullRange, ruleLine.fullRange).utf16
-        ))
         lineIndex += 2
         return true
     }
@@ -309,7 +382,6 @@ private struct MarkdownBlockParser {
               marker == "*" || marker == "-" || marker == "_",
               compact.allSatisfy({ $0 == marker }),
               line.indentation <= 3 else { return false }
-        result.blocks.append(.thematicBreak(range: line.fullRange.utf16))
         addSpan(.thematicBreak, .blockRule, line.contentRange)
         lineIndex += 1
         return true
@@ -324,17 +396,27 @@ private struct MarkdownBlockParser {
         let label = (line.text as NSString).substring(with: labelLocal)
         let markerLength = max(0, bodyLocal.location)
         let markerRange = NSRange(location: line.contentRange.location, length: markerLength)
-        let bodyRange = bodyLocal.offset(by: line.contentRange.location)
+        let firstBodyRange = bodyLocal.offset(by: line.contentRange.location)
+        var lastLine = lineIndex
+        while lastLine + 1 < map.lines.count {
+            let continuation = map.lines[lastLine + 1]
+            guard !continuation.isBlank, continuation.indentation >= 4 else { break }
+            lastLine += 1
+        }
+        let bodyRange = NSRange(
+            location: firstBodyRange.location,
+            length: NSMaxRange(map.lines[lastLine].contentRange) - firstBodyRange.location
+        )
         addSpan(.footnote, .marker, markerRange)
         addSpan(.footnote, .content, bodyRange)
         let content = parseInline(bodyRange)
         let paragraph = MarkdownBlock.paragraph(content: content, range: bodyRange.utf16)
-        result.blocks.append(.footnoteDefinition(
+        result.extensionBlocks.append(.footnoteDefinition(
             label: label,
             blocks: [paragraph],
-            range: line.fullRange.utf16
+            range: union(line.fullRange, map.lines[lastLine].fullRange).utf16
         ))
-        lineIndex += 1
+        lineIndex = lastLine + 1
         return true
     }
 
@@ -358,28 +440,16 @@ private struct MarkdownBlockParser {
             cursor += 1
         }
 
-        func cells(_ ranges: [NSRange], parser: inout MarkdownBlockParser) -> [MarkdownTableCell] {
-            ranges.map { range in
-                parser.addSpan(.table, .content, range)
-                return MarkdownTableCell(content: parser.parseInline(range), range: range.utf16)
-            }
+        for range in headerRanges + rowRanges.flatMap({ $0 }) {
+            addSpan(.table, .content, range)
+            _ = parseInline(range)
         }
-        let header = cells(headerRanges, parser: &self)
-        let rows = rowRanges.map { cells($0, parser: &self) }
         for pipe in pipeRanges(in: headerLine) { addSpan(.table, .marker, pipe) }
         for pipe in pipeRanges(in: delimiterLine) { addSpan(.table, .marker, pipe) }
         addSpan(.table, .blockRule, delimiterLine.contentRange)
         for row in lineIndex + 2..<cursor {
             for pipe in pipeRanges(in: map.lines[row]) { addSpan(.table, .marker, pipe) }
         }
-        let last = map.lines[max(lineIndex + 1, cursor - 1)]
-        let range = union(headerLine.fullRange, last.fullRange)
-        result.blocks.append(.table(MarkdownTable(
-            alignments: alignments,
-            header: header,
-            rows: rows,
-            range: range.utf16
-        )))
         lineIndex = cursor
         return true
     }
@@ -470,10 +540,8 @@ private struct MarkdownBlockParser {
     private mutating func parseList() -> Bool {
         guard let first = listPrefix(in: map.lines[lineIndex]) else { return false }
         let isOrdered = first.number != nil
-        let start = first.number
-        let listStart = lineIndex
-        var items: [MarkdownListItem] = []
         var cursor = lineIndex
+        var itemCount = 0
 
         while cursor < map.lines.count,
               let prefix = listPrefix(in: map.lines[cursor]),
@@ -484,13 +552,11 @@ private struct MarkdownBlockParser {
             let lineEnd = NSMaxRange(line.contentRange)
             while bodyStart < lineEnd,
                   isWhitespace((map.source as NSString).character(at: bodyStart)) { bodyStart += 1 }
-            var taskState: MarkdownTaskState?
             if lineEnd - bodyStart >= 3 {
                 let candidate = (map.source as NSString).substring(
                     with: NSRange(location: bodyStart, length: 3)
                 ).lowercased()
                 if candidate == "[ ]" || candidate == "[x]" {
-                    taskState = candidate == "[x]" ? .checked : .unchecked
                     addSpan(.task, .marker, NSRange(location: bodyStart, length: 3))
                     bodyStart += 3
                     while bodyStart < lineEnd,
@@ -498,24 +564,12 @@ private struct MarkdownBlockParser {
                 }
             }
             let bodyRange = NSRange(location: bodyStart, length: max(0, lineEnd - bodyStart))
-            let content = parseInline(bodyRange)
+            _ = parseInline(bodyRange)
             addSpan(isOrdered ? .orderedList : .unorderedList, .content, bodyRange)
-            items.append(MarkdownListItem(
-                taskState: taskState,
-                blocks: [.paragraph(content: content, range: bodyRange.utf16)],
-                range: line.fullRange.utf16
-            ))
+            itemCount += 1
             cursor += 1
         }
-        guard !items.isEmpty else { return false }
-        let range = union(map.lines[listStart].fullRange, map.lines[cursor - 1].fullRange)
-        result.blocks.append(.list(MarkdownList(
-            isOrdered: isOrdered,
-            start: start,
-            isTight: true,
-            items: items,
-            range: range.utf16
-        )))
+        guard itemCount > 0 else { return false }
         lineIndex = cursor
         return true
     }
@@ -533,9 +587,7 @@ private struct MarkdownBlockParser {
 
     private mutating func parseBlockquote() -> Bool {
         guard quotePrefix(in: map.lines[lineIndex]) != nil else { return false }
-        let start = lineIndex
         var cursor = lineIndex
-        var childBlocks: [MarkdownBlock] = []
         while cursor < map.lines.count, let prefix = quotePrefix(in: map.lines[cursor]) {
             let line = map.lines[cursor]
             addSpan(.blockquote, .marker, prefix)
@@ -547,14 +599,9 @@ private struct MarkdownBlockParser {
             }
             let contentRange = NSRange(location: contentStart, length: max(0, end - contentStart))
             addSpan(.blockquote, .content, contentRange)
-            childBlocks.append(.paragraph(
-                content: parseInline(contentRange),
-                range: contentRange.utf16
-            ))
+            _ = parseInline(contentRange)
             cursor += 1
         }
-        let range = union(map.lines[start].fullRange, map.lines[cursor - 1].fullRange)
-        result.blocks.append(.blockquote(blocks: childBlocks, range: range.utf16))
         lineIndex = cursor
         return true
     }
@@ -571,7 +618,6 @@ private struct MarkdownBlockParser {
         guard mode == .full,
               trimmed.hasPrefix("<"), trimmed.hasSuffix(">"),
               firstMatch(#"^</?[A-Za-z][^>]*>$"#, in: trimmed) != nil else { return false }
-        result.blocks.append(.rawHTML(source: line.text, range: line.fullRange.utf16))
         addSpan(.paragraph, .content, line.contentRange)
         lineIndex += 1
         return true
@@ -592,14 +638,12 @@ private struct MarkdownBlockParser {
             cursor += 1
         }
         let end = cursor - 1
-        let range = union(map.lines[start].fullRange, map.lines[end].fullRange)
         let contentRange = NSRange(
             location: map.lines[start].contentRange.location,
             length: NSMaxRange(map.lines[end].contentRange) - map.lines[start].contentRange.location
         )
-        let content = parseInline(contentRange)
+        _ = parseInline(contentRange)
         addSpan(.paragraph, .content, contentRange)
-        result.blocks.append(.paragraph(content: content, range: range.utf16))
         lineIndex = cursor
     }
 
@@ -623,7 +667,7 @@ private struct MarkdownBlockParser {
             let value = map.substring(range)
             return value.isEmpty ? [] : [.text(value: value, range: range.utf16)]
         }
-        var parser = MarkdownInlineParser(
+        var parser = MarkdownMarkerLexer(
             source: map.source,
             range: range,
             spans: result.spans

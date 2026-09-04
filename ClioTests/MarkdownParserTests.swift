@@ -121,13 +121,27 @@ final class MarkdownParserTests: XCTestCase {
         let sentinel = "TAIL_SENTINEL_Clio"
         let byteCount = PerformanceContract.fullMarkdownByteLimit + 4_096
         let prefix = "# large\n\n"
+        let tail = "\n\n# \(sentinel)\n\nRef [^tail].\n\n[^tail]: tail footnote semantics\n"
         let source = prefix
-            + String(repeating: "x", count: byteCount - prefix.utf8.count - sentinel.utf8.count)
-            + sentinel
+            + String(repeating: "x", count: byteCount - prefix.utf8.count - tail.utf8.count)
+            + tail
         let parsed = try await SourcePreservingMarkdownParser.parse(source: source)
 
         XCTAssertEqual(parsed.sizeMode, .safeLargeFile)
         XCTAssertTrue(model(parsed.document, contains: sentinel))
+        XCTAssertTrue(parsed.document.blocks.contains { block in
+            if case .heading(level: 1, content: _, range: let range) = block {
+                return range.location > SourcePreservingMarkdownParser.reducedHighlightUTF16Limit
+            }
+            return false
+        })
+        XCTAssertTrue(parsed.document.blocks.contains { block in
+            if case .footnoteDefinition(label: "tail", blocks: let blocks, range: let range) = block {
+                return !blocks.isEmpty
+                    && range.location > SourcePreservingMarkdownParser.reducedHighlightUTF16Limit
+            }
+            return false
+        })
         XCTAssertLessThanOrEqual(
             parsed.spans.map(\.range.upperBound).max() ?? 0,
             SourcePreservingMarkdownParser.reducedHighlightUTF16Limit

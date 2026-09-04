@@ -1,6 +1,8 @@
 import Foundation
 
-struct MarkdownInlineParser {
+/// Source-marker lexer used for presentation and Clio-only footnote syntax.
+/// CommonMark/GFM semantic interpretation is owned by swift-markdown.
+struct MarkdownMarkerLexer {
     private let source: NSString
     private let range: NSRange
     private var cursor: Int
@@ -24,6 +26,10 @@ struct MarkdownInlineParser {
         var nodes: [MarkdownInline] = []
         let end = NSMaxRange(range)
         while cursor < end {
+            if cursor.isMultiple(of: 4_096), Task.isCancelled {
+                cursor = end
+                break
+            }
             let scalar = source.character(at: cursor)
             if scalar == 0x5C, cursor + 1 < end {
                 cursor += 2
@@ -116,7 +122,7 @@ struct MarkdownInlineParser {
         let whole = NSRange(location: cursor, length: NSMaxRange(closing) - cursor)
         addSpan(kind, .marker, opening)
         addSpan(kind, .content, contentRange)
-        var nested = MarkdownInlineParser(
+        var nested = MarkdownMarkerLexer(
             source: source as String,
             range: contentRange,
             spans: spans
@@ -166,9 +172,13 @@ struct MarkdownInlineParser {
         addSpan(.link, .marker, NSRange(location: cursor, length: isImage ? 2 : 1))
         addSpan(.link, .content, labelRange)
         addSpan(.link, .marker, NSRange(location: bracket, length: 2))
-        addSpan(.link, .destination, targetRange)
+        addSpan(
+            .link,
+            .destination,
+            parsedTarget.destinationRange.offset(by: targetRange.location)
+        )
         addSpan(.link, .marker, NSRange(location: paren, length: 1))
-        var nested = MarkdownInlineParser(source: source as String, range: labelRange, spans: spans)
+        var nested = MarkdownMarkerLexer(source: source as String, range: labelRange, spans: spans)
         let content = nested.parse()
         spans = nested.spans
         if isImage {
@@ -294,10 +304,17 @@ struct MarkdownInlineParser {
         return regex.firstMatch(in: value, range: range)?.range == range
     }
 
-    private func linkTarget(_ value: String) -> (destination: String, title: String?) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func linkTarget(
+        _ value: String
+    ) -> (destination: String, title: String?, destinationRange: NSRange) {
+        let raw = value as NSString
+        var lower = 0
+        var upper = raw.length
+        while lower < upper, isUnicodeWhitespace(raw.character(at: lower)) { lower += 1 }
+        while upper > lower, isUnicodeWhitespace(raw.character(at: upper - 1)) { upper -= 1 }
+        let trimmed = raw.substring(with: NSRange(location: lower, length: upper - lower))
         guard let match = firstMatch(#"^(?:<([^>]*)>|(\S+?))(?:[ \t]+[\"'](.*)[\"'])?$"#, in: trimmed)
-        else { return (trimmed, nil) }
+        else { return (trimmed, nil, NSRange(location: lower, length: upper - lower)) }
         let text = trimmed as NSString
         let angle = match.range(at: 1)
         let plain = match.range(at: 2)
@@ -305,7 +322,8 @@ struct MarkdownInlineParser {
         let destinationRange = angle.location != NSNotFound ? angle : plain
         return (
             text.substring(with: destinationRange),
-            title.location == NSNotFound ? nil : text.substring(with: title)
+            title.location == NSNotFound ? nil : text.substring(with: title),
+            destinationRange.offset(by: lower)
         )
     }
 
@@ -403,4 +421,8 @@ private func isUnicodeWhitespace(_ scalar: unichar) -> Bool {
 
 private extension NSRange {
     var utf16: UTF16Range { UTF16Range(location: location, length: length) }
+
+    func offset(by amount: Int) -> NSRange {
+        NSRange(location: location + amount, length: length)
+    }
 }

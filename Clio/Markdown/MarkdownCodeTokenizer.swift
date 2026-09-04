@@ -3,7 +3,7 @@ import Foundation
 /// Small, audited lexer bundled with Clio. It intentionally styles lexical
 /// tokens only; malformed or unknown languages remain fully editable source.
 enum MarkdownCodeTokenizer {
-    static func spans(in source: String, offset: Int, language: String?) -> [MarkdownSpan] {
+    static func spans(in source: String, offset: Int, language: String?) throws -> [MarkdownSpan] {
         let text = source as NSString
         let dialect = Dialect(language)
         var spans: [MarkdownSpan] = []
@@ -18,17 +18,18 @@ enum MarkdownCodeTokenizer {
         }
 
         while cursor < text.length {
+            if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
             let scalar = text.character(at: cursor)
             if isSpace(scalar) { cursor += 1; continue }
 
             if dialect.hashComments, scalar == 0x23 {
-                let end = lineEnd(in: text, from: cursor)
+                let end = try lineEnd(in: text, from: cursor)
                 spans.append(span(.comment, cursor, end)); cursor = end; continue
             }
             if scalar == 0x2F, cursor + 1 < text.length {
                 let next = text.character(at: cursor + 1)
                 if next == 0x2F {
-                    let end = lineEnd(in: text, from: cursor)
+                    let end = try lineEnd(in: text, from: cursor)
                     spans.append(span(.comment, cursor, end)); cursor = end; continue
                 }
                 if next == 0x2A {
@@ -36,6 +37,7 @@ enum MarkdownCodeTokenizer {
                     while end + 1 < text.length,
                           !(text.character(at: end) == 0x2A && text.character(at: end + 1) == 0x2F) {
                         end += 1
+                        if end.isMultiple(of: 4_096) { try Task.checkCancellation() }
                     }
                     end = min(text.length, end + (end + 1 < text.length ? 2 : 0))
                     spans.append(span(.comment, cursor, end)); cursor = end; continue
@@ -50,6 +52,7 @@ enum MarkdownCodeTokenizer {
                 while cursor < text.length {
                     let current = text.character(at: cursor)
                     cursor += 1
+                    if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
                     if current == 0x5C, !escaped { escaped = true; continue }
                     if current == quote, !escaped { break }
                     escaped = false
@@ -66,6 +69,7 @@ enum MarkdownCodeTokenizer {
                             || (current >= 0x41 && current <= 0x46)
                             || (current >= 0x61 && current <= 0x66) else { break }
                     cursor += 1
+                    if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
                 }
                 spans.append(span(.number, start, cursor)); continue
             }
@@ -75,6 +79,7 @@ enum MarkdownCodeTokenizer {
                 cursor += 1
                 while cursor < text.length, isIdentifierPart(text.character(at: cursor)) {
                     cursor += 1
+                    if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
                 }
                 let word = text.substring(with: NSRange(location: start, length: cursor - start))
                 let kind: CodeTokenKind
@@ -82,9 +87,9 @@ enum MarkdownCodeTokenizer {
                     kind = .keyword
                 } else if word.first?.isUppercase == true {
                     kind = .type
-                } else if previousNonspace(in: text, before: start) == 0x2E {
+                } else if try previousNonspace(in: text, before: start) == 0x2E {
                     kind = .property
-                } else if nextNonspace(in: text, after: cursor) == 0x28 {
+                } else if try nextNonspace(in: text, after: cursor) == 0x28 {
                     kind = .function
                 } else {
                     continue
@@ -133,32 +138,35 @@ enum MarkdownCodeTokenizer {
         }
     }
 
-    private static func lineEnd(in text: NSString, from start: Int) -> Int {
+    private static func lineEnd(in text: NSString, from start: Int) throws -> Int {
         var cursor = start
         while cursor < text.length {
             let scalar = text.character(at: cursor)
             if scalar == 0x0A || scalar == 0x0D { break }
             cursor += 1
+            if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
         }
         return cursor
     }
 
-    private static func previousNonspace(in text: NSString, before offset: Int) -> unichar? {
+    private static func previousNonspace(in text: NSString, before offset: Int) throws -> unichar? {
         var cursor = offset
         while cursor > 0 {
             cursor -= 1
+            if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
             let scalar = text.character(at: cursor)
             if !isSpace(scalar) { return scalar }
         }
         return nil
     }
 
-    private static func nextNonspace(in text: NSString, after offset: Int) -> unichar? {
+    private static func nextNonspace(in text: NSString, after offset: Int) throws -> unichar? {
         var cursor = offset
         while cursor < text.length {
             let scalar = text.character(at: cursor)
             if !isSpace(scalar) { return scalar }
             cursor += 1
+            if cursor.isMultiple(of: 4_096) { try Task.checkCancellation() }
         }
         return nil
     }
