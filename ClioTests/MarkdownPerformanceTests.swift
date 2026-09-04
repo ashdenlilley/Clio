@@ -84,6 +84,35 @@ final class MarkdownPerformanceTests: XCTestCase {
         XCTAssertGreaterThan(range.location, 1_000_000)
     }
 
+    func testTenMiBDenseLineCoordinatesUseSparseStorageAndExactTailOffsets() throws {
+        let byteCount = PerformanceContract.fullMarkdownByteLimit
+        let lineCount = byteCount / 2
+        let source = String(repeating: "x\n", count: lineCount)
+        let residentBefore = currentResidentMemoryBytes()
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        let coordinates = try SwiftMarkdownSourceCoordinates(source)
+
+        let residentAfter = currentResidentMemoryBytes()
+        let residentGrowth = residentAfter > residentBefore
+            ? residentAfter - residentBefore
+            : 0
+        XCTAssertEqual(source.utf8.count, byteCount)
+        XCTAssertLessThanOrEqual(coordinates.checkpointCount, byteCount / 4_096 + 2)
+        XCTAssertEqual(coordinates.lineIndexStorageByteCount, (lineCount + 1) * 4)
+        XCTAssertEqual(
+            coordinates.utf16Offset(line: lineCount, utf8Column: 2),
+            byteCount - 1
+        )
+        XCTAssertEqual(
+            coordinates.utf16Offset(line: lineCount + 1, utf8Column: 1),
+            byteCount
+        )
+        XCTAssertLessThan(residentGrowth, 128 * 1_024 * 1_024)
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(5))
+    }
+
     func testIncrementalHighlightingWorkIsBoundedToEditedIsland() async throws {
         let block = "Paragraph with **strong** and [link](https://example.com).\n\n"
         let source = String(repeating: block, count: 32_000) + "Unique *needle* here.\n"

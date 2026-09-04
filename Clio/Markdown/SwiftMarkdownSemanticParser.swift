@@ -542,7 +542,7 @@ struct SwiftMarkdownSemanticParser {
     }
 }
 
-private struct SwiftMarkdownSourceCoordinates {
+struct SwiftMarkdownSourceCoordinates {
     private struct ByteCheckpoint {
         let utf8Offset: Int
         let utf16Offset: Int
@@ -551,10 +551,17 @@ private struct SwiftMarkdownSourceCoordinates {
 
     private static let checkpointStride = 4_096
     private let source: String
-    private let utf8LineStarts: [Int]
-    private let utf16LineStarts: [Int]
+    /// A 32-bit byte offset is sufficient because parser input is capped at
+    /// 50 MiB. This preserves O(1) line lookup for dense CommonMark ASTs while
+    /// using one quarter of the former pair of native-Int line tables.
+    private let utf8LineStarts: [UInt32]
     private let byteCheckpoints: [ByteCheckpoint]
     private let utf8Count: Int
+
+    var checkpointCount: Int { byteCheckpoints.count }
+    var lineIndexStorageByteCount: Int {
+        utf8LineStarts.count * MemoryLayout<UInt32>.stride
+    }
 
     init(
         _ source: String,
@@ -562,8 +569,7 @@ private struct SwiftMarkdownSourceCoordinates {
     ) throws {
         self.source = source
         utf8Count = source.utf8.count
-        var byteStarts = [0]
-        var wordStarts = [0]
+        var lineStarts: [UInt32] = [0]
         var checkpoints = [ByteCheckpoint(
             utf8Offset: 0,
             utf16Offset: 0,
@@ -590,8 +596,7 @@ private struct SwiftMarkdownSourceCoordinates {
             byteOffset += byteWidth
             utf16Offset += wordWidth
             if scalar == "\n" {
-                byteStarts.append(byteOffset)
-                wordStarts.append(utf16Offset)
+                lineStarts.append(UInt32(byteOffset))
             }
             scanned += byteWidth
             if scanned >= 65_536 {
@@ -601,8 +606,7 @@ private struct SwiftMarkdownSourceCoordinates {
             }
             index = source.unicodeScalars.index(after: index)
         }
-        utf8LineStarts = byteStarts
-        utf16LineStarts = wordStarts
+        utf8LineStarts = lineStarts
         byteCheckpoints = checkpoints
     }
 
@@ -612,22 +616,43 @@ private struct SwiftMarkdownSourceCoordinates {
         return UTF16Range(location: lower, length: upper - lower)
     }
 
+    func utf16Offset(line: Int, utf8Column: Int) -> Int {
+        offset(Markdown.SourceLocation(
+            line: line,
+            column: utf8Column,
+            source: nil
+        ))
+    }
+
     private func offset(_ location: Markdown.SourceLocation) -> Int {
-        let line = min(max(0, location.line - 1), utf8LineStarts.count - 1)
+        let lineIndex = min(
+            max(0, location.line - 1),
+            utf8LineStarts.count - 1
+        )
+        let lineStart = Int(utf8LineStarts[lineIndex])
         let byteOffset = min(
             utf8Count,
-            utf8LineStarts[line] + max(0, location.column - 1)
+            lineStart + max(0, location.column - 1)
         )
-        let checkpoint = checkpoint(atOrBeforeUTF8Offset: byteOffset)
+        let byteCheckpoint = checkpoint(atOrBeforeUTF8Offset: byteOffset)
         let byteIndex = source.utf8.index(
-            checkpoint.index,
-            offsetBy: byteOffset - checkpoint.utf8Offset
+            byteCheckpoint.index,
+            offsetBy: byteOffset - byteCheckpoint.utf8Offset
         )
         guard let stringIndex = String.Index(byteIndex, within: source) else {
-            return utf16LineStarts[line]
+            let lineCheckpoint = checkpoint(atOrBeforeUTF8Offset: lineStart)
+            let lineByteIndex = source.utf8.index(
+                lineCheckpoint.index,
+                offsetBy: lineStart - lineCheckpoint.utf8Offset
+            )
+            guard let lineStringIndex = String.Index(lineByteIndex, within: source) else {
+                return lineCheckpoint.utf16Offset
+            }
+            return lineCheckpoint.utf16Offset
+                + source[lineCheckpoint.index..<lineStringIndex].utf16.count
         }
-        return checkpoint.utf16Offset
-            + source[checkpoint.index..<stringIndex].utf16.count
+        return byteCheckpoint.utf16Offset
+            + source[byteCheckpoint.index..<stringIndex].utf16.count
     }
 
     private func checkpoint(atOrBeforeUTF8Offset target: Int) -> ByteCheckpoint {
