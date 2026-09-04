@@ -36,6 +36,10 @@ final class TransientSurfaceMotionController {
     /// dismissed surface; removing an underlay rewires the next surface's
     /// snapshot so a later dismissal cannot focus a defunct control.
     private(set) var activeSurfaceStack: [TransientSurface] = []
+    /// Back-to-front rendering order. Unlike `activeSurfaceStack`, an exiting
+    /// surface stays here until its presentation reaches zero so it cannot jump
+    /// behind an underlay midway through dismissal.
+    private(set) var visualSurfaceStack: [TransientSurface] = []
     private var focusSnapshots: [TransientSurface: MotionFocusSnapshot] = [:]
     private var pendingFocusRestorations: [TransientSurface: PendingFocusRestoration] = [:]
     private var events: [MotionEvent] = []
@@ -113,6 +117,7 @@ final class TransientSurfaceMotionController {
         retargetConflictBanner(to: 0, recipe: MotionContract.conflictBannerExit)
         retainPendingRestorationIfExiting(restoration, for: .conflict)
         updateOverlay()
+        pruneSettledVisualSurfaces()
         return restoration
     }
 
@@ -176,6 +181,7 @@ final class TransientSurfaceMotionController {
             completion: conflictCompletion,
             machine: conflict
         )
+        pruneSettledVisualSurfaces()
     }
 
     func drainEvents() -> [MotionEvent] {
@@ -224,6 +230,7 @@ private extension TransientSurfaceMotionController {
         }
         retainPendingRestorationIfExiting(restoration, for: surface)
         updateOverlay()
+        pruneSettledVisualSurfaces()
         return restoration
     }
 
@@ -233,6 +240,8 @@ private extension TransientSurfaceMotionController {
     ) {
         activeSurfaces.insert(surface)
         activeSurfaceStack.append(surface)
+        visualSurfaceStack.removeAll { $0 == surface }
+        visualSurfaceStack.append(surface)
         focusSnapshots[surface] = focus
         pendingFocusRestorations.removeValue(forKey: surface)
     }
@@ -305,6 +314,15 @@ private extension TransientSurfaceMotionController {
               machine.target == 0,
               !activeSurfaces.contains(surface) else { return }
         pendingFocusRestorations.removeValue(forKey: surface)
+    }
+
+    func pruneSettledVisualSurfaces() {
+        visualSurfaceStack.removeAll { surface in
+            let machine = machine(for: surface)
+            return !activeSurfaces.contains(surface)
+                && !machine.hasActiveTransition
+                && machine.presentation <= 0.000_001
+        }
     }
 
     func machine(for surface: TransientSurface) -> ReversibleMotionStateMachine {
