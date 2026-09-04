@@ -19,6 +19,7 @@ final class AppState {
 
     private(set) var workspace: Workspace?
     private(set) var workspaceErrorMessage: String?
+    private(set) var needsRecoveryAuthorization = false
 
     var fontSize: Double = 14 {
         didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
@@ -71,13 +72,38 @@ final class AppState {
     @ObservationIgnored
     private var editorSessions: [EditorSession] = []
 
+    @ObservationIgnored
+    let documentRegistry: DocumentBufferRegistry
+
+    @ObservationIgnored
+    private(set) var conflictResolver: ConflictResolver
+
+    @ObservationIgnored
+    private(set) var documentMover: DocumentMover
+
+    @ObservationIgnored
+    private var workspaceWatcher: WorkspaceWatcher?
+
+    @ObservationIgnored
+    private var workspaceWatchTask: Task<Void, Never>?
+
     init(
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
-        initialWorkspace: Workspace? = nil
+        initialWorkspace: Workspace? = nil,
+        recoveryStore: RecoveryStore? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
+        let activeRecoveryStore = recoveryStore
+            ?? Self.restoredRecoveryStore(from: defaults)
+            ?? RecoveryStore()
+        documentRegistry = DocumentBufferRegistry()
+        conflictResolver = ConflictResolver(recoveryStore: activeRecoveryStore)
+        documentMover = DocumentMover(
+            recoveryStore: activeRecoveryStore,
+            fileManager: fileManager
+        )
 
         fontSize = Self.clamp(
             Self.double(forKey: Keys.fontSize, default: 14, in: defaults),
@@ -127,9 +153,18 @@ final class AppState {
 
         if let initialWorkspace {
             workspace = initialWorkspace
+            beginWatching(initialWorkspace)
         } else {
             restoreWorkspaceIfAvailable()
         }
+
+        if recoveryStore == nil,
+           workspace != nil,
+           !activeRecoveryStore.isSecurityScopedAccessActive {
+            needsRecoveryAuthorization = true
+        }
+
+        Task { try? await activeRecoveryStore.pruneExpired() }
     }
 
     var isWorkspaceReady: Bool {
@@ -156,7 +191,13 @@ final class AppState {
 
         if session.openingMode == .newDocument,
            !session.hasPreferredDocument {
-            session.activate(in: workspace, documentURLs: [])
+            session.activate(
+                in: workspace,
+                documentURLs: [],
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
             return
         }
 
@@ -164,17 +205,29 @@ final class AppState {
             let openFileURLs = Set(
                 editorSessions.compactMap(\.fileURL).map(\.standardizedFileURL)
             )
-            let availableDocumentURLs = try workspace.documentURLs().filter {
-                !openFileURLs.contains($0.standardizedFileURL)
-            }
+            let allDocumentURLs = try workspace.documentURLs()
+            let availableDocumentURLs = session.hasPreferredDocument
+                ? allDocumentURLs
+                : allDocumentURLs.filter {
+                    !openFileURLs.contains($0.standardizedFileURL)
+                }
             session.activate(
                 in: workspace,
-                documentURLs: availableDocumentURLs
+                documentURLs: availableDocumentURLs,
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
             )
         } catch {
             // A transient enumeration failure should not strand the window or
             // discard the valid workspace grant. Keep the blank buffer usable.
-            session.activate(in: workspace, documentURLs: [])
+            session.activate(
+                in: workspace,
+                documentURLs: [],
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
             presentError(
                 "Clio still has access to the workspace, but couldn’t read its documents.",
                 underlying: error
@@ -215,10 +268,7 @@ final class AppState {
             prompt: "Use Documents"
         )
 
-        let preferredURL = Workspace.preferredDefaultURL
-        if fileManager.fileExists(atPath: preferredURL.path) {
-            panel.directoryURL = preferredURL
-        } else if let physicalHomeURL = FileManager.default.homeDirectory(forUser: NSUserName()) {
+        if let physicalHomeURL = FileManager.default.homeDirectory(forUser: NSUserName()) {
             panel.directoryURL = physicalHomeURL.appendingPathComponent(
                 "Documents",
                 isDirectory: true
@@ -231,8 +281,9 @@ final class AppState {
             // The panel grants the parent so Clio can create the child. The
             // helper ends that broad access before the exact child bookmark is
             // resolved and retained by Workspace.
-            let bookmark = try makeDefaultWorkspaceBookmark(in: parentURL)
-            try activateWorkspace(from: bookmark)
+            let bookmarks = try makeDefaultWorkspaceBookmarks(in: parentURL)
+            try activateRecovery(from: bookmarks.recovery)
+            try activateWorkspace(from: bookmarks.workspace)
         } catch {
             presentError(
                 "Clio couldn’t use Documents/Clio. Select your Documents folder and try again.",
@@ -259,6 +310,9 @@ final class AppState {
         do {
             let bookmark = try makeSelectedWorkspaceBookmark(for: selectedURL)
             try activateWorkspace(from: bookmark)
+            if defaults.data(forKey: Keys.recoveryBookmark) == nil {
+                chooseRecoveryFolder()
+            }
         } catch {
             presentError(
                 "Clio couldn’t open that workspace. Choose a readable, writable folder and try again.",
@@ -269,6 +323,32 @@ final class AppState {
 
     func dismissWorkspaceError() {
         workspaceErrorMessage = nil
+    }
+
+    func chooseRecoveryFolder() {
+        let panel = configuredFolderPanel(
+            title: "Choose Clio Recovery Folder",
+            message: "Select or create “Clio Recovery” in Documents. Clio never replaces a conflicted version until its recovery copy is written here.",
+            prompt: "Use Recovery Folder"
+        )
+        panel.directoryURL = RecoveryStore.preferredURL
+        guard panel.runModal() == .OK, let selectedURL = panel.url else {
+            needsRecoveryAuthorization = true
+            workspaceErrorMessage = "Authorize a recovery folder before resolving external edits or replacing files."
+            return
+        }
+        defer { selectedURL.stopAccessingSecurityScopedResource() }
+        do {
+            let bookmark = try Workspace.makeSecurityScopedBookmark(for: selectedURL)
+            try activateRecovery(from: bookmark)
+            workspaceErrorMessage = nil
+        } catch {
+            needsRecoveryAuthorization = true
+            presentError(
+                "Clio couldn’t retain access to that recovery folder. Choose it again.",
+                underlying: error
+            )
+        }
     }
 }
 
@@ -304,6 +384,7 @@ private extension AppState {
         static let focusMode = "mode.focus"
         static let chromeFade = "mode.chromeFade"
         static let workspaceBookmark = "workspace.securityScopedBookmark"
+        static let recoveryBookmark = "recovery.securityScopedBookmark"
     }
 
     func restoreWorkspaceIfAvailable() {
@@ -328,6 +409,26 @@ private extension AppState {
                 underlying: error
             )
         }
+    }
+
+    static func restoredRecoveryStore(from defaults: UserDefaults) -> RecoveryStore? {
+        guard let bookmark = defaults.data(forKey: Keys.recoveryBookmark),
+              let restored = try? RecoveryAuthorization.restore(bookmark: bookmark) else {
+            return nil
+        }
+        defaults.set(restored.bookmarkToPersist, forKey: Keys.recoveryBookmark)
+        return restored.store
+    }
+
+    func activateRecovery(from bookmark: Data) throws {
+        let restored = try RecoveryAuthorization.restore(bookmark: bookmark)
+        conflictResolver = ConflictResolver(recoveryStore: restored.store)
+        documentMover = DocumentMover(
+            recoveryStore: restored.store,
+            fileManager: fileManager
+        )
+        defaults.set(restored.bookmarkToPersist, forKey: Keys.recoveryBookmark)
+        needsRecoveryAuthorization = false
     }
 
     func activateWorkspace(
@@ -365,11 +466,18 @@ private extension AppState {
         }
 
         workspace = newWorkspace
+        beginWatching(newWorkspace)
         var availableDocumentURLs = documentURLs
         for session in editorSessions {
+            let candidates = session.hasPreferredDocument
+                ? documentURLs
+                : availableDocumentURLs
             session.activate(
                 in: newWorkspace,
-                documentURLs: availableDocumentURLs
+                documentURLs: candidates,
+                registry: documentRegistry,
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
             )
 
             if let openedURL = session.fileURL?.standardizedFileURL {
@@ -389,7 +497,85 @@ private extension AppState {
         }
     }
 
-    func makeDefaultWorkspaceBookmark(in selectedParentURL: URL) throws -> Data {
+    func beginWatching(_ workspace: Workspace) {
+        workspaceWatchTask?.cancel()
+        let watcher = WorkspaceWatcher(
+            workspaceID: workspace.id,
+            rootURL: workspace.rootURL
+        )
+        workspaceWatcher = watcher
+        workspaceWatchTask = Task { @MainActor [weak self, weak workspace] in
+            let events = await watcher.events()
+            for await event in events {
+                guard !Task.isCancelled,
+                      let self,
+                      let workspace,
+                      self.workspace === workspace else { break }
+                self.handleWorkspaceEvent(event, in: workspace)
+            }
+        }
+    }
+
+    func handleWorkspaceEvent(_ event: WorkspaceEvent, in workspace: Workspace) {
+        do {
+            switch event.kind {
+            case .modified:
+                guard let url = event.fileURL,
+                      let document = documentRegistry.document(at: url, in: workspace) else {
+                    return
+                }
+                try workspace.reconcileExternalChange(for: document)
+                if document.fileURL != nil {
+                    documentRegistry.updateAliases(for: document, in: workspace)
+                }
+
+            case .moved:
+                guard let oldURL = event.previousFileURL,
+                      let newURL = event.fileURL,
+                      let document = documentRegistry.document(at: oldURL, in: workspace) else {
+                    return
+                }
+                let oldLocator = try workspace.locator(for: oldURL)
+                let revision = try DocumentRevisionReader.revision(at: newURL)
+                document.didMove(to: newURL, revision: revision)
+                documentRegistry.removeLocator(oldLocator, for: document.id)
+                documentRegistry.updateAliases(for: document, in: workspace)
+
+            case .deleted:
+                guard let url = event.fileURL,
+                      let document = documentRegistry.document(at: url, in: workspace) else {
+                    return
+                }
+                let locator = try workspace.locator(for: url)
+                document.markUnbacked(previous: locator)
+                documentRegistry.detach(document.id, from: locator)
+
+            case .accessLost, .error:
+                workspaceErrorMessage = "Clio lost access to the workspace. Your open buffers remain in memory."
+
+            case .rescanRequired, .rootChanged:
+                for document in documentRegistry.openDocuments {
+                    guard let url = document.fileURL, workspace.contains(url) else { continue }
+                    try workspace.reconcileExternalChange(for: document)
+                    if document.fileURL != nil {
+                        documentRegistry.updateAliases(for: document, in: workspace)
+                    }
+                }
+
+            case .created:
+                break
+            }
+        } catch {
+            presentError(
+                "Clio detected a workspace change but couldn’t safely reconcile it.",
+                underlying: error
+            )
+        }
+    }
+
+    func makeDefaultWorkspaceBookmarks(
+        in selectedParentURL: URL
+    ) throws -> (workspace: Data, recovery: Data) {
         defer {
             // App Sandbox starts access for NSOpenPanel URLs on Clio's
             // behalf. This balances that temporary Powerbox scope exactly
@@ -398,16 +584,11 @@ private extension AppState {
         }
 
         let parentURL = selectedParentURL.standardizedFileURL
-        let childURL = parentURL.lastPathComponent.caseInsensitiveCompare("Clio") == .orderedSame
-            ? parentURL
-            : parentURL.appendingPathComponent("Clio", isDirectory: true)
-        try fileManager.createDirectory(
-            at: childURL,
-            withIntermediateDirectories: true
+        let grants = try RecoveryAuthorization.createDefaultGrants(
+            in: parentURL,
+            fileManager: fileManager
         )
-        return try Workspace.makeSecurityScopedBookmark(
-            for: childURL.standardizedFileURL
-        )
+        return (grants.workspaceBookmark, grants.recoveryBookmark)
     }
 
     func makeSelectedWorkspaceBookmark(for selectedURL: URL) throws -> Data {

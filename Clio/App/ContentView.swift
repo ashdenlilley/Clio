@@ -84,6 +84,41 @@ struct ContentView: View {
                 editorSession: editorSession
             )
         )
+        .sheet(
+            isPresented: Binding(
+                get: { editorSession.activeConflict != nil },
+                set: { _ in }
+            )
+        ) {
+            if let conflict = editorSession.activeConflict {
+                ConflictResolutionView(
+                    conflict: conflict,
+                    isResolving: editorSession.isResolvingConflict,
+                    resolve: editorSession.resolveConflict
+                )
+                .interactiveDismissDisabled()
+            }
+        }
+        .alert(
+            "A file already exists",
+            isPresented: Binding(
+                get: { editorSession.pendingCollision != nil },
+                set: { _ in }
+            ),
+            presenting: editorSession.pendingCollision
+        ) { _ in
+            Button("Cancel", role: .cancel) {
+                editorSession.resolveCollision(.cancel)
+            }
+            Button("Keep Both") {
+                editorSession.resolveCollision(.keepBoth)
+            }
+            Button("Replace", role: .destructive) {
+                editorSession.resolveCollision(.replace)
+            }
+        } message: { collision in
+            Text("\(collision.proposedLocator.relativePath) is already present. Replace it or keep both using the next “name (2).md” variant.")
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { notification in
             guard let window = notification.object as? NSWindow,
                   clioEditorSessionID(for: window) == editorSession.id else { return }
@@ -103,6 +138,58 @@ struct ContentView: View {
     }
 }
 
+private struct ConflictResolutionView: View {
+    let conflict: DocumentConflict
+    let isResolving: Bool
+    let resolve: (ConflictChoice) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("This document changed outside Clio", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+                .foregroundStyle(Color(nsColor: Palette.foreground))
+
+            Text("Autosave is paused. Choose which content becomes canonical; Clio creates a recovery copy before replacing either version.")
+                .foregroundStyle(Color(nsColor: Palette.muted))
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                GridRow {
+                    Text("Clio")
+                    Text(conflict.clio.modificationDate, format: .dateTime)
+                }
+                GridRow {
+                    Text("Outside")
+                    Text(conflict.external.modificationDate, format: .dateTime)
+                }
+            }
+            .font(.custom(Typography.family, fixedSize: 12))
+
+            ScrollView {
+                Text(conflict.conciseDiff.isEmpty ? "The text is identical." : conflict.conciseDiff)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(minHeight: 120, maxHeight: 260)
+            .background(Color(nsColor: Palette.backgroundRaised))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            HStack {
+                Button("Load External") { resolve(.loadExternal) }
+                Button("Keep Both") { resolve(.keepBoth) }
+                Spacer()
+                Button("Keep Clio") { resolve(.keepClio) }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .disabled(isResolving)
+        }
+        .padding(24)
+        .frame(width: 560)
+        .background(Color(nsColor: Palette.background))
+        .accessibilityElement(children: .contain)
+    }
+}
+
 private struct WorkspaceErrorBanner: View {
     @Environment(AppState.self) private var appState
     let message: String
@@ -118,8 +205,12 @@ private struct WorkspaceErrorBanner: View {
 
             Spacer(minLength: 8)
 
-            Button("Choose Folder…") {
-                appState.chooseAnotherWorkspace()
+            Button(appState.needsRecoveryAuthorization ? "Authorize Recovery…" : "Choose Folder…") {
+                if appState.needsRecoveryAuthorization {
+                    appState.chooseRecoveryFolder()
+                } else {
+                    appState.chooseAnotherWorkspace()
+                }
             }
 
             Button {

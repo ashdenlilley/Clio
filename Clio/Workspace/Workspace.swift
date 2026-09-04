@@ -1,6 +1,12 @@
 import Darwin
 import Foundation
 
+private struct SelfWriteRecord {
+    let token: UUID
+    let revision: DiskRevision
+    let expiresAt: Date
+}
+
 @MainActor
 final class Workspace {
     struct BookmarkResolution: Sendable, Equatable {
@@ -14,6 +20,8 @@ final class Workspace {
         case securityScopedAccessDenied(URL)
         case fileOutsideWorkspace(URL)
         case noAvailableFilename(String)
+        case externalConflict(DocumentConflict)
+        case documentDeleted(URL)
 
         var errorDescription: String? {
             switch self {
@@ -27,6 +35,10 @@ final class Workspace {
                 return "The file is outside the current workspace: \(url.path)."
             case .noAvailableFilename(let filename):
                 return "Could not find an available filename for \(filename)."
+            case .externalConflict:
+                return "This document changed outside Clio. Choose which version to keep."
+            case .documentDeleted(let url):
+                return "\(url.lastPathComponent) was deleted outside Clio. Its buffer remains open."
             }
         }
     }
@@ -39,16 +51,21 @@ final class Workspace {
             .appendingPathComponent("Clio", isDirectory: true)
     }
 
+    let id: WorkspaceID
     let rootURL: URL
     let isSecurityScopedAccessActive: Bool
 
     private let fileManager: FileManager
+    private let atomicWriter: any AtomicFileWriting
+    private var selfWrites: [String: SelfWriteRecord] = [:]
     private let securityScopedURL: URL?
 
     init(
+        id: WorkspaceID = WorkspaceID(),
         rootURL: URL,
         accessSecurityScopedResource: Bool = true,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        atomicWriter: any AtomicFileWriting = AtomicFileWriter()
     ) throws {
         let scopedURL = rootURL.standardizedFileURL
         let didStartSecurityScopedAccess = accessSecurityScopedResource
@@ -74,8 +91,10 @@ final class Workspace {
                 throw WorkspaceError.rootIsNotDirectory(resolvedURL)
             }
 
+            self.id = id
             self.rootURL = resolvedURL
             self.fileManager = fileManager
+            self.atomicWriter = atomicWriter
             isSecurityScopedAccessActive = didStartSecurityScopedAccess
             securityScopedURL = didStartSecurityScopedAccess ? scopedURL : nil
         } catch {
@@ -176,12 +195,32 @@ final class Workspace {
         }.map(\.url)
     }
 
-    func loadDocument(at fileURL: URL) throws -> Document {
+    func loadDocument(at fileURL: URL, id: DocumentID = DocumentID()) throws -> Document {
         let fileURL = fileURL.standardizedFileURL
         guard contains(fileURL) else {
             throw WorkspaceError.fileOutsideWorkspace(fileURL)
         }
-        return try Document(contentsOf: fileURL)
+        return try Document(contentsOf: fileURL, id: id)
+    }
+
+    func locator(for fileURL: URL) throws -> DocumentLocator {
+        let standardizedURL = fileURL.standardizedFileURL
+        guard contains(standardizedURL), standardizedURL != rootURL else {
+            throw WorkspaceError.fileOutsideWorkspace(standardizedURL)
+        }
+        return try DocumentLocator(
+            workspaceID: id,
+            relativePath: relativePath(for: standardizedURL)
+        )
+    }
+
+    func fileURL(for locator: DocumentLocator) throws -> URL {
+        guard locator.workspaceID == id else {
+            throw WorkspaceError.fileOutsideWorkspace(rootURL)
+        }
+        let url = rootURL.appendingPathComponent(locator.relativePath).standardizedFileURL
+        guard contains(url) else { throw WorkspaceError.fileOutsideWorkspace(url) }
+        return url
     }
 
     func relativePath(for fileURL: URL) -> String {
@@ -215,6 +254,10 @@ final class Workspace {
             return snapshot.fileURL
         }
 
+        if let conflict = document.conflict {
+            throw WorkspaceError.externalConflict(conflict)
+        }
+
         guard snapshot.fileURL != nil || !snapshot.text.isEmpty else {
             document.didSkipEmptyUnbackedWrite(snapshot)
             return nil
@@ -228,21 +271,206 @@ final class Workspace {
                 throw WorkspaceError.fileOutsideWorkspace(fileURL)
             }
 
-            try data.write(to: fileURL, options: .atomic)
+            guard fileManager.fileExists(atPath: fileURL.path) else {
+                document.markUnbacked(previous: try? locator(for: fileURL))
+                throw WorkspaceError.documentDeleted(fileURL)
+            }
+
+            let current = try DocumentRevisionReader.snapshot(at: fileURL)
+            if let expected = snapshot.expectedDiskRevision,
+               !Self.sameContent(current.revision, expected) {
+                let conflict = try makeConflict(
+                    document: document,
+                    snapshot: snapshot,
+                    externalData: current.data,
+                    externalRevision: current.revision
+                )
+                document.registerConflict(conflict)
+                throw WorkspaceError.externalConflict(conflict)
+            }
+
+            document.willWrite(snapshot)
+            do {
+                let replaceOutcome = try atomicWriter.replace(
+                    contents: data,
+                    at: fileURL,
+                    onlyIf: current.revision
+                )
+                if case .revisionMismatch(let retainedURL) = replaceOutcome {
+                    let latest = try DocumentRevisionReader.snapshot(at: fileURL)
+                    let conflict = try makeConflict(
+                        document: document,
+                        snapshot: snapshot,
+                        externalData: latest.data,
+                        externalRevision: latest.revision,
+                        additionalExternalVersions: try retainedURL.map {
+                            [try retainedConflictSide(at: $0)]
+                        }
+                    )
+                    document.registerConflict(conflict)
+                    throw WorkspaceError.externalConflict(conflict)
+                }
+            } catch {
+                if document.conflict == nil { document.didFailWrite(snapshot) }
+                throw error
+            }
             destinationURL = fileURL
         } else {
-            destinationURL = try writeNewDocument(
-                data,
-                preferredFilename: snapshot.preferredFilename
-            )
+            document.willWrite(snapshot)
+            do {
+                destinationURL = try writeNewDocument(
+                    data,
+                    preferredFilename: snapshot.preferredFilename
+                )
+            } catch {
+                document.didFailWrite(snapshot)
+                throw error
+            }
         }
 
-        document.didWrite(snapshot, to: destinationURL)
+        let diskRevision = try DocumentRevisionReader.revision(at: destinationURL)
+        let token = UUID()
+        selfWrites[destinationURL.standardizedFileURL.path] = SelfWriteRecord(
+            token: token,
+            revision: diskRevision,
+            expiresAt: Date().addingTimeInterval(5)
+        )
+        document.didWrite(snapshot, to: destinationURL, revision: diskRevision)
+        return destinationURL
+    }
+
+    /// Returns the originating token once for a matching recent Clio write.
+    func consumeSelfWrite(at fileURL: URL, revision: DiskRevision) -> UUID? {
+        let now = Date()
+        selfWrites = selfWrites.filter { $0.value.expiresAt > now }
+        let key = fileURL.standardizedFileURL.path
+        guard let record = selfWrites[key],
+              Self.sameContent(record.revision, revision) else { return nil }
+        selfWrites.removeValue(forKey: key)
+        return record.token
+    }
+
+    /// Applies an outside change only when the buffer is clean. Dirty buffers
+    /// enter a conflict and stop autosave until the user chooses a side.
+    func reconcileExternalChange(for document: Document) throws {
+        guard let fileURL = document.fileURL else { return }
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            document.markUnbacked(previous: try? locator(for: fileURL))
+            return
+        }
+
+        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
+        if consumeSelfWrite(at: fileURL, revision: disk.revision) != nil {
+            return
+        }
+        if let expected = document.expectedDiskRevision,
+           Self.sameContent(expected, disk.revision) {
+            return
+        }
+
+        guard let externalSource = String(data: disk.data, encoding: .utf8) else {
+            throw Document.ReadError.invalidUTF8(fileURL)
+        }
+        if document.isDirty {
+            let conflict = try makeConflict(
+                document: document,
+                snapshot: document.snapshot(),
+                externalData: disk.data,
+                externalRevision: disk.revision
+            )
+            document.registerConflict(conflict)
+        } else {
+            document.applyExternal(source: externalSource, revision: disk.revision)
+        }
+    }
+
+    func readDiskSnapshot(for document: Document) throws -> (source: String, revision: DiskRevision) {
+        guard let fileURL = document.fileURL else {
+            throw WorkspaceError.documentDeleted(rootURL)
+        }
+        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
+        guard let source = String(data: disk.data, encoding: .utf8) else {
+            throw Document.ReadError.invalidUTF8(fileURL)
+        }
+        return (source, disk.revision)
+    }
+
+    func replaceAfterConflict(
+        _ document: Document,
+        expectedExternalRevision: DiskRevision
+    ) throws -> URL {
+        guard let destinationURL = document.fileURL else {
+            throw WorkspaceError.documentDeleted(rootURL)
+        }
+        let current = try DocumentRevisionReader.revision(at: destinationURL)
+        guard Self.sameContent(current, expectedExternalRevision) else {
+            try reconcileExternalChange(for: document)
+            if let refreshedConflict = document.conflict {
+                throw WorkspaceError.externalConflict(refreshedConflict)
+            }
+            throw WorkspaceError.documentDeleted(destinationURL)
+        }
+        let snapshot = document.snapshot()
+        document.willWrite(snapshot)
+        do {
+            let replaceOutcome = try atomicWriter.replace(
+                contents: Data(snapshot.text.utf8),
+                at: destinationURL,
+                onlyIf: current
+            )
+            guard case .replaced = replaceOutcome else {
+                let latest = try DocumentRevisionReader.snapshot(at: destinationURL)
+                let retainedURL: URL?
+                if case .revisionMismatch(let url) = replaceOutcome {
+                    retainedURL = url
+                } else {
+                    retainedURL = nil
+                }
+                let conflict = try makeConflict(
+                    document: document,
+                    snapshot: snapshot,
+                    externalData: latest.data,
+                    externalRevision: latest.revision,
+                    additionalExternalVersions: try retainedURL.map {
+                        [try retainedConflictSide(at: $0)]
+                    }
+                )
+                document.registerConflict(conflict)
+                throw WorkspaceError.externalConflict(conflict)
+            }
+        } catch {
+            document.didFailWrite(snapshot)
+            throw error
+        }
+        let revision = try DocumentRevisionReader.revision(at: destinationURL)
+        selfWrites[destinationURL.path] = SelfWriteRecord(
+            token: UUID(),
+            revision: revision,
+            expiresAt: Date().addingTimeInterval(5)
+        )
+        document.didWrite(snapshot, to: destinationURL, revision: revision)
+        return destinationURL
+    }
+
+    func saveConflictCopy(_ document: Document) throws -> URL {
+        let snapshot = document.snapshot()
+        let destinationURL = try writeNewDocument(
+            Data(snapshot.text.utf8),
+            preferredFilename: snapshot.fileURL?.lastPathComponent
+                ?? snapshot.preferredFilename
+        )
+        let revision = try DocumentRevisionReader.revision(at: destinationURL)
+        selfWrites[destinationURL.path] = SelfWriteRecord(
+            token: UUID(),
+            revision: revision,
+            expiresAt: Date().addingTimeInterval(5)
+        )
+        document.didWrite(snapshot, to: destinationURL, revision: revision)
         return destinationURL
     }
 }
 
-private extension Workspace {
+extension Workspace {
     static let documentExtensions: Set<String> = ["md", "markdown", "txt"]
     static let maximumCollisionAttempts = 10_000
 
@@ -251,49 +479,71 @@ private extension Workspace {
         let filenameURL = URL(fileURLWithPath: filename)
         let pathExtension = filenameURL.pathExtension
         let basename = filenameURL.deletingPathExtension().lastPathComponent
-        let temporaryURL = rootURL.appendingPathComponent(
-            ".clio-save-\(UUID().uuidString)",
-            isDirectory: false
-        )
-
-        try data.write(to: temporaryURL, options: .atomic)
-        defer { try? fileManager.removeItem(at: temporaryURL) }
 
         for attempt in 1...Self.maximumCollisionAttempts {
             let candidateName: String
             if attempt == 1 {
                 candidateName = filename
             } else if pathExtension.isEmpty {
-                candidateName = "\(basename) \(attempt)"
+                candidateName = "\(basename) (\(attempt))"
             } else {
-                candidateName = "\(basename) \(attempt).\(pathExtension)"
+                candidateName = "\(basename) (\(attempt)).\(pathExtension)"
             }
 
             let candidateURL = rootURL.appendingPathComponent(candidateName)
-
-            let renameResult = temporaryURL.withUnsafeFileSystemRepresentation { sourcePath in
-                candidateURL.withUnsafeFileSystemRepresentation { destinationPath in
-                    renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
-                }
-            }
-
-            if renameResult == 0 {
+            if try atomicWriter.create(contents: data, at: candidateURL) {
                 return candidateURL.standardizedFileURL
             }
-
-            let errorNumber = errno
-            if errorNumber == EEXIST {
-                continue
-            }
-
-            throw NSError(
-                domain: NSPOSIXErrorDomain,
-                code: Int(errorNumber),
-                userInfo: [NSFilePathErrorKey: candidateURL.path]
-            )
         }
 
         throw WorkspaceError.noAvailableFilename(filename)
+    }
+
+    func makeConflict(
+        document: Document,
+        snapshot: Document.Snapshot,
+        externalData: Data,
+        externalRevision: DiskRevision,
+        additionalExternalVersions: [ConflictSide]? = nil
+    ) throws -> DocumentConflict {
+        guard let fileURL = snapshot.fileURL else {
+            throw WorkspaceError.documentDeleted(rootURL)
+        }
+        guard let externalSource = String(data: externalData, encoding: .utf8) else {
+            throw Document.ReadError.invalidUTF8(fileURL)
+        }
+        return DocumentConflict(
+            documentID: document.id,
+            locator: try locator(for: fileURL),
+            clio: ConflictSide(
+                modificationDate: Date(),
+                revision: snapshot.expectedDiskRevision,
+                source: snapshot.text
+            ),
+            external: ConflictSide(
+                modificationDate: externalRevision.modificationDate,
+                revision: externalRevision,
+                source: externalSource
+            ),
+            additionalExternalVersions: additionalExternalVersions
+        )
+    }
+
+    func retainedConflictSide(at url: URL) throws -> ConflictSide {
+        defer { try? fileManager.removeItem(at: url) }
+        let retained = try DocumentRevisionReader.snapshot(at: url)
+        guard let source = String(data: retained.data, encoding: .utf8) else {
+            throw Document.ReadError.invalidUTF8(url)
+        }
+        return ConflictSide(
+            modificationDate: retained.revision.modificationDate,
+            revision: retained.revision,
+            source: source
+        )
+    }
+
+    nonisolated static func sameContent(_ lhs: DiskRevision, _ rhs: DiskRevision) -> Bool {
+        lhs.byteCount == rhs.byteCount && lhs.contentDigest == rhs.contentDigest
     }
 
     nonisolated static func safeFilename(from suggestion: String) -> String {

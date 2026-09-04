@@ -76,7 +76,7 @@ final class WorkspaceTests: XCTestCase {
                 try String(contentsOf: originalURL, encoding: .utf8),
                 "existing"
             )
-            XCTAssertEqual(document.filename, "untitled 2.md")
+            XCTAssertEqual(document.filename, "untitled (2).md")
             XCTAssertEqual(
                 try String(contentsOf: document.fileURL!, encoding: .utf8),
                 "new draft"
@@ -422,8 +422,10 @@ final class WorkspaceTests: XCTestCase {
             try Data("external".utf8).write(to: fileURL)
             state.unregister(session)
 
-            XCTAssertFalse(session.isReady)
-            XCTAssertEqual(try String(contentsOf: fileURL), "after")
+            XCTAssertTrue(session.isReady)
+            XCTAssertEqual(session.draftText, "after")
+            XCTAssertNotNil(session.activeConflict)
+            XCTAssertEqual(try String(contentsOf: fileURL), "external")
         }
     }
 }

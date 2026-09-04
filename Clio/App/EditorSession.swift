@@ -37,10 +37,12 @@ final class EditorSession: Identifiable {
     let id: UUID
     private(set) var openingMode: EditorOpeningMode
 
-    var draftText = ""
+    private var detachedDraftText = ""
     private(set) var relativePath = ""
     private(set) var document: Document?
     private(set) var errorMessage: String?
+    private(set) var isResolvingConflict = false
+    private(set) var pendingCollision: FileCollision?
     var isFullScreenEnabled: Bool
 
     @ObservationIgnored
@@ -48,6 +50,21 @@ final class EditorSession: Identifiable {
 
     @ObservationIgnored
     private var autosaver: Autosaver?
+
+    @ObservationIgnored
+    private var ownsAutosaver = false
+
+    @ObservationIgnored
+    private weak var registry: DocumentBufferRegistry?
+
+    @ObservationIgnored
+    private var conflictResolver: ConflictResolver?
+
+    @ObservationIgnored
+    private var documentMover: DocumentMover?
+
+    @ObservationIgnored
+    private var pendingRenameFilename: String?
 
     @ObservationIgnored
     private var autosaveErrorMonitor: Task<Void, Never>?
@@ -82,6 +99,19 @@ final class EditorSession: Identifiable {
         preferredRelativePath != nil
     }
 
+    var draftText: String {
+        get { document?.text ?? detachedDraftText }
+        set {
+            if let document {
+                document.replaceText(with: newValue)
+            } else {
+                detachedDraftText = newValue
+            }
+        }
+    }
+
+    var activeConflict: DocumentConflict? { document?.conflict }
+
     var wordCount: Int {
         draftText.split(whereSeparator: { $0.isWhitespace }).count
     }
@@ -93,10 +123,16 @@ final class EditorSession: Identifiable {
 
     func activate(
         in workspace: Workspace,
-        documentURLs: [URL]
+        documentURLs: [URL],
+        registry: DocumentBufferRegistry? = nil,
+        conflictResolver: ConflictResolver? = nil,
+        documentMover: DocumentMover? = nil
     ) {
         autosaveErrorMonitor?.cancel()
-        autosaver?.cancel()
+        if ownsAutosaver { autosaver?.cancel() }
+        self.registry = registry
+        self.conflictResolver = conflictResolver
+        self.documentMover = documentMover
 
         let initialDocument: (document: Document, warning: String?)
         if let preferredRelativePath,
@@ -124,8 +160,11 @@ final class EditorSession: Identifiable {
 
         self.workspace = workspace
         document = initialDocument.document
-        autosaver = Autosaver(workspace: workspace)
-        draftText = initialDocument.document.text
+        registry?.register(initialDocument.document, in: workspace)
+        ownsAutosaver = registry == nil
+        autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
+            ?? Autosaver(workspace: workspace)
+        detachedDraftText = ""
         refreshRelativePath()
         errorMessage = initialDocument.warning
         presentedErrorContext = .general
@@ -133,20 +172,25 @@ final class EditorSession: Identifiable {
 
     func deactivate() {
         autosaveErrorMonitor?.cancel()
-        autosaver?.cancel()
+        if ownsAutosaver { autosaver?.cancel() }
         autosaver = nil
+        ownsAutosaver = false
+        registry = nil
+        conflictResolver = nil
+        documentMover = nil
         workspace = nil
         document = nil
-        draftText = ""
+        detachedDraftText = ""
         relativePath = ""
         errorMessage = nil
+        pendingCollision = nil
+        pendingRenameFilename = nil
         presentedErrorContext = .general
     }
 
     func editorTextDidChange(_ newText: String) {
         guard let document, let autosaver else { return }
 
-        draftText = newText
         document.replaceText(with: newText)
         autosaver.documentDidChange(document)
         refreshRelativePath()
@@ -214,6 +258,96 @@ final class EditorSession: Identifiable {
         openingMode = .newDocument
         preferredRelativePath = nil
     }
+
+    func resolveConflict(_ choice: ConflictChoice) {
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.resolveConflictNow(choice)
+            } catch {
+                self?.presentError(
+                    "Clio couldn’t resolve the conflict. Both versions remain untouched.",
+                    underlying: error
+                )
+            }
+        }
+    }
+
+    func resolveConflictNow(_ choice: ConflictChoice) async throws {
+        guard let document, let workspace, let conflictResolver else { return }
+        isResolvingConflict = true
+        defer { isResolvingConflict = false }
+        _ = try await conflictResolver.resolve(
+            choice,
+            document: document,
+            workspace: workspace,
+            registry: registry
+        )
+        refreshRelativePath()
+        clearPresentedSaveError()
+    }
+
+    func rename(
+        to filename: String,
+        collisionChoice: CollisionChoice? = nil
+    ) async throws -> FileMutationOutcome {
+        guard let document, let workspace, let documentMover else {
+            return .cancelled
+        }
+        let outcome = try await documentMover.move(
+            document,
+            from: workspace,
+            to: workspace,
+            preferredFilename: filename,
+            collisionChoice: collisionChoice,
+            registry: registry
+        )
+        if case .collision(let collision) = outcome, collisionChoice == nil {
+            pendingCollision = collision
+            pendingRenameFilename = filename
+        } else {
+            pendingCollision = nil
+            pendingRenameFilename = nil
+        }
+        refreshRelativePath()
+        return outcome
+    }
+
+    func resolveCollision(_ choice: CollisionChoice) {
+        guard let filename = pendingRenameFilename else { return }
+        if choice == .cancel {
+            pendingCollision = nil
+            pendingRenameFilename = nil
+            return
+        }
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await self?.rename(
+                    to: filename,
+                    collisionChoice: choice
+                )
+            } catch {
+                self?.presentError(
+                    "Clio couldn’t complete the file operation. No version was silently replaced.",
+                    underlying: error
+                )
+            }
+        }
+    }
+
+    func moveToTrash() throws {
+        guard let document, let workspace, let documentMover else { return }
+        try documentMover.moveToTrash(
+            document,
+            workspace: workspace,
+            registry: registry
+        )
+        refreshRelativePath()
+    }
+
+    func revealInFinder() {
+        guard let document else { return }
+        documentMover?.reveal(document)
+    }
 }
 
 private extension EditorSession {
@@ -230,7 +364,8 @@ private extension EditorSession {
 
         for documentURL in documentURLs {
             do {
-                let document = try workspace.loadDocument(at: documentURL)
+                let document = try registry?.open(documentURL, in: workspace)
+                    ?? workspace.loadDocument(at: documentURL)
                 return (document, unreadableDocumentWarning(failures))
             } catch {
                 failures.append((documentURL, error))

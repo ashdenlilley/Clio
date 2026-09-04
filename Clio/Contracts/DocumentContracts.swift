@@ -193,19 +193,22 @@ struct DocumentConflict: Codable, Hashable, Sendable, Identifiable {
     let locator: DocumentLocator
     let clio: ConflictSide
     let external: ConflictSide
+    let additionalExternalVersions: [ConflictSide]?
 
     init(
         id: UUID = UUID(),
         documentID: DocumentID,
         locator: DocumentLocator,
         clio: ConflictSide,
-        external: ConflictSide
+        external: ConflictSide,
+        additionalExternalVersions: [ConflictSide]? = nil
     ) {
         self.id = id
         self.documentID = documentID
         self.locator = locator
         self.clio = clio
         self.external = external
+        self.additionalExternalVersions = additionalExternalVersions
     }
 }
 
