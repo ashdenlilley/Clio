@@ -46,7 +46,7 @@ final class MotionStateMachineTests: XCTestCase {
         XCTAssertEqual(MotionContract.conflictBannerEnter.transform.y, -8)
     }
 
-    func testReduceMotionRetainsOnlyShortOpacityTransition() {
+    func testReduceMotionRetainsOnlyShortOpacityTransitionAndStaticBlur() {
         let preferences = MotionPreferences(
             reduceMotion: true,
             reduceTransparency: false
@@ -58,7 +58,10 @@ final class MotionStateMachineTests: XCTestCase {
         XCTAssertEqual(palette.curve, .linear)
         XCTAssertEqual(palette.animatedProperties, [.opacity])
         XCTAssertEqual(palette.transform, MotionTransform())
-        XCTAssertFalse(palette.usesBackdropBlur)
+        XCTAssertTrue(
+            palette.usesBackdropBlur,
+            "Reduce Motion must not implicitly enable Reduce Transparency"
+        )
     }
 
     func testReduceTransparencyDisablesBackdropWithoutChangingTiming() {
@@ -72,6 +75,21 @@ final class MotionStateMachineTests: XCTestCase {
         XCTAssertEqual(overlay.duration, 0.140)
         XCTAssertFalse(overlay.usesBackdropBlur)
         XCTAssertFalse(overlay.animatedProperties.contains(.blur))
+    }
+
+    func testCombinedAccessibilityPreferencesDisableBackdropAndMotion() {
+        let resolved = MotionContract.sheetEnter.resolved(
+            for: MotionPreferences(
+                reduceMotion: true,
+                reduceTransparency: true
+            )
+        )
+
+        XCTAssertEqual(resolved.duration, 0.080)
+        XCTAssertEqual(resolved.curve, .linear)
+        XCTAssertEqual(resolved.animatedProperties, [.opacity])
+        XCTAssertEqual(resolved.transform, MotionTransform())
+        XCTAssertFalse(resolved.usesBackdropBlur)
     }
 
     func testReversalStartsAtCurrentPresentationAndInvalidatesOldGeneration() {
@@ -325,6 +343,239 @@ final class ChromeMotionControllerTests: XCTestCase {
         XCTAssertFalse(controller.sidebar.isCurrent(generation: openingGeneration))
     }
 
+    func testToggleCancelsGestureAndTrailingEndCannotOverrideCommand() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            sidebarInitiallyVisible: false
+        )
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: 120, sidebarWidth: 200)
+
+        controller.toggleSidebar()
+        let commandGeneration = controller.sidebar.transition?.generation
+        controller.endSidebarGesture(normalizedVelocity: 1)
+
+        XCTAssertFalse(controller.isSidebarDragged)
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.sidebar.transition?.generation, commandGeneration)
+    }
+
+    func testHideCancelsGestureAndTrailingEndCannotReveal() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: -80, sidebarWidth: 200)
+
+        controller.hideSidebar()
+        controller.endSidebarGesture(normalizedVelocity: 1)
+
+        XCTAssertFalse(controller.isSidebarDragged)
+        XCTAssertEqual(controller.sidebar.target, 0)
+    }
+
+    func testTemporaryRevealCancelsGestureAndTrailingEndCannotHide() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: -120, sidebarWidth: 200)
+
+        controller.revealSidebarTemporarily()
+        let revealGeneration = controller.sidebar.transition?.generation
+        controller.endSidebarGesture(normalizedVelocity: -1)
+
+        XCTAssertFalse(controller.isSidebarDragged)
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.sidebar.transition?.generation, revealGeneration)
+        XCTAssertTrue(controller.isSidebarTemporary)
+    }
+
+    func testPinChangeCancelsGestureAndTrailingEndCannotOverridePin() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            sidebarInitiallyVisible: false
+        )
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: 80, sidebarWidth: 200)
+
+        controller.setSidebarPinned(true)
+        controller.endSidebarGesture(normalizedVelocity: -1)
+
+        XCTAssertFalse(controller.isSidebarDragged)
+        XCTAssertTrue(controller.isSidebarPinned)
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertFalse(controller.isSidebarTemporary)
+    }
+
+    func testExplicitGestureCancellationSettlesToOriginalHiddenIntent() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            sidebarInitiallyVisible: false
+        )
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: 140, sidebarWidth: 200)
+        let interactivePresentation = controller.sidebar.presentation
+
+        controller.cancelSidebarGesture()
+
+        XCTAssertFalse(controller.isSidebarDragged)
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(
+            controller.sidebar.transition?.from ?? -1,
+            interactivePresentation,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            controller.sidebar.transition?.duration ?? -1,
+            MotionContract.sidebarHide.duration * interactivePresentation,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testExplicitGestureCancellationRestoresTemporaryRevealAndDelay() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            sidebarInitiallyVisible: false
+        )
+        controller.revealSidebarTemporarily()
+        clock.now = MotionContract.sidebarReveal.duration
+        controller.tick()
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: -100, sidebarWidth: 200)
+        clock.now = 1
+
+        controller.cancelSidebarGesture()
+
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertTrue(controller.isSidebarTemporary)
+        XCTAssertEqual(
+            controller.nextDeadline,
+            clock.now + MotionContract.temporarySidebarDelay
+        )
+    }
+
+    func testGestureCancellationResumesInterruptedProgrammaticTarget() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            sidebarInitiallyVisible: false
+        )
+        controller.toggleSidebar()
+        clock.now = 0.080
+        controller.tick()
+        controller.beginSidebarGesture()
+        controller.updateSidebarGesture(translation: -20, sidebarWidth: 200)
+
+        controller.cancelSidebarGesture()
+
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertTrue(controller.sidebar.hasActiveTransition)
+    }
+
+    func testChromeFadeDisabledFromLaunchIgnoresTyping() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(
+            clock: clock,
+            chromeFadeEnabled: false
+        )
+
+        controller.noteTyping()
+        clock.now = 20
+        controller.tick()
+
+        XCTAssertFalse(controller.isWritingBurstActive)
+        XCTAssertNil(controller.nextDeadline)
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(controller.pointer.target, 1)
+    }
+
+    func testDisablingChromeFadeCancelsPendingWritingDeadline() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 2
+
+        controller.setChromeFadeEnabled(false)
+        clock.now = 10
+        controller.tick()
+
+        XCTAssertFalse(controller.isChromeFadeEnabled)
+        XCTAssertFalse(controller.isWritingBurstActive)
+        XCTAssertNil(controller.nextDeadline)
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+    }
+
+    func testDisablingChromeFadeRestoresOnlySidebarCollapsedByWriting() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 6
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.context.target, 0)
+
+        controller.setChromeFadeEnabled(false)
+
+        XCTAssertEqual(controller.sidebar.target, 1)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(controller.pointer.target, 1)
+    }
+
+    func testDisablingChromeFadeDoesNotOpenManuallyHiddenSidebar() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.hideSidebar()
+        controller.noteTyping()
+        clock.now = 6
+        controller.tick()
+
+        controller.setChromeFadeEnabled(false)
+
+        XCTAssertEqual(controller.sidebar.target, 0)
+        XCTAssertEqual(controller.context.target, 1)
+        XCTAssertEqual(controller.titlebar.target, 1)
+        XCTAssertEqual(controller.pointer.target, 1)
+    }
+
+    func testManualHideDuringWritingCollapsePreventsLaterAutomaticRestore() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 5.05
+        controller.tick()
+        XCTAssertEqual(controller.sidebar.target, 0)
+
+        controller.hideSidebar()
+        controller.setChromeFadeEnabled(false)
+
+        XCTAssertEqual(controller.sidebar.target, 0)
+    }
+
+    func testReenablingChromeFadeRequiresFreshTypingEpoch() {
+        let clock = ManualMotionClock()
+        let controller = ChromeMotionController(clock: clock)
+        controller.noteTyping()
+        clock.now = 2
+        controller.setChromeFadeEnabled(false)
+        controller.setChromeFadeEnabled(true)
+        clock.now = 20
+        controller.tick()
+        XCTAssertEqual(controller.context.target, 1)
+
+        controller.noteTyping()
+        clock.now = 25.060
+        controller.tick()
+        XCTAssertEqual(controller.context.target, 0)
+    }
+
     func testReduceMotionKeepsFiveSecondAndSixtyMillisecondDelays() {
         let clock = ManualMotionClock()
         let controller = ChromeMotionController(
@@ -394,6 +645,7 @@ final class TransientSurfaceMotionControllerTests: XCTestCase {
         let clock = ManualMotionClock()
         let controller = TransientSurfaceMotionController(clock: clock)
         let firstFocus = snapshot()
+        let focusAccidentallyCapturedDuringExit = snapshot()
         controller.presentPalette(capturing: firstFocus)
         let firstGeneration = controller.palette.transition!.generation
         clock.now = 0.060
@@ -406,11 +658,103 @@ final class TransientSurfaceMotionControllerTests: XCTestCase {
         clock.now = 0.080
         controller.tick()
         let beforeReopen = controller.palette.presentation
-        controller.presentPalette(capturing: snapshot())
+        controller.presentPalette(capturing: focusAccidentallyCapturedDuringExit)
 
         XCTAssertEqual(controller.palette.transition?.from ?? -1, beforeReopen, accuracy: 0.000_001)
         XCTAssertFalse(controller.palette.isCurrent(generation: firstGeneration))
         XCTAssertFalse(controller.palette.isCurrent(generation: closeGeneration))
+        XCTAssertEqual(
+            controller.dismissPalette(),
+            firstFocus,
+            "An interrupted exit must retain the original editor responder"
+        )
+    }
+
+    func testCompletedExitAllowsNextPresentationToCaptureNewFocus() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        let firstFocus = snapshot()
+        let laterFocus = snapshot()
+        controller.presentPalette(capturing: firstFocus)
+        clock.now = 0.080
+        controller.tick()
+        XCTAssertEqual(controller.dismissPalette(), firstFocus)
+
+        clock.now = 1
+        controller.tick()
+        controller.presentPalette(capturing: laterFocus)
+
+        XCTAssertEqual(controller.dismissPalette(), laterFocus)
+    }
+
+    func testDismissingCoveredSurfaceDefersAndRewiresFocusRestoration() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        let editorFocus = snapshot()
+        let paletteFocus = snapshot()
+        controller.presentPalette(capturing: editorFocus)
+        controller.presentSettings(capturing: paletteFocus)
+        XCTAssertEqual(controller.activeSurfaceStack, [.palette, .settings])
+
+        let premature = controller.dismissPalette()
+
+        XCTAssertNil(premature, "A covered surface must not steal focus from the modal above it")
+        XCTAssertEqual(controller.activeSurfaceStack, [.settings])
+        XCTAssertEqual(
+            controller.dismissSettings(),
+            editorFocus,
+            "The upper surface must bypass the dismissed palette responder"
+        )
+    }
+
+    func testThreeLevelFocusChainSurvivesMultipleCoveredDismissals() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        let editorFocus = snapshot()
+        controller.presentPalette(capturing: editorFocus)
+        controller.presentSettings(capturing: snapshot())
+        controller.presentConflict(capturing: snapshot())
+        XCTAssertEqual(
+            controller.activeSurfaceStack,
+            [.palette, .settings, .conflict]
+        )
+
+        XCTAssertNil(controller.dismissPalette())
+        XCTAssertNil(controller.dismissSettings())
+        XCTAssertEqual(controller.activeSurfaceStack, [.conflict])
+
+        XCTAssertEqual(controller.conflictResolutionSucceeded(), editorFocus)
+        XCTAssertTrue(controller.activeSurfaceStack.isEmpty)
+    }
+
+    func testTopConflictRestoresTheStillActivePaletteResponder() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        let editorFocus = snapshot()
+        let paletteFocus = snapshot()
+        controller.presentPalette(capturing: editorFocus)
+        controller.presentConflict(capturing: paletteFocus)
+
+        XCTAssertEqual(controller.conflictResolutionSucceeded(), paletteFocus)
+        XCTAssertEqual(controller.activeSurfaceStack, [.palette])
+        XCTAssertEqual(controller.dismissPalette(), editorFocus)
+    }
+
+    func testChangedUnderlayDoesNotReusePendingFocusFromOldPresentation() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(clock: clock)
+        controller.presentSettings(capturing: snapshot())
+        clock.now = 0.080
+        controller.tick()
+        _ = controller.dismissSettings()
+
+        let editorFocus = snapshot()
+        let paletteFocus = snapshot()
+        controller.presentPalette(capturing: editorFocus)
+        controller.presentSettings(capturing: paletteFocus)
+
+        XCTAssertEqual(controller.dismissSettings(), paletteFocus)
+        XCTAssertEqual(controller.dismissPalette(), editorFocus)
     }
 
     func testSharedOverlayRemainsWhileAnotherSurfaceIsActive() {
@@ -469,6 +813,27 @@ final class TransientSurfaceMotionControllerTests: XCTestCase {
             XCTAssertFalse(transition.recipe.usesBackdropBlur)
         }
         XCTAssertFalse(controller.usesBackdropBlur)
+    }
+
+    func testReduceMotionAloneKeepsControllerAndRecipeBackdropInAgreement() {
+        let clock = ManualMotionClock()
+        let controller = TransientSurfaceMotionController(
+            clock: clock,
+            preferences: MotionPreferences(
+                reduceMotion: true,
+                reduceTransparency: false
+            )
+        )
+
+        controller.presentPalette(capturing: snapshot())
+
+        XCTAssertTrue(controller.usesBackdropBlur)
+        let transitions = controller.drainEvents().compactMap { event -> MotionTransition? in
+            guard case let .transition(transition) = event.kind else { return nil }
+            return transition
+        }
+        XCTAssertFalse(transitions.isEmpty)
+        XCTAssertTrue(transitions.allSatisfy(\.recipe.usesBackdropBlur))
     }
 
     func testIntegrationPolicyProtectsEditorState() {

@@ -16,13 +16,17 @@ final class ChromeMotionController {
     private(set) var isSidebarHovered = false
     private(set) var isSidebarFocused = false
     private(set) var isSidebarDragged = false
+    private(set) var isChromeFadeEnabled: Bool
 
     private var writingStartedAt: TimeInterval?
     private var didTriggerWritingThreshold = false
     private var didTriggerContextFade = false
+    private var wasSidebarCollapsedByWriting = false
 
     private var temporarySidebarDeadline: TimeInterval?
     private var gestureStartPresentation: Double?
+    private var gestureStartTarget: Double?
+    private var gestureWasTemporary = false
     private var pointerWakeAnchor: MotionPoint
     private var events: [MotionEvent] = []
 
@@ -31,11 +35,13 @@ final class ChromeMotionController {
         preferences: MotionPreferences = .standard,
         sidebarInitiallyVisible: Bool = true,
         sidebarPinned: Bool = false,
+        chromeFadeEnabled: Bool = true,
         pointerLocation: MotionPoint = .init(x: 0, y: 0)
     ) {
         self.clock = clock
         self.preferences = preferences
         isSidebarPinned = sidebarPinned
+        isChromeFadeEnabled = chromeFadeEnabled
         let sidebarPresentation = sidebarInitiallyVisible ? 1.0 : 0.0
         sidebar = ReversibleMotionStateMachine(
             initialPresentation: sidebarPresentation
@@ -84,6 +90,7 @@ final class ChromeMotionController {
     /// chrome begins hiding five seconds after writing starts, as approved.
     func noteTyping() {
         tick()
+        guard isChromeFadeEnabled else { return }
         guard writingStartedAt == nil else { return }
         writingStartedAt = clock.now
         didTriggerWritingThreshold = false
@@ -98,6 +105,30 @@ final class ChromeMotionController {
         writingStartedAt = nil
         didTriggerWritingThreshold = false
         didTriggerContextFade = false
+    }
+
+    /// Enables or disables the writing-triggered chrome treatment. Disabling
+    /// it cancels semantic deadlines and restores only chrome that this feature
+    /// hid; a sidebar the writer hid explicitly remains hidden.
+    func setChromeFadeEnabled(_ enabled: Bool) {
+        tick()
+        guard isChromeFadeEnabled != enabled else { return }
+        isChromeFadeEnabled = enabled
+
+        guard !enabled else { return }
+        writingStartedAt = nil
+        didTriggerWritingThreshold = false
+        didTriggerContextFade = false
+
+        let time = clock.now
+        retargetContext(to: 1, at: time, recipe: MotionContract.chromeRestore)
+        retargetTitlebar(to: 1, at: time, recipe: MotionContract.chromeRestore)
+        retargetPointer(to: 1, at: time, recipe: MotionContract.chromeRestore)
+
+        if wasSidebarCollapsedByWriting {
+            retargetSidebar(to: 1, at: time, recipe: MotionContract.sidebarReveal)
+            wasSidebarCollapsedByWriting = false
+        }
     }
 
     func seedPointerLocation(_ location: MotionPoint) {
@@ -137,6 +168,8 @@ final class ChromeMotionController {
 
     func toggleSidebar() {
         tick()
+        abandonSidebarGesture()
+        wasSidebarCollapsedByWriting = false
         let time = clock.now
         if isSidebarIntendedVisible {
             retargetSidebar(to: 0, at: time, recipe: MotionContract.sidebarHide)
@@ -149,6 +182,8 @@ final class ChromeMotionController {
 
     func setSidebarPinned(_ pinned: Bool) {
         tick()
+        abandonSidebarGesture()
+        wasSidebarCollapsedByWriting = false
         isSidebarPinned = pinned
         isSidebarTemporary = false
         temporarySidebarDeadline = nil
@@ -163,6 +198,8 @@ final class ChromeMotionController {
 
     func revealSidebarTemporarily() {
         tick()
+        abandonSidebarGesture()
+        wasSidebarCollapsedByWriting = false
         let time = clock.now
         retargetSidebar(to: 1, at: time, recipe: MotionContract.sidebarReveal)
         guard !isSidebarPinned else { return }
@@ -172,6 +209,8 @@ final class ChromeMotionController {
 
     func hideSidebar() {
         tick()
+        abandonSidebarGesture()
+        wasSidebarCollapsedByWriting = false
         retargetSidebar(
             to: 0,
             at: clock.now,
@@ -205,8 +244,12 @@ final class ChromeMotionController {
     /// a programmatic reveal or hide.
     func beginSidebarGesture() {
         tick()
+        guard gestureStartPresentation == nil else { return }
         _ = sidebar.advance(to: clock.now)
         gestureStartPresentation = sidebar.presentation
+        gestureStartTarget = sidebar.target
+        gestureWasTemporary = isSidebarTemporary
+        wasSidebarCollapsedByWriting = false
         isSidebarDragged = true
         temporarySidebarDeadline = nil
     }
@@ -234,8 +277,7 @@ final class ChromeMotionController {
     func endSidebarGesture(normalizedVelocity: Double = 0) {
         guard gestureStartPresentation != nil else { return }
         let time = clock.now
-        gestureStartPresentation = nil
-        isSidebarDragged = false
+        clearSidebarGestureState()
 
         let shouldReveal: Bool
         if abs(normalizedVelocity) >= 0.05 {
@@ -252,6 +294,34 @@ final class ChromeMotionController {
             }
         } else {
             retargetSidebar(to: 0, at: time, recipe: MotionContract.sidebarHide)
+            isSidebarTemporary = false
+            temporarySidebarDeadline = nil
+        }
+    }
+
+    /// Cancels a gesture without accepting its interactive destination. The
+    /// sidebar settles back toward the intent that existed when the gesture
+    /// began, and a temporary reveal receives a fresh post-interaction delay.
+    func cancelSidebarGesture() {
+        tick()
+        guard gestureStartPresentation != nil else { return }
+        let target = gestureStartTarget ?? sidebar.target
+        let wasTemporary = gestureWasTemporary
+        let time = clock.now
+        clearSidebarGestureState()
+
+        retargetSidebar(
+            to: target,
+            at: time,
+            recipe: target > 0
+                ? MotionContract.sidebarReveal
+                : MotionContract.sidebarHide
+        )
+
+        if target > 0, wasTemporary, !isSidebarPinned {
+            isSidebarTemporary = true
+            temporarySidebarDeadline = time + MotionContract.temporarySidebarDelay
+        } else if target <= 0 {
             isSidebarTemporary = false
             temporarySidebarDeadline = nil
         }
@@ -307,11 +377,14 @@ final class ChromeMotionController {
     func tick() {
         let time = clock.now
 
-        if let writingStartedAt {
+        if isChromeFadeEnabled, let writingStartedAt {
             let threshold = writingStartedAt + MotionContract.writingThreshold
             if !didTriggerWritingThreshold, time >= threshold {
                 didTriggerWritingThreshold = true
                 if !isSidebarPinned {
+                    if sidebar.target > 0 {
+                        wasSidebarCollapsedByWriting = true
+                    }
                     retargetSidebar(
                         to: 0,
                         at: threshold,
@@ -376,6 +449,21 @@ private extension ChromeMotionController {
             || isSidebarFocused
             || isSidebarPinned
             || isSidebarDragged
+    }
+
+    /// A newer explicit sidebar command wins over any gesture still delivering
+    /// trailing or momentum events. The command itself immediately establishes
+    /// the next target from the current interactive presentation.
+    func abandonSidebarGesture() {
+        guard gestureStartPresentation != nil || isSidebarDragged else { return }
+        clearSidebarGestureState()
+    }
+
+    func clearSidebarGestureState() {
+        gestureStartPresentation = nil
+        gestureStartTarget = nil
+        gestureWasTemporary = false
+        isSidebarDragged = false
     }
 
     func recordSidebarInteractionAfterStateChange() {
