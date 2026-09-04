@@ -17,8 +17,12 @@ final class WorkspacePerformanceContractTests: XCTestCase {
                 totalUTF8ByteCount: PerformanceContract.guaranteedWorkspaceByteCount
             )
             let workspace = WorkspaceDescriptor(rootURL: workspaceURL)
+            let identityStore = DocumentIdentityStore(
+                storageURL: baseURL.appendingPathComponent("identities.json")
+            )
             let index = try SQLiteSearchIndex(
-                databaseURL: baseURL.appendingPathComponent("contract.sqlite3")
+                databaseURL: baseURL.appendingPathComponent("contract.sqlite3"),
+                identityStore: identityStore
             )
             let clock = ContinuousClock()
             let indexStart = clock.now
@@ -84,7 +88,10 @@ final class WorkspacePerformanceContractTests: XCTestCase {
                 totalUTF8ByteCount: PerformanceContract.stressWorkspaceByteCount
             )
             let index = try SQLiteSearchIndex(
-                databaseURL: baseURL.appendingPathComponent("stress.sqlite3")
+                databaseURL: baseURL.appendingPathComponent("stress.sqlite3"),
+                identityStore: DocumentIdentityStore(
+                    storageURL: baseURL.appendingPathComponent("identities.json")
+                )
             )
             try await index.rebuild(
                 workspaces: [WorkspaceDescriptor(rootURL: workspaceURL)],
