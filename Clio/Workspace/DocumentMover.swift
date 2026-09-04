@@ -361,7 +361,7 @@ private actor FileMutationExecutor {
     }
 
     func snapshot(at url: URL) throws -> (data: Data, revision: DiskRevision) {
-        try DocumentRevisionReader.snapshot(at: url)
+        try DocumentRevisionReader.documentSnapshot(at: url)
     }
 
     func revision(at url: URL) throws -> DiskRevision {
@@ -427,7 +427,9 @@ private actor FileMutationExecutor {
     func quarantinedSnapshot(
         _ context: InterruptedMoveContext
     ) throws -> (data: Data, revision: DiskRevision) {
-        try DocumentRevisionReader.snapshot(at: context.manifest.quarantineURL)
+        try DocumentRevisionReader.documentSnapshot(
+            at: context.manifest.quarantineURL
+        )
     }
 
     func finishMoveTransactionIfSourceMatches(

@@ -3,43 +3,196 @@ import Darwin
 import Foundation
 
 enum DocumentRevisionReader {
+    static let maximumDocumentByteCount = Int64(
+        PerformanceContract.safeLargeFileByteLimit
+    )
+
     enum RevisionError: LocalizedError {
         case notRegularFile(URL)
+        case fileTooLarge(URL, byteCount: Int64, maximumByteCount: Int64)
+        case changedWhileReading(URL)
 
         var errorDescription: String? {
             switch self {
             case .notRegularFile(let url):
                 "The document no longer exists at \(url.path)."
+            case .fileTooLarge(let url, let byteCount, let maximumByteCount):
+                "\(url.lastPathComponent) is \(byteCount.formatted(.byteCount(style: .file))) and exceeds Clio's \(maximumByteCount.formatted(.byteCount(style: .file))) safe-file limit. It was left unopened."
+            case .changedWhileReading(let url):
+                "\(url.lastPathComponent) changed while Clio was reading it. Try again."
             }
         }
     }
 
-    static func snapshot(at url: URL) throws -> (data: Data, revision: DiskRevision) {
+    /// Reads from one opened inode, bounds allocation before the first byte is
+    /// materialized, and rejects an in-place mutation instead of returning a
+    /// torn mixture of two outside versions.
+    static func snapshot(
+        at url: URL,
+        maximumByteCount: Int64? = nil
+    ) throws -> (data: Data, revision: DiskRevision) {
         let standardizedURL = url.standardizedFileURL
-        let values = try standardizedURL.resourceValues(forKeys: [
-            .contentModificationDateKey,
-            .fileSizeKey,
-            .isRegularFileKey,
-        ])
-        guard values.isRegularFile == true else {
-            throw RevisionError.notRegularFile(standardizedURL)
-        }
+        let descriptor = open(standardizedURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw posixError(for: standardizedURL) }
+        defer { close(descriptor) }
 
-        let data = try Data(contentsOf: standardizedURL, options: .mappedIfSafe)
+        let initial = try fileStatus(descriptor, url: standardizedURL)
+        try validateRegularFile(initial, url: standardizedURL)
+        try validateSize(initial.st_size, maximumByteCount: maximumByteCount, url: standardizedURL)
+
+        let data = try readData(
+            descriptor,
+            expectedByteCount: initial.st_size,
+            maximumByteCount: maximumByteCount,
+            url: standardizedURL
+        )
+        let final = try fileStatus(descriptor, url: standardizedURL)
+        guard sameOpenedRevision(initial, final), final.st_size == data.count else {
+            throw RevisionError.changedWhileReading(standardizedURL)
+        }
         let revision = DiskRevision(
-            modificationDate: values.contentModificationDate ?? .distantPast,
+            modificationDate: modificationDate(final),
             byteCount: Int64(data.count),
             contentDigest: digest(data)
         )
         return (data, revision)
     }
 
+    static func documentSnapshot(
+        at url: URL
+    ) throws -> (data: Data, revision: DiskRevision) {
+        try snapshot(at: url, maximumByteCount: maximumDocumentByteCount)
+    }
+
     static func revision(at url: URL) throws -> DiskRevision {
-        try snapshot(at: url).revision
+        let standardizedURL = url.standardizedFileURL
+        let descriptor = open(standardizedURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw posixError(for: standardizedURL) }
+        defer { close(descriptor) }
+
+        let initial = try fileStatus(descriptor, url: standardizedURL)
+        try validateRegularFile(initial, url: standardizedURL)
+        var hasher = SHA256()
+        let byteCount = try readChunks(descriptor, url: standardizedURL) { chunk in
+            hasher.update(data: chunk)
+        }
+        let final = try fileStatus(descriptor, url: standardizedURL)
+        guard sameOpenedRevision(initial, final), final.st_size == byteCount else {
+            throw RevisionError.changedWhileReading(standardizedURL)
+        }
+        return DiskRevision(
+            modificationDate: modificationDate(final),
+            byteCount: Int64(byteCount),
+            contentDigest: hexDigest(hasher.finalize())
+        )
     }
 
     static func digest(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hexDigest(SHA256.hash(data: data))
+    }
+}
+
+private extension DocumentRevisionReader {
+    static let readChunkByteCount = 1_024 * 1_024
+
+    static func readData(
+        _ descriptor: Int32,
+        expectedByteCount: Int64,
+        maximumByteCount: Int64?,
+        url: URL
+    ) throws -> Data {
+        var result = Data()
+        if expectedByteCount > 0, expectedByteCount <= Int64(Int.max) {
+            result.reserveCapacity(Int(expectedByteCount))
+        }
+        let byteCount = try readChunks(descriptor, url: url) { chunk in
+            result.append(chunk)
+            if let maximumByteCount, result.count > maximumByteCount {
+                throw RevisionError.fileTooLarge(
+                    url,
+                    byteCount: Int64(result.count),
+                    maximumByteCount: maximumByteCount
+                )
+            }
+        }
+        try validateSize(Int64(byteCount), maximumByteCount: maximumByteCount, url: url)
+        return result
+    }
+
+    static func readChunks(
+        _ descriptor: Int32,
+        url: URL,
+        consume: (Data) throws -> Void
+    ) throws -> Int {
+        var total = 0
+        var storage = [UInt8](repeating: 0, count: readChunkByteCount)
+        while true {
+            let count = read(descriptor, &storage, storage.count)
+            if count == 0 { return total }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw posixError(for: url)
+            }
+            total += count
+            try storage.withUnsafeBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else { return }
+                try consume(Data(bytes: baseAddress, count: count))
+            }
+        }
+    }
+
+    static func fileStatus(_ descriptor: Int32, url: URL) throws -> stat {
+        var value = stat()
+        guard fstat(descriptor, &value) == 0 else { throw posixError(for: url) }
+        return value
+    }
+
+    static func validateRegularFile(_ value: stat, url: URL) throws {
+        guard value.st_mode & S_IFMT == S_IFREG else {
+            throw RevisionError.notRegularFile(url)
+        }
+    }
+
+    static func validateSize(
+        _ byteCount: Int64,
+        maximumByteCount: Int64?,
+        url: URL
+    ) throws {
+        guard let maximumByteCount, byteCount > maximumByteCount else { return }
+        throw RevisionError.fileTooLarge(
+            url,
+            byteCount: byteCount,
+            maximumByteCount: maximumByteCount
+        )
+    }
+
+    static func sameOpenedRevision(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev
+            && lhs.st_ino == rhs.st_ino
+            && lhs.st_size == rhs.st_size
+            && lhs.st_mtimespec.tv_sec == rhs.st_mtimespec.tv_sec
+            && lhs.st_mtimespec.tv_nsec == rhs.st_mtimespec.tv_nsec
+            && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec
+            && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
+    }
+
+    static func modificationDate(_ value: stat) -> Date {
+        Date(
+            timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec)
+                + TimeInterval(value.st_mtimespec.tv_nsec) / 1_000_000_000
+        )
+    }
+
+    static func hexDigest<S: Sequence>(_ digest: S) -> String where S.Element == UInt8 {
+        digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func posixError(for url: URL) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSFilePathErrorKey: url.path]
+        )
     }
 }
 
@@ -60,6 +213,62 @@ enum AtomicReplaceOutcome: Equatable {
     case revisionMismatch(retainedURL: URL?)
 }
 
+private struct DestinationFileMetadata {
+    let sourceURL: URL
+
+    static func capture(at url: URL) throws -> Self {
+        let destination = url.standardizedFileURL
+        var status = stat()
+        let result = destination.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &status)
+        }
+        guard result == 0 else { throw posixError(for: destination) }
+        guard status.st_mode & S_IFMT == S_IFREG else {
+            throw DocumentRevisionReader.RevisionError.notRegularFile(destination)
+        }
+        guard access(destination.path, W_OK) == 0 else {
+            throw CocoaError(
+                .fileWriteNoPermission,
+                userInfo: [NSFilePathErrorKey: destination.path]
+            )
+        }
+        return Self(sourceURL: destination)
+    }
+
+    func apply(to candidateURL: URL) throws {
+        let flags = copyfile_flags_t(
+            COPYFILE_METADATA | COPYFILE_NOFOLLOW_SRC | COPYFILE_NOFOLLOW_DST
+        )
+        let result = copyfile(sourceURL.path, candidateURL.path, nil, flags)
+        guard result == 0 else { throw Self.posixError(for: candidateURL) }
+
+        // Metadata copy intentionally retains mode, ACLs, Finder tags, and
+        // other xattrs, but new canonical bytes receive a new modification
+        // date so external-change comparison remains meaningful.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: candidateURL.path
+        )
+        try Self.syncFile(candidateURL)
+    }
+
+    private static func syncFile(_ url: URL) throws {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw posixError(for: url) }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else { throw posixError(for: url) }
+    }
+
+    private static func posixError(for url: URL) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSFilePathErrorKey: url.path]
+        )
+    }
+}
+
 struct AtomicFileWriter: AtomicFileWriting {
     var beforeSwap: (() throws -> Void)?
     var afterSwap: (() throws -> Void)?
@@ -70,6 +279,9 @@ struct AtomicFileWriter: AtomicFileWriting {
         at destinationURL: URL,
         onlyIf revision: DiskRevision? = nil
     ) throws -> AtomicReplaceOutcome {
+        let destinationMetadata = try DestinationFileMetadata.capture(
+            at: destinationURL
+        )
         let transaction = try AtomicWriteTransactions.begin(
             contents: data,
             destinationURL: destinationURL,
@@ -79,9 +291,11 @@ struct AtomicFileWriter: AtomicFileWriting {
         try phaseHook?(.manifestSynced)
         let temporaryURL = transaction.manifest.temporaryURL
         try writeAndSync(data, to: temporaryURL)
+        try destinationMetadata.apply(to: temporaryURL)
         try phaseHook?(.candidateSynced)
 
         guard let revision else {
+            _ = try DestinationFileMetadata.capture(at: destinationURL)
             guard rename(temporaryURL.path, destinationURL.path) == 0 else {
                 throw posixError(for: destinationURL)
             }
@@ -93,6 +307,8 @@ struct AtomicFileWriter: AtomicFileWriting {
         }
 
         try beforeSwap?()
+        let currentMetadata = try DestinationFileMetadata.capture(at: destinationURL)
+        try currentMetadata.apply(to: temporaryURL)
         let swapResult = temporaryURL.withUnsafeFileSystemRepresentation { sourcePath in
             destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
                 renamex_np(sourcePath, destinationPath, UInt32(RENAME_SWAP))

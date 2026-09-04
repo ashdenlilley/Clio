@@ -68,7 +68,7 @@ final class Document: Identifiable {
 
     convenience init(contentsOf fileURL: URL, id: DocumentID = DocumentID()) throws {
         let standardizedURL = fileURL.standardizedFileURL
-        let disk = try DocumentRevisionReader.snapshot(at: standardizedURL)
+        let disk = try DocumentRevisionReader.documentSnapshot(at: standardizedURL)
         guard let text = String(data: disk.data, encoding: .utf8) else {
             throw ReadError.invalidUTF8(standardizedURL)
         }

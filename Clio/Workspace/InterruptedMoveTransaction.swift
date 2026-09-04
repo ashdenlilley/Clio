@@ -281,7 +281,7 @@ extension InterruptedMoveTransactions {
     inside root: URL
   ) -> (data: Data, revision: DiskRevision)? {
     guard isSafeRegularFile(url, inside: root) else { return nil }
-    return try? DocumentRevisionReader.snapshot(at: url)
+    return try? DocumentRevisionReader.documentSnapshot(at: url)
   }
 
   fileprivate static func isSafeRegularFile(_ url: URL, inside root: URL) -> Bool {

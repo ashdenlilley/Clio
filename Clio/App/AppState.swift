@@ -486,11 +486,11 @@ private extension AppState {
                       ]),
                       values.isRegularFile == true,
                       values.isSymbolicLink != true,
-                      let snapshot = try? DocumentRevisionReader.snapshot(at: targetURL) else {
+                      let revision = try? DocumentRevisionReader.revision(at: targetURL) else {
                     return false
                 }
-                return snapshot.revision.byteCount == Int64(record.data.count)
-                    && snapshot.revision.contentDigest == record.contentDigest
+                return revision.byteCount == Int64(record.data.count)
+                    && revision.contentDigest == record.contentDigest
             }.value
             if alreadyCanonical {
                 journal.remove(recordID: record.id)

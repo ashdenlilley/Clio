@@ -303,7 +303,7 @@ final class Workspace {
                 throw WorkspaceError.documentDeleted(fileURL)
             }
 
-            let current = try DocumentRevisionReader.snapshot(at: fileURL)
+            let current = try DocumentRevisionReader.documentSnapshot(at: fileURL)
             if let expected = snapshot.expectedDiskRevision,
                !Self.sameContent(current.revision, expected) {
                 let conflict = try makeConflict(
@@ -324,7 +324,7 @@ final class Workspace {
                     onlyIf: current.revision
                 )
                 if case .revisionMismatch(let retainedURL) = replaceOutcome {
-                    let latest = try DocumentRevisionReader.snapshot(at: fileURL)
+                    let latest = try DocumentRevisionReader.documentSnapshot(at: fileURL)
                     let conflict = try makeConflict(
                         document: document,
                         snapshot: snapshot,
@@ -447,7 +447,7 @@ final class Workspace {
             return
         }
 
-        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
+        let disk = try DocumentRevisionReader.documentSnapshot(at: fileURL)
         if consumeSelfWrite(at: fileURL, revision: disk.revision) != nil {
             return
         }
@@ -491,7 +491,7 @@ final class Workspace {
         }
 
         let prior = document.snapshot()
-        let disk = try DocumentRevisionReader.snapshot(at: newURL)
+        let disk = try DocumentRevisionReader.documentSnapshot(at: newURL)
         let contentChanged = prior.expectedDiskRevision.map {
             !Self.sameContent($0, disk.revision)
         } ?? true
@@ -530,7 +530,7 @@ final class Workspace {
         guard fileManager.fileExists(atPath: fileURL.path) else {
             throw WorkspaceError.documentDeleted(fileURL)
         }
-        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
+        let disk = try DocumentRevisionReader.documentSnapshot(at: fileURL)
         return (disk.data, String(data: disk.data, encoding: .utf8), disk.revision)
     }
 
@@ -559,7 +559,7 @@ final class Workspace {
                 onlyIf: current
             )
             guard case .replaced = replaceOutcome else {
-                let latest = try DocumentRevisionReader.snapshot(at: destinationURL)
+                let latest = try DocumentRevisionReader.documentSnapshot(at: destinationURL)
                 let retainedURL: URL?
                 if case .revisionMismatch(let url) = replaceOutcome {
                     retainedURL = url
@@ -712,7 +712,7 @@ extension Workspace {
     }
 
     func retainedConflictSide(at url: URL) throws -> ConflictSide {
-        let retained = try DocumentRevisionReader.snapshot(at: url)
+        let retained = try DocumentRevisionReader.documentSnapshot(at: url)
         return ConflictSide(
             modificationDate: retained.revision.modificationDate,
             revision: retained.revision,

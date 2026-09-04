@@ -37,6 +37,9 @@ enum AtomicWriteTransactions {
   static let manifestPrefix = ".clio-transaction-"
   static let manifestSuffix = ".plist"
   static let temporaryPrefix = ".clio-save-"
+  static let maximumRecoverableByteCount = Int64(
+    PerformanceContract.safeLargeFileByteLimit * 4
+  )
 
   static func begin(
     contents: Data,
@@ -120,8 +123,23 @@ enum AtomicWriteTransactions {
     var recovered = 0
     for case let url as URL in enumerator where isManifestName(url.lastPathComponent) {
       guard let manifest = validManifest(at: url, inside: root) else { continue }
-      let destination = snapshotIfSafe(at: manifest.destinationURL, inside: root)
-      let temporary = snapshotIfSafe(at: manifest.temporaryURL, inside: root)
+      let recoveryLimit = max(
+        manifest.candidateByteCount,
+        manifest.expectedRevision?.byteCount ?? 0
+      )
+      guard recoveryLimit >= 0,
+        recoveryLimit <= maximumRecoverableByteCount
+      else { continue }
+      let destination = snapshotIfSafe(
+        at: manifest.destinationURL,
+        inside: root,
+        maximumByteCount: recoveryLimit
+      )
+      let temporary = snapshotIfSafe(
+        at: manifest.temporaryURL,
+        inside: root,
+        maximumByteCount: recoveryLimit
+      )
       let destinationIsCandidate =
         destination.map {
           matches(
@@ -212,10 +230,14 @@ extension AtomicWriteTransactions {
 
   fileprivate static func snapshotIfSafe(
     at url: URL,
-    inside rootURL: URL
+    inside rootURL: URL,
+    maximumByteCount: Int64
   ) -> (data: Data, revision: DiskRevision)? {
     guard isSafeRegularFile(url, inside: rootURL) else { return nil }
-    return try? DocumentRevisionReader.snapshot(at: url)
+    return try? DocumentRevisionReader.snapshot(
+      at: url,
+      maximumByteCount: maximumByteCount
+    )
   }
 
   fileprivate static func isSafeRegularFile(_ url: URL, inside rootURL: URL) -> Bool {
