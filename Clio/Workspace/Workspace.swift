@@ -22,6 +22,7 @@ final class Workspace {
         case noAvailableFilename(String)
         case externalConflict(DocumentConflict)
         case documentDeleted(URL)
+        case detachedDocumentRequiresExplicitRestore(DocumentLocator)
 
         var errorDescription: String? {
             switch self {
@@ -39,6 +40,8 @@ final class Workspace {
                 return "This document changed outside Clio. Choose which version to keep."
             case .documentDeleted(let url):
                 return "\(url.lastPathComponent) was deleted outside Clio. Its buffer remains open."
+            case .detachedDocumentRequiresExplicitRestore(let locator):
+                return "\(locator.relativePath) was removed. Choose Restore or Save As before writing it to disk again."
             }
         }
     }
@@ -247,7 +250,10 @@ final class Workspace {
     /// document remains in memory; an unbacked non-empty document receives the
     /// first collision-safe variant of its preferred filename.
     @discardableResult
-    func save(_ document: Document) throws -> URL? {
+    func save(
+        _ document: Document,
+        allowingDetachedRestore: Bool = false
+    ) throws -> URL? {
         let snapshot = document.snapshot()
 
         guard snapshot.isDirty else {
@@ -256,6 +262,12 @@ final class Workspace {
 
         if let conflict = document.conflict {
             throw WorkspaceError.externalConflict(conflict)
+        }
+
+        if let previousLocator = snapshot.previousLocator,
+           snapshot.fileURL == nil,
+           !allowingDetachedRestore {
+            throw WorkspaceError.detachedDocumentRequiresExplicitRestore(previousLocator)
         }
 
         guard snapshot.fileURL != nil || !snapshot.text.isEmpty else {
@@ -318,10 +330,20 @@ final class Workspace {
         } else {
             document.willWrite(snapshot)
             do {
-                destinationURL = try writeNewDocument(
-                    data,
-                    preferredFilename: snapshot.preferredFilename
-                )
+                if allowingDetachedRestore,
+                   let previousLocator = snapshot.previousLocator,
+                   previousLocator.workspaceID == id {
+                    destinationURL = try restoreDetachedDocument(
+                        data,
+                        locator: previousLocator,
+                        preferredFilename: snapshot.preferredFilename
+                    )
+                } else {
+                    destinationURL = try writeNewDocument(
+                        data,
+                        preferredFilename: snapshot.preferredFilename
+                    )
+                }
             } catch {
                 document.didFailWrite(snapshot)
                 throw error
@@ -355,6 +377,9 @@ final class Workspace {
     func reconcileExternalChange(for document: Document) throws {
         guard let fileURL = document.fileURL else { return }
         guard fileManager.fileExists(atPath: fileURL.path) else {
+            if let conflict = document.conflict {
+                throw WorkspaceError.externalConflict(conflict)
+            }
             document.markUnbacked(previous: try? locator(for: fileURL))
             return
         }
@@ -368,9 +393,6 @@ final class Workspace {
             return
         }
 
-        guard let externalSource = String(data: disk.data, encoding: .utf8) else {
-            throw Document.ReadError.invalidUTF8(fileURL)
-        }
         if document.isDirty {
             let conflict = try makeConflict(
                 document: document,
@@ -380,19 +402,71 @@ final class Workspace {
             )
             document.registerConflict(conflict)
         } else {
+            guard let externalSource = String(data: disk.data, encoding: .utf8) else {
+                throw Document.ReadError.invalidUTF8(fileURL)
+            }
             document.applyExternal(source: externalSource, revision: disk.revision)
         }
     }
 
-    func readDiskSnapshot(for document: Document) throws -> (source: String, revision: DiskRevision) {
+    /// Reconciles an outside rename and its bytes as one transaction. The old
+    /// path is never saved after this returns: a clean buffer adopts changed
+    /// bytes, while a dirty buffer retains its text and enters conflict.
+    func reconcileExternalMove(
+        for document: Document,
+        from oldURL: URL,
+        to newURL: URL
+    ) throws {
+        let oldURL = oldURL.standardizedFileURL
+        let newURL = newURL.standardizedFileURL
+        guard contains(newURL) else { throw WorkspaceError.fileOutsideWorkspace(newURL) }
+        guard document.fileURL?.standardizedFileURL == oldURL else { return }
+        guard fileManager.fileExists(atPath: newURL.path) else {
+            document.markUnbacked(previous: try? locator(for: oldURL))
+            throw WorkspaceError.documentDeleted(oldURL)
+        }
+
+        let prior = document.snapshot()
+        let disk = try DocumentRevisionReader.snapshot(at: newURL)
+        let contentChanged = prior.expectedDiskRevision.map {
+            !Self.sameContent($0, disk.revision)
+        } ?? true
+
+        document.prepareForExternalMove(to: newURL)
+        if !contentChanged {
+            document.didMove(to: newURL, revision: disk.revision)
+            return
+        }
+
+        if prior.isDirty {
+            let movedSnapshot = document.snapshot()
+            let conflict = try makeConflict(
+                document: document,
+                snapshot: movedSnapshot,
+                externalData: disk.data,
+                externalRevision: disk.revision
+            )
+            document.registerConflict(conflict)
+            return
+        }
+
+        guard let source = String(data: disk.data, encoding: .utf8) else {
+            throw Document.ReadError.invalidUTF8(newURL)
+        }
+        document.applyExternal(source: source, revision: disk.revision)
+    }
+
+    func readDiskSnapshot(
+        for document: Document
+    ) throws -> (data: Data, source: String?, revision: DiskRevision) {
         guard let fileURL = document.fileURL else {
             throw WorkspaceError.documentDeleted(rootURL)
         }
-        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
-        guard let source = String(data: disk.data, encoding: .utf8) else {
-            throw Document.ReadError.invalidUTF8(fileURL)
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw WorkspaceError.documentDeleted(fileURL)
         }
-        return (source, disk.revision)
+        let disk = try DocumentRevisionReader.snapshot(at: fileURL)
+        return (disk.data, String(data: disk.data, encoding: .utf8), disk.revision)
     }
 
     func replaceAfterConflict(
@@ -475,6 +549,18 @@ extension Workspace {
     static let maximumCollisionAttempts = 10_000
 
     func writeNewDocument(_ data: Data, preferredFilename: String) throws -> URL {
+        try writeNewDocument(
+            data,
+            in: rootURL,
+            preferredFilename: preferredFilename
+        )
+    }
+
+    func writeNewDocument(
+        _ data: Data,
+        in parentURL: URL,
+        preferredFilename: String
+    ) throws -> URL {
         let filename = Self.safeFilename(from: preferredFilename)
         let filenameURL = URL(fileURLWithPath: filename)
         let pathExtension = filenameURL.pathExtension
@@ -490,13 +576,34 @@ extension Workspace {
                 candidateName = "\(basename) (\(attempt)).\(pathExtension)"
             }
 
-            let candidateURL = rootURL.appendingPathComponent(candidateName)
+            let candidateURL = parentURL.appendingPathComponent(candidateName)
             if try atomicWriter.create(contents: data, at: candidateURL) {
                 return candidateURL.standardizedFileURL
             }
         }
 
         throw WorkspaceError.noAvailableFilename(filename)
+    }
+
+    func restoreDetachedDocument(
+        _ data: Data,
+        locator: DocumentLocator,
+        preferredFilename: String
+    ) throws -> URL {
+        let desiredURL = try fileURL(for: locator)
+        let parentURL = desiredURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: parentURL,
+            withIntermediateDirectories: true
+        )
+        if try atomicWriter.create(contents: data, at: desiredURL) {
+            return desiredURL.standardizedFileURL
+        }
+        return try writeNewDocument(
+            data,
+            in: parentURL,
+            preferredFilename: preferredFilename
+        )
     }
 
     func makeConflict(
@@ -509,36 +616,34 @@ extension Workspace {
         guard let fileURL = snapshot.fileURL else {
             throw WorkspaceError.documentDeleted(rootURL)
         }
-        guard let externalSource = String(data: externalData, encoding: .utf8) else {
-            throw Document.ReadError.invalidUTF8(fileURL)
-        }
         return DocumentConflict(
             documentID: document.id,
             locator: try locator(for: fileURL),
+            generation: BufferGeneration(
+                bufferID: snapshot.documentID.rawValue,
+                revision: snapshot.revision
+            ),
             clio: ConflictSide(
                 modificationDate: Date(),
                 revision: snapshot.expectedDiskRevision,
-                source: snapshot.text
+                data: Data(snapshot.text.utf8)
             ),
             external: ConflictSide(
                 modificationDate: externalRevision.modificationDate,
                 revision: externalRevision,
-                source: externalSource
+                data: externalData
             ),
             additionalExternalVersions: additionalExternalVersions
         )
     }
 
     func retainedConflictSide(at url: URL) throws -> ConflictSide {
-        defer { try? fileManager.removeItem(at: url) }
         let retained = try DocumentRevisionReader.snapshot(at: url)
-        guard let source = String(data: retained.data, encoding: .utf8) else {
-            throw Document.ReadError.invalidUTF8(url)
-        }
         return ConflictSide(
             modificationDate: retained.revision.modificationDate,
             revision: retained.revision,
-            source: source
+            data: retained.data,
+            retainedURLs: [url]
         )
     }
 

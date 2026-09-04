@@ -58,7 +58,12 @@ struct ContentView: View {
                     )
                 }
                 .overlay(alignment: .top) {
-                    if let errorMessage = editorSession.errorMessage
+                    if editorSession.requiresExplicitRestore {
+                        DetachedDocumentBanner(
+                            filename: editorSession.filename,
+                            restore: editorSession.saveNow
+                        )
+                    } else if let errorMessage = editorSession.errorMessage
                         ?? appState.workspaceErrorMessage {
                         WorkspaceErrorBanner(
                             message: errorMessage,
@@ -134,6 +139,31 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             editorSession.flushForLifecycleEvent()
+        }
+    }
+}
+
+private struct DetachedDocumentBanner: View {
+    let filename: String
+    let restore: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "doc.badge.clock")
+                .foregroundStyle(.orange)
+            Text("\(filename) was removed from disk. Its text is safe in Clio and will not be recreated automatically.")
+            Spacer(minLength: 8)
+            Button("Restore Document", action: restore)
+                .keyboardShortcut(.defaultAction)
+        }
+        .font(.custom(Typography.family, fixedSize: 12))
+        .foregroundStyle(Color(nsColor: Palette.foreground))
+        .padding(12)
+        .background(Color(nsColor: Palette.backgroundRaised))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(nsColor: Palette.hairline))
+                .frame(height: 1)
         }
     }
 }

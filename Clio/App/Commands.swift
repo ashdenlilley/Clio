@@ -34,7 +34,7 @@ struct ClioCommands: Commands {
         }
 
         CommandGroup(replacing: .saveItem) {
-            Button("Save") {
+            Button(editorSession?.requiresExplicitRestore == true ? "Restore Document" : "Save") {
                 editorSession?.saveNow()
             }
             .keyboardShortcut("s", modifiers: .command)

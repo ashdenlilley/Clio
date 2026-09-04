@@ -15,6 +15,7 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
     private let workspaceID: WorkspaceID
     private let rootURL: URL
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let stream: AsyncStream<WorkspaceEvent>
     private let continuation: AsyncStream<WorkspaceEvent>.Continuation
     private var sources: [String: DispatchSourceFileSystemObject] = [:]
@@ -30,12 +31,23 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
             captured = $0
         }
         continuation = captured
+        queue.setSpecific(key: queueKey, value: 1)
         queue.async { [weak self] in self?.start() }
     }
 
     deinit {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            shutdownOnQueue()
+        } else {
+            queue.sync { shutdownOnQueue() }
+        }
+    }
+
+    private func shutdownOnQueue() {
         pendingScan?.cancel()
+        pendingScan = nil
         sources.values.forEach { $0.cancel() }
+        sources.removeAll()
         continuation.finish()
     }
 

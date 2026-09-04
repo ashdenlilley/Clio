@@ -23,6 +23,7 @@ final class Document: Identifiable {
         let preferredFilename: String
         let isDirty: Bool
         let expectedDiskRevision: DiskRevision?
+        let previousLocator: DocumentLocator?
     }
 
     nonisolated static let defaultFilename = "untitled.md"
@@ -41,6 +42,7 @@ final class Document: Identifiable {
     var filename: String { fileURL?.lastPathComponent ?? preferredFilename }
     var isBackedByFile: Bool { fileURL != nil }
     var isAutosavePaused: Bool { conflict != nil }
+    var requiresExplicitRestore: Bool { fileURL == nil && previousLocator != nil }
 
     init(
         text: String = "",
@@ -108,7 +110,8 @@ final class Document: Identifiable {
             fileURL: fileURL,
             preferredFilename: preferredFilename,
             isDirty: isDirty,
-            expectedDiskRevision: expectedDiskRevision
+            expectedDiskRevision: expectedDiskRevision,
+            previousLocator: previousLocator
         )
     }
 
@@ -148,9 +151,27 @@ final class Document: Identifiable {
     }
 
     func registerConflict(_ conflict: DocumentConflict) {
-        self.conflict = conflict
+        let previous = self.conflict
+        let candidates = (previous.map { [$0.external] + ($0.additionalExternalVersions ?? []) } ?? [])
+            + (conflict.additionalExternalVersions ?? [])
+            + [conflict.external]
+        let versions = Self.deduplicatedConflictSides(candidates)
+        let primaryDigest = Self.digest(for: conflict.external)
+        let primary = versions.first { Self.digest(for: $0) == primaryDigest }
+            ?? conflict.external
+        let additional = versions.filter { Self.digest(for: $0) != primaryDigest }
+        let merged = DocumentConflict(
+            id: previous == nil ? conflict.id : UUID(),
+            documentID: conflict.documentID,
+            locator: conflict.locator,
+            generation: BufferGeneration(bufferID: id.rawValue, revision: revision),
+            clio: conflict.clio,
+            external: primary,
+            additionalExternalVersions: additional.isEmpty ? nil : additional
+        )
+        self.conflict = merged
         isDirty = true
-        syncState = .conflicted(conflict)
+        syncState = .conflicted(merged)
     }
 
     func applyExternal(source: String, revision diskRevision: DiskRevision) {
@@ -178,6 +199,21 @@ final class Document: Identifiable {
         }
     }
 
+    /// Retargets a buffer after an outside rename while retaining its original
+    /// disk base. Workspace reconciliation decides whether the bytes at the
+    /// new path are a clean reload or a conflict.
+    func prepareForExternalMove(to newURL: URL) {
+        fileURL = newURL.standardizedFileURL
+        preferredFilename = newURL.lastPathComponent
+        previousLocator = nil
+        revision &+= 1
+        if let conflict {
+            syncState = .conflicted(conflict)
+        } else if isDirty {
+            syncState = .dirty(base: expectedDiskRevision)
+        }
+    }
+
     private nonisolated static func syntheticRevision(for source: String) -> DiskRevision {
         let data = Data(source.utf8)
         return DiskRevision(
@@ -185,5 +221,33 @@ final class Document: Identifiable {
             byteCount: Int64(data.count),
             contentDigest: DocumentRevisionReader.digest(data)
         )
+    }
+
+    private nonisolated static func digest(for side: ConflictSide) -> String {
+        side.revision?.contentDigest ?? DocumentRevisionReader.digest(side.data)
+    }
+
+    private nonisolated static func deduplicatedConflictSides(
+        _ sides: [ConflictSide]
+    ) -> [ConflictSide] {
+        var orderedDigests: [String] = []
+        var merged: [String: ConflictSide] = [:]
+
+        for side in sides {
+            let digest = digest(for: side)
+            guard let prior = merged[digest] else {
+                orderedDigests.append(digest)
+                merged[digest] = side
+                continue
+            }
+            let retained = Array(Set(prior.retainedURLs + side.retainedURLs))
+            merged[digest] = ConflictSide(
+                modificationDate: side.modificationDate,
+                revision: side.revision ?? prior.revision,
+                data: side.data,
+                retainedURLs: retained
+            )
+        }
+        return orderedDigests.compactMap { merged[$0] }
     }
 }

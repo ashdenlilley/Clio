@@ -700,25 +700,27 @@ final class DataSafetyTests: XCTestCase {
 
     func testRecoveryPrunesOnlyFilesOlderThanSevenDays() async throws {
         try await withDirectories { _, recoveryURL in
-            let store = RecoveryStore(rootURL: recoveryURL)
             let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let clock = TestClock(now.addingTimeInterval(-RecoveryStore.retention - 1))
+            let store = RecoveryStore(rootURL: recoveryURL, now: { clock.now })
             let old = try await store.preserve(
                 documentID: DocumentID(),
                 filename: "old.md",
                 source: "old",
-                date: now.addingTimeInterval(-RecoveryStore.retention - 1)
+                date: now.addingTimeInterval(-10_000)
             )
+            clock.now = now
             let recent = try await store.preserve(
                 documentID: DocumentID(),
                 filename: "recent.md",
                 source: "recent",
-                date: now.addingTimeInterval(-RecoveryStore.retention + 1)
+                date: now.addingTimeInterval(-20_000)
             )
-
-            try await store.pruneExpired(now: now)
 
             XCTAssertFalse(FileManager.default.fileExists(atPath: old.recoveryURL.path))
             XCTAssertTrue(FileManager.default.fileExists(atPath: recent.recoveryURL.path))
+            XCTAssertEqual(recent.createdAt, now)
+            XCTAssertEqual(recent.sourceModificationDate, now.addingTimeInterval(-20_000))
         }
     }
 
@@ -759,6 +761,11 @@ final class DataSafetyTests: XCTestCase {
 }
 
 private extension DataSafetyTests {
+    final class TestClock: @unchecked Sendable {
+        var now: Date
+        init(_ now: Date) { self.now = now }
+    }
+
     struct Timeout: Error {}
     struct SimulatedWriteFailure: Error {}
     struct SimulatedTrashFailure: Error {}

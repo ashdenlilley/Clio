@@ -93,6 +93,10 @@ struct AtomicFileWriter: AtomicFileWriting {
             }
         }
         guard swapResult == 0 else { throw posixError(for: destinationURL) }
+        // From this point the temporary URL owns the exact displaced inode.
+        // Retain it by default across every exceptional path until we have
+        // positively established that deleting it is safe.
+        shouldRemoveTemporary = false
         do {
             try afterSwap?()
         } catch {
@@ -114,6 +118,7 @@ struct AtomicFileWriter: AtomicFileWriting {
 
         if Workspace.sameContent(displaced, revision), destinationStillContainsLocal {
             try syncParent(of: destinationURL)
+            shouldRemoveTemporary = true
             return .replaced
         }
 
@@ -124,9 +129,9 @@ struct AtomicFileWriter: AtomicFileWriting {
                 }
             }
             guard restoreResult == 0 else {
-                shouldRemoveTemporary = false
                 return .revisionMismatch(retainedURL: temporaryURL)
             }
+            shouldRemoveTemporary = true
             try syncParent(of: destinationURL)
             return .revisionMismatch(retainedURL: nil)
         }
@@ -134,9 +139,9 @@ struct AtomicFileWriter: AtomicFileWriting {
         // A third writer touched the destination after our swap. Leave its
         // bytes in place and retain any unexpected displaced revision.
         if !Workspace.sameContent(displaced, revision) {
-            shouldRemoveTemporary = false
             return .revisionMismatch(retainedURL: temporaryURL)
         }
+        shouldRemoveTemporary = true
         return .revisionMismatch(retainedURL: nil)
     }
 
@@ -150,7 +155,10 @@ struct AtomicFileWriter: AtomicFileWriting {
                 renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
             }
         }
-        if result == 0 { return true }
+        if result == 0 {
+            try syncParent(of: destinationURL)
+            return true
+        }
         if errno == EEXIST { return false }
         throw posixError(for: destinationURL)
     }

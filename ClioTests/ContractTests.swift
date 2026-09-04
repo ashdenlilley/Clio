@@ -461,8 +461,8 @@ private actor FakeRecoveryStore: RecoveryPersisting {
     func preserve(
         documentID _: DocumentID,
         filename _: String,
-        source _: String,
-        date _: Date
+        data _: Data,
+        sourceModificationDate _: Date?
     ) async throws -> RecoveryReceipt {
         throw StubError.unimplemented
     }

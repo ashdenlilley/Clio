@@ -16,12 +16,14 @@ actor RecoveryStore: RecoveryPersisting {
     private let fileManager: FileManager
     private let writer: any AtomicFileWriting
     private let securityScopedURL: URL?
+    private let now: @Sendable () -> Date
 
     init(
         rootURL: URL = RecoveryStore.preferredURL,
         fileManager: FileManager = .default,
         writer: any AtomicFileWriting = AtomicFileWriter(),
-        accessSecurityScopedResource: Bool = false
+        accessSecurityScopedResource: Bool = false,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let standardizedURL = rootURL.standardizedFileURL
         let didStart = accessSecurityScopedResource
@@ -30,6 +32,7 @@ actor RecoveryStore: RecoveryPersisting {
         self.rootURL = standardizedURL
         self.fileManager = fileManager
         self.writer = writer
+        self.now = now
         securityScopedURL = didStart ? standardizedURL : nil
         isSecurityScopedAccessActive = didStart
     }
@@ -41,31 +44,49 @@ actor RecoveryStore: RecoveryPersisting {
     func preserve(
         documentID: DocumentID,
         filename: String,
-        source: String,
-        date: Date = Date()
+        data: Data,
+        sourceModificationDate: Date? = nil
     ) throws -> RecoveryReceipt {
+        let createdAt = now()
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try pruneExpired(now: createdAt)
         let original = Workspace.safeFilename(from: filename)
         let extensionName = URL(fileURLWithPath: original).pathExtension
         let stem = URL(fileURLWithPath: original)
             .deletingPathExtension().lastPathComponent
-        let stamp = Self.timestamp.string(from: date)
+        let stamp = Self.timestamp.string(from: sourceModificationDate ?? createdAt)
         let suffix = String(documentID.rawValue.uuidString.prefix(8))
         let recoveredName = extensionName.isEmpty
             ? "\(stem) — \(stamp) — \(suffix)"
             : "\(stem) — \(stamp) — \(suffix).\(extensionName)"
         let destinationURL = try availableURL(named: recoveredName)
-        guard try writer.create(contents: Data(source.utf8), at: destinationURL) else {
+        guard try writer.create(contents: data, at: destinationURL) else {
             throw CocoaError(.fileWriteFileExists)
         }
         try fileManager.setAttributes(
-            [.modificationDate: date],
+            [.modificationDate: createdAt],
             ofItemAtPath: destinationURL.path
         )
         return RecoveryReceipt(
             documentID: documentID,
             recoveryURL: destinationURL,
-            createdAt: date
+            createdAt: createdAt,
+            sourceModificationDate: sourceModificationDate
+        )
+    }
+
+    /// Source convenience for callers that already own valid editor text.
+    func preserve(
+        documentID: DocumentID,
+        filename: String,
+        source: String,
+        date: Date? = nil
+    ) throws -> RecoveryReceipt {
+        try preserve(
+            documentID: documentID,
+            filename: filename,
+            data: Data(source.utf8),
+            sourceModificationDate: date
         )
     }
 

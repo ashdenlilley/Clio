@@ -184,13 +184,45 @@ enum CollisionChoice: String, Codable, CaseIterable, Hashable, Sendable {
 struct ConflictSide: Codable, Hashable, Sendable {
     let modificationDate: Date
     let revision: DiskRevision?
-    let source: String
+    /// Exact bytes are canonical. `source` is a lossy display projection only,
+    /// so recovery never corrupts a non-UTF-8 outside version.
+    let data: Data
+    let retainedURLs: [URL]
+
+    var source: String { String(decoding: data, as: UTF8.self) }
+
+    init(
+        modificationDate: Date,
+        revision: DiskRevision?,
+        data: Data,
+        retainedURLs: [URL] = []
+    ) {
+        self.modificationDate = modificationDate
+        self.revision = revision
+        self.data = data
+        self.retainedURLs = retainedURLs
+    }
+
+    init(
+        modificationDate: Date,
+        revision: DiskRevision?,
+        source: String,
+        retainedURLs: [URL] = []
+    ) {
+        self.init(
+            modificationDate: modificationDate,
+            revision: revision,
+            data: Data(source.utf8),
+            retainedURLs: retainedURLs
+        )
+    }
 }
 
 struct DocumentConflict: Codable, Hashable, Sendable, Identifiable {
     let id: UUID
     let documentID: DocumentID
     let locator: DocumentLocator
+    let generation: BufferGeneration
     let clio: ConflictSide
     let external: ConflictSide
     let additionalExternalVersions: [ConflictSide]?
@@ -199,6 +231,7 @@ struct DocumentConflict: Codable, Hashable, Sendable, Identifiable {
         id: UUID = UUID(),
         documentID: DocumentID,
         locator: DocumentLocator,
+        generation: BufferGeneration,
         clio: ConflictSide,
         external: ConflictSide,
         additionalExternalVersions: [ConflictSide]? = nil
@@ -206,6 +239,7 @@ struct DocumentConflict: Codable, Hashable, Sendable, Identifiable {
         self.id = id
         self.documentID = documentID
         self.locator = locator
+        self.generation = generation
         self.clio = clio
         self.external = external
         self.additionalExternalVersions = additionalExternalVersions
@@ -282,6 +316,7 @@ struct RecoveryReceipt: Codable, Hashable, Sendable {
     let documentID: DocumentID
     let recoveryURL: URL
     let createdAt: Date
+    let sourceModificationDate: Date?
 }
 
 enum DocumentSyncState: Sendable, Equatable {
@@ -304,8 +339,8 @@ protocol RecoveryPersisting: Sendable {
     func preserve(
         documentID: DocumentID,
         filename: String,
-        source: String,
-        date: Date
+        data: Data,
+        sourceModificationDate: Date?
     ) async throws -> RecoveryReceipt
     func prune(olderThan date: Date) async throws
 }

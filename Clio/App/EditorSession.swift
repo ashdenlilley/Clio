@@ -111,6 +111,8 @@ final class EditorSession: Identifiable {
     }
 
     var activeConflict: DocumentConflict? { document?.conflict }
+    var requiresExplicitRestore: Bool { document?.requiresExplicitRestore == true }
+    var filename: String { document?.filename ?? Document.defaultFilename }
 
     var wordCount: Int {
         draftText.split(whereSeparator: { $0.isWhitespace }).count
@@ -130,6 +132,7 @@ final class EditorSession: Identifiable {
     ) {
         autosaveErrorMonitor?.cancel()
         if ownsAutosaver { autosaver?.cancel() }
+        self.registry?.unbind(self)
         self.registry = registry
         self.conflictResolver = conflictResolver
         self.documentMover = documentMover
@@ -161,6 +164,7 @@ final class EditorSession: Identifiable {
         self.workspace = workspace
         document = initialDocument.document
         registry?.register(initialDocument.document, in: workspace)
+        registry?.bind(self, to: initialDocument.document)
         ownsAutosaver = registry == nil
         autosaver = registry?.autosaver(for: initialDocument.document, in: workspace)
             ?? Autosaver(workspace: workspace)
@@ -173,6 +177,7 @@ final class EditorSession: Identifiable {
     func deactivate() {
         autosaveErrorMonitor?.cancel()
         if ownsAutosaver { autosaver?.cancel() }
+        registry?.unbind(self)
         autosaver = nil
         ownsAutosaver = false
         registry = nil
@@ -210,7 +215,12 @@ final class EditorSession: Identifiable {
 
     func saveNow() {
         do {
-            try flush()
+            guard let document, let autosaver else { return }
+            try autosaver.flush(
+                document,
+                allowingDetachedRestore: document.requiresExplicitRestore
+            )
+            refreshRelativePath()
             clearPresentedSaveError()
         } catch {
             presentError(
@@ -347,6 +357,21 @@ final class EditorSession: Identifiable {
     func revealInFinder() {
         guard let document else { return }
         documentMover?.reveal(document)
+    }
+
+    func retargetDocument(to workspace: Workspace, autosaver: Autosaver) {
+        self.workspace = workspace
+        self.autosaver = autosaver
+        ownsAutosaver = false
+        refreshRelativePath()
+    }
+
+    func rebindServices(
+        conflictResolver: ConflictResolver,
+        documentMover: DocumentMover
+    ) {
+        self.conflictResolver = conflictResolver
+        self.documentMover = documentMover
     }
 }
 

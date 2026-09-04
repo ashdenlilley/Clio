@@ -2,6 +2,14 @@ import Foundation
 
 @MainActor
 final class Autosaver {
+    enum SaveError: LocalizedError {
+        case fileOperationInProgress
+
+        var errorDescription: String? {
+            "Wait for the current file operation to finish, then save again."
+        }
+    }
+
     nonisolated static let defaultDelay: Duration = .milliseconds(400)
 
     let delay: Duration
@@ -12,11 +20,12 @@ final class Autosaver {
         pendingDocument != nil
     }
 
-    private let workspace: Workspace
+    private var workspace: Workspace
     private weak var registry: DocumentBufferRegistry?
     private var pendingDocument: Document?
     private var debounceTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private var isSuspended = false
 
     init(
         workspace: Workspace,
@@ -36,6 +45,19 @@ final class Autosaver {
     /// document is materialized immediately; normal revisions are debounced.
     func documentDidChange(_ document: Document) {
         guard document.isDirty else { return }
+
+        if isSuspended {
+            pendingDocument = document
+            lastError = nil
+            return
+        }
+
+        // Deleted and trashed files remain detached until a deliberate
+        // Restore/Save As. Normal typing must never resurrect the old path.
+        guard !document.requiresExplicitRestore else {
+            cancel()
+            return
+        }
 
         guard !document.isAutosavePaused else {
             pendingDocument = nil
@@ -64,9 +86,16 @@ final class Autosaver {
     /// Writes the pending revision now, for Command-S and lifecycle flushes.
     /// Supplying a document also supports a flush before it has been scheduled.
     @discardableResult
-    func flush(_ document: Document? = nil) throws -> URL? {
+    func flush(
+        _ document: Document? = nil,
+        allowingDetachedRestore: Bool = false
+    ) throws -> URL? {
         if let document, document.isDirty {
             pendingDocument = document
+        }
+
+        guard !isSuspended else {
+            throw SaveError.fileOperationInProgress
         }
 
         generation &+= 1
@@ -74,7 +103,9 @@ final class Autosaver {
         debounceTask = nil
 
         do {
-            let url = try savePendingDocument()
+            let url = try savePendingDocument(
+                allowingDetachedRestore: allowingDetachedRestore
+            )
             lastError = nil
             return url
         } catch {
@@ -88,6 +119,24 @@ final class Autosaver {
         debounceTask?.cancel()
         debounceTask = nil
         pendingDocument = nil
+    }
+
+    func retarget(to workspace: Workspace) {
+        self.workspace = workspace
+    }
+
+    func suspendForFileOperation() {
+        isSuspended = true
+        generation &+= 1
+        debounceTask?.cancel()
+        debounceTask = nil
+    }
+
+    func resumeAfterFileOperation() {
+        guard isSuspended else { return }
+        isSuspended = false
+        guard let pendingDocument else { return }
+        documentDidChange(pendingDocument)
     }
 }
 
@@ -115,12 +164,17 @@ private extension Autosaver {
     }
 
     @discardableResult
-    func savePendingDocument() throws -> URL? {
+    func savePendingDocument(
+        allowingDetachedRestore: Bool = false
+    ) throws -> URL? {
         guard let document = pendingDocument else { return nil }
 
         let url: URL?
         do {
-            url = try workspace.save(document)
+            url = try workspace.save(
+                document,
+                allowingDetachedRestore: allowingDetachedRestore
+            )
         } catch let error as Workspace.WorkspaceError {
             if case .externalConflict = error {
                 pendingDocument = nil

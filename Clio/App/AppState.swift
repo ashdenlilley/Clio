@@ -427,6 +427,12 @@ private extension AppState {
             recoveryStore: restored.store,
             fileManager: fileManager
         )
+        for session in editorSessions {
+            session.rebindServices(
+                conflictResolver: conflictResolver,
+                documentMover: documentMover
+            )
+        }
         defaults.set(restored.bookmarkToPersist, forKey: Keys.recoveryBookmark)
         needsRecoveryAuthorization = false
     }
@@ -511,12 +517,15 @@ private extension AppState {
                       let self,
                       let workspace,
                       self.workspace === workspace else { break }
-                self.handleWorkspaceEvent(event, in: workspace)
+                await self.handleWorkspaceEvent(event, in: workspace)
             }
         }
     }
 
-    func handleWorkspaceEvent(_ event: WorkspaceEvent, in workspace: Workspace) {
+    func handleWorkspaceEvent(
+        _ event: WorkspaceEvent,
+        in workspace: Workspace
+    ) async {
         do {
             switch event.kind {
             case .modified:
@@ -525,7 +534,9 @@ private extension AppState {
                     return
                 }
                 try workspace.reconcileExternalChange(for: document)
-                if document.fileURL != nil {
+                if document.conflict != nil {
+                    documentRegistry.cancelAutosave(for: document.id)
+                } else if document.fileURL != nil {
                     documentRegistry.updateAliases(for: document, in: workspace)
                 }
 
@@ -536,10 +547,17 @@ private extension AppState {
                     return
                 }
                 let oldLocator = try workspace.locator(for: oldURL)
-                let revision = try DocumentRevisionReader.revision(at: newURL)
-                document.didMove(to: newURL, revision: revision)
+                try workspace.reconcileExternalMove(
+                    for: document,
+                    from: oldURL,
+                    to: newURL
+                )
                 documentRegistry.removeLocator(oldLocator, for: document.id)
                 documentRegistry.updateAliases(for: document, in: workspace)
+                documentRegistry.retarget(document, to: workspace)
+                if document.conflict != nil {
+                    documentRegistry.cancelAutosave(for: document.id)
+                }
 
             case .deleted:
                 guard let url = event.fileURL,
@@ -547,8 +565,17 @@ private extension AppState {
                     return
                 }
                 let locator = try workspace.locator(for: url)
-                document.markUnbacked(previous: locator)
-                documentRegistry.detach(document.id, from: locator)
+                documentRegistry.cancelAutosave(for: document.id)
+                if document.conflict != nil {
+                    try await conflictResolver.detachAfterExternalDeletion(
+                        document,
+                        workspace: workspace,
+                        registry: documentRegistry
+                    )
+                } else {
+                    document.markUnbacked(previous: locator)
+                    documentRegistry.detach(document.id, from: locator)
+                }
 
             case .accessLost, .error:
                 workspaceErrorMessage = "Clio lost access to the workspace. Your open buffers remain in memory."
@@ -556,8 +583,25 @@ private extension AppState {
             case .rescanRequired, .rootChanged:
                 for document in documentRegistry.openDocuments {
                     guard let url = document.fileURL, workspace.contains(url) else { continue }
+                    if !fileManager.fileExists(atPath: url.path) {
+                        let locator = try workspace.locator(for: url)
+                        documentRegistry.cancelAutosave(for: document.id)
+                        if document.conflict != nil {
+                            try await conflictResolver.detachAfterExternalDeletion(
+                                document,
+                                workspace: workspace,
+                                registry: documentRegistry
+                            )
+                        } else {
+                            document.markUnbacked(previous: locator)
+                            documentRegistry.detach(document.id, from: locator)
+                        }
+                        continue
+                    }
                     try workspace.reconcileExternalChange(for: document)
-                    if document.fileURL != nil {
+                    if document.conflict != nil {
+                        documentRegistry.cancelAutosave(for: document.id)
+                    } else if document.fileURL != nil {
                         documentRegistry.updateAliases(for: document, in: workspace)
                     }
                 }

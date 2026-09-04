@@ -4,10 +4,16 @@ import Foundation
 /// paths refer to the same physical file.
 @MainActor
 final class DocumentBufferRegistry: DocumentBufferRegistering {
+    private final class WeakSession {
+        weak var value: EditorSession?
+        init(_ value: EditorSession) { self.value = value }
+    }
+
     private var documents: [DocumentID: Document] = [:]
     private var identities: [PhysicalFileIdentity: DocumentID] = [:]
     private var locators: [DocumentLocator: DocumentID] = [:]
     private var autosavers: [DocumentID: Autosaver] = [:]
+    private var sessions: [ObjectIdentifier: WeakSession] = [:]
 
     func open(_ fileURL: URL, in workspace: Workspace) throws -> Document {
         let standardizedURL = fileURL.standardizedFileURL
@@ -66,7 +72,40 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         autosavers[document.id]?.cancel()
         let autosaver = Autosaver(workspace: workspace, registry: self)
         autosavers[document.id] = autosaver
+        boundSessions(for: document.id).forEach {
+            $0.retargetDocument(to: workspace, autosaver: autosaver)
+        }
         return autosaver
+    }
+
+    func bind(_ session: EditorSession, to document: Document) {
+        sessions[ObjectIdentifier(session)] = WeakSession(session)
+    }
+
+    func unbind(_ session: EditorSession) {
+        sessions.removeValue(forKey: ObjectIdentifier(session))
+    }
+
+    func cancelAutosave(for documentID: DocumentID) {
+        autosavers[documentID]?.cancel()
+    }
+
+    func suspendAutosave(for documentID: DocumentID) {
+        autosavers[documentID]?.suspendForFileOperation()
+    }
+
+    func resumeAutosave(for documentID: DocumentID) {
+        autosavers[documentID]?.resumeAfterFileOperation()
+    }
+
+    /// Keeps the same controller object so every tab/window immediately saves
+    /// through the destination workspace after a cross-workspace move.
+    func retarget(_ document: Document, to workspace: Workspace) {
+        let autosaver = autosaver(for: document, in: workspace)
+        autosaver.retarget(to: workspace)
+        boundSessions(for: document.id).forEach {
+            $0.retargetDocument(to: workspace, autosaver: autosaver)
+        }
     }
 
     func documentID(
@@ -105,8 +144,16 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
     }
 
     func detach(_ documentID: DocumentID, from locator: DocumentLocator) {
+        cancelAutosave(for: documentID)
         removeLocator(locator, for: documentID)
         identities = identities.filter { $0.value != documentID }
+    }
+
+    private func boundSessions(for documentID: DocumentID) -> [EditorSession] {
+        sessions = sessions.filter { $0.value.value != nil }
+        return sessions.values.compactMap(\.value).filter {
+            $0.document?.id == documentID
+        }
     }
 
     private func document(

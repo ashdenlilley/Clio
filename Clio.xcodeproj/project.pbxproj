@@ -40,6 +40,7 @@
 		D8B9E38BD660DD196E4A6594 /* MarkdownExportContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 060BCF40DFDC79277E925D28 /* MarkdownExportContracts.swift */; };
 		E50F3AD5DF077DB6AF7A9D70 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0383AE15AC514B2621DFFB02 /* SettingsView.swift */; };
 		EAC6D854A8907021FB563180 /* WorkspaceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F8E550D4B9A16DD957A2435 /* WorkspaceWatcher.swift */; };
+		F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */; };
 		F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */; };
 		F6E2FFDCABEF71BD602494BB /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F231E037B0C6D9E33330AC /* AppState.swift */; };
 		F8610375304C1F9410CC61C4 /* ClioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6B7D4086EC1BC509AB0F39D /* ClioApp.swift */; };
@@ -74,6 +75,7 @@
 		4838DDA36FA0C9F82A75B005 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		64F69C1948D2B708A8A173C3 /* DocumentRevision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRevision.swift; sourceTree = "<group>"; };
 		7787A2B4B70C9AF2C14ABFF4 /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
+		783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataSafetyAuditTests.swift; sourceTree = "<group>"; };
 		7F8E550D4B9A16DD957A2435 /* WorkspaceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWatcher.swift; sourceTree = "<group>"; };
 		88078E3D39B2392D1D7192C3 /* TypewriterScroller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypewriterScroller.swift; sourceTree = "<group>"; };
 		95FBD8965B599CB501B83254 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 			children = (
 				2F710F7CDE141F9CF769FD50 /* AppStateTests.swift */,
 				DDD83589B757361BBB1A0C6B /* ContractTests.swift */,
+				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
 				CE03532E7E5B2F8515BCEE74 /* DataSafetyTests.swift */,
 				96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */,
 				0B183BFD720535FFD3B725B2 /* WorkspaceTests.swift */,
@@ -338,6 +341,7 @@
 			files = (
 				09041C9D26FB0103FCC39427 /* AppStateTests.swift in Sources */,
 				B7D2D3C32DA0AFB3AD54B71B /* ContractTests.swift in Sources */,
+				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,
 				B0800159F3EA5A2E15AF8150 /* DataSafetyTests.swift in Sources */,
 				F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */,
 				070E32D7009F6D1CA2143235 /* WorkspaceTests.swift in Sources */,
