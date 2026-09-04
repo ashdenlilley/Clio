@@ -140,12 +140,19 @@ actor SQLiteSearchIndex: SearchIndexing {
             if let fileURL = event.fileURL,
                event.kind != .deleted,
                Self.isSupportedEventURL(fileURL) {
-                file = try await scanner.file(
-                    at: fileURL,
-                    workspace: workspace,
-                    policy: discoveryPolicy,
-                    includesIgnored: ignoredTierLoaded
-                )
+                do {
+                    file = try await scanner.file(
+                        at: fileURL,
+                        workspace: workspace,
+                        policy: discoveryPolicy,
+                        includesIgnored: ignoredTierLoaded
+                    )
+                } catch where Self.isMissingFileError(error) {
+                    // Filesystem notifications race real disk activity. Treat a
+                    // path that disappeared during inspection as a deletion so
+                    // stale search results cannot survive an atomic replace.
+                    file = nil
+                }
             } else {
                 file = nil
             }
@@ -429,6 +436,15 @@ private extension SQLiteSearchIndex {
 
     static func isSupportedEventURL(_ url: URL) -> Bool {
         ["md", "markdown", "txt"].contains(url.pathExtension.lowercased())
+    }
+
+    static func isMissingFileError(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain {
+            return error.code == NSFileNoSuchFileError
+                || error.code == NSFileReadNoSuchFileError
+        }
+        return error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT)
     }
 
     static func relativePath(
