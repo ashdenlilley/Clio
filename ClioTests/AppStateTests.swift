@@ -116,13 +116,28 @@ final class AppStateTests: XCTestCase {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleDocumentTypes")
                 as? [[String: Any]]
         )
-        let extensions = Set(
-            documentTypes.flatMap {
-                $0["CFBundleTypeExtensions"] as? [String] ?? []
-            }
+        // Release metadata uses UTI-based Finder registration, not the legacy
+        // CFBundleTypeExtensions key. Verify the handlers and imported Markdown
+        // tags together; public.plain-text is the system type for .txt files.
+        let editorTypes = Set(documentTypes.filter {
+            $0["CFBundleTypeRole"] as? String == "Editor"
+        }.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] })
+        XCTAssertTrue(editorTypes.isSuperset(of: [
+            "net.daringfireball.markdown", "public.plain-text"
+        ]))
+        let importedTypes = try XCTUnwrap(
+            Bundle.main.object(forInfoDictionaryKey: "UTImportedTypeDeclarations")
+                as? [[String: Any]]
         )
-
-        XCTAssertTrue(extensions.isSuperset(of: ["md", "markdown", "txt"]))
+        let markdown = try XCTUnwrap(importedTypes.first {
+            $0["UTTypeIdentifier"] as? String == "net.daringfireball.markdown"
+        })
+        let conformsTo = try XCTUnwrap(markdown["UTTypeConformsTo"] as? [String])
+        XCTAssertTrue(conformsTo.contains("public.plain-text"))
+        let tags = try XCTUnwrap(markdown["UTTypeTagSpecification"] as? [String: Any])
+        let extensions = try XCTUnwrap(tags["public.filename-extension"] as? [String])
+        XCTAssertTrue(Set(extensions).isSuperset(of: ["md", "markdown"]))
+        XCTAssertEqual(tags["public.mime-type"] as? String, "text/markdown")
     }
 
     private func makeDefaults() -> UserDefaults {
