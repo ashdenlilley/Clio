@@ -1,12 +1,21 @@
 import Darwin
 import Foundation
 
+enum ExportRecoveryStrategy: Sendable, Equatable {
+    /// A durable folder grant lets the crash-safe atomic writer leave and
+    /// recover a transaction immediately beside the destination.
+    case directoryTransaction
+    /// NSSavePanel is only documented to grant the selected file. If its
+    /// parent cannot be bookmarked, keep a bounded staged-file checkpoint in
+    /// Clio's container while Foundation performs a coordinated safe save.
+    case appContainerCheckpoint
+}
+
 protocol ExportRecoveryCataloging: AnyObject, Sendable {
-    /// Persists a security-scoped grant before an export can create an atomic
-    /// transaction in this directory. A failure prevents the export from
-    /// starting, because otherwise an abrupt exit could strand an artifact
-    /// that Clio cannot inspect on relaunch.
-    func remember(destinationDirectory: URL) throws
+    /// Parent access is an optimization, not a precondition for exporting.
+    /// App Sandbox guarantees the file selected by NSSavePanel, but does not
+    /// guarantee an implicit grant for its parent directory.
+    func recoveryStrategy(for destinationURL: URL) async -> ExportRecoveryStrategy
 }
 
 /// Export destinations may sit outside every searchable workspace. This
@@ -90,6 +99,19 @@ final class ExportRecoveryCatalog: ExportRecoveryCataloging, @unchecked Sendable
         }
     }
 
+    func recoveryStrategy(for destinationURL: URL) async -> ExportRecoveryStrategy {
+        await Task.detached(priority: .utility) { [self] in
+            do {
+                try remember(
+                    destinationDirectory: destinationURL.deletingLastPathComponent()
+                )
+                return .directoryTransaction
+            } catch {
+                return .appContainerCheckpoint
+            }
+        }.value
+    }
+
     /// Performs exact-directory scans. Workspace recovery remains recursive;
     /// export recovery inspects only manifests immediately beside destinations
     /// that were actually selected in NSSavePanel.
@@ -159,11 +181,26 @@ private extension ExportRecoveryCatalog {
         rootURL.appendingPathComponent("roots.plist", isDirectory: false)
     }
 
+    var previousCatalogURL: URL {
+        rootURL.appendingPathComponent("roots.previous.plist", isDirectory: false)
+    }
+
     private func load() throws -> Catalog {
-        guard fileManager.fileExists(atPath: catalogURL.path) else {
-            return Catalog(schemaVersion: Catalog.schemaVersion, entries: [])
+        var firstError: Error?
+        for url in [catalogURL, previousCatalogURL]
+        where fileManager.fileExists(atPath: url.path) {
+            do {
+                return try loadCatalog(at: url)
+            } catch {
+                firstError = firstError ?? error
+            }
         }
-        let values = try catalogURL.resourceValues(forKeys: [
+        if let firstError { throw firstError }
+        return Catalog(schemaVersion: Catalog.schemaVersion, entries: [])
+    }
+
+    private func loadCatalog(at url: URL) throws -> Catalog {
+        let values = try url.resourceValues(forKeys: [
             .isRegularFileKey,
             .isSymbolicLinkKey,
             .fileSizeKey,
@@ -173,7 +210,7 @@ private extension ExportRecoveryCatalog {
               (values.fileSize ?? 0) <= Self.maximumCatalogByteCount else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let data = try Data(contentsOf: catalogURL)
+        let data = try Data(contentsOf: url)
         let decoded = try PropertyListDecoder().decode(Catalog.self, from: data)
         guard decoded.schemaVersion == Catalog.schemaVersion,
               decoded.entries.count <= Self.maximumEntries else {
@@ -199,6 +236,21 @@ private extension ExportRecoveryCatalog {
         do {
             try data.write(to: temporaryURL, options: .withoutOverwriting)
             try syncFile(temporaryURL)
+
+            // Retain the last valid catalog as a second durable generation.
+            // A crash can occur before or after either rename and startup will
+            // still find a completely synced primary or previous file.
+            if fileManager.fileExists(atPath: catalogURL.path) {
+                if (try? loadCatalog(at: catalogURL)) != nil {
+                    guard rename(catalogURL.path, previousCatalogURL.path) == 0 else {
+                        throw posixError(for: previousCatalogURL)
+                    }
+                    try syncDirectory(rootURL)
+                } else {
+                    try fileManager.removeItem(at: catalogURL)
+                    try syncDirectory(rootURL)
+                }
+            }
             guard rename(temporaryURL.path, catalogURL.path) == 0 else {
                 throw posixError(for: catalogURL)
             }

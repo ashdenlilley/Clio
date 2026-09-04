@@ -29,7 +29,7 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
     private let htmlExporter: HTMLDocumentExporter
 
     @ObservationIgnored
-    private let fileManager: FileManager
+    private let installer: DocumentExportInstaller
 
     @ObservationIgnored
     private var activeTask: Task<ExportReceipt, Error>?
@@ -41,12 +41,20 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
         parser: any MarkdownParsing = SourcePreservingMarkdownParser(),
         fileManager: FileManager = .default,
         pdfExporter: PDFDocumentExporter? = nil,
-        htmlExporter: HTMLDocumentExporter? = nil
+        htmlExporter: HTMLDocumentExporter? = nil,
+        recoveryCheckpointStore: any ExportRecoveryCheckpointing = ExportRecoveryCheckpointStore.shared,
+        directoryWriter: any AtomicFileWriting = AtomicFileWriter(),
+        fileGrantWriter: any AtomicFileWriting = ExportFileGrantWriter()
     ) {
         self.parser = parser
-        self.fileManager = fileManager
         self.pdfExporter = pdfExporter ?? PDFDocumentExporter(fileManager: fileManager)
         self.htmlExporter = htmlExporter ?? HTMLDocumentExporter(fileManager: fileManager)
+        installer = DocumentExportInstaller(
+            fileManager: fileManager,
+            recoveryCheckpointStore: recoveryCheckpointStore,
+            directoryWriter: directoryWriter,
+            fileGrantWriter: fileGrantWriter
+        )
     }
 
     func export(_ request: ExportRequest) async throws -> ExportReceipt {
@@ -63,7 +71,12 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
         phase = .parsing
         progress = nil
 
-        let task = Task { @MainActor [parser, pdfExporter, htmlExporter] in
+        let task = Task { @MainActor [
+            parser,
+            pdfExporter,
+            htmlExporter,
+            installer,
+        ] in
             let parsed = try await parser.parse(request.snapshot)
             try Task.checkCancellation()
             guard parsed.canApply(to: request.snapshot) else {
@@ -86,7 +99,11 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
                     collisionResolution: collisionResolution
                 )
             }
-            defer { staged.discard(fileManager: self.fileManager) }
+            defer {
+                Task(priority: .utility) {
+                    await installer.discard(staged)
+                }
+            }
 
             guard self.activeOperationID == operationID else {
                 throw CancellationError()
@@ -94,9 +111,12 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
             try Task.checkCancellation()
             self.phase = .installing
 
-            // There must be no suspension or cancellation check between this
-            // atomic filesystem commit and publishing completion.
-            let receipt = try staged.install(fileManager: self.fileManager)
+            let receipt = try await installer.install(
+                staged,
+                strategy: request.recoveryStrategy
+            )
+            // Installer never suspends or checks cancellation between its
+            // commit and receipt. Publish that receipt without another check.
             self.activeTask = nil
             self.activeOperationID = nil
             self.phase = .completed(receipt)

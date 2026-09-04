@@ -9,6 +9,7 @@ enum DocumentExportError: LocalizedError, Equatable {
     case emptyPDFPage
     case couldNotCreatePDF(URL)
     case unsupportedDestination(URL)
+    case artifactTooLarge(URL, byteCount: Int64, maximumByteCount: Int64)
 
     var errorDescription: String? {
         switch self {
@@ -32,6 +33,8 @@ enum DocumentExportError: LocalizedError, Equatable {
             "Clio could not create a PDF at \(url.path)."
         case .unsupportedDestination(let url):
             "Clio cannot export to \(url.path). Choose a regular file destination."
+        case .artifactTooLarge(let url, let byteCount, let maximumByteCount):
+            "\(url.lastPathComponent) expanded to \(byteCount.formatted(.byteCount(style: .file))), beyond Clio's recoverable export limit of \(maximumByteCount.formatted(.byteCount(style: .file)))."
         }
     }
 
@@ -142,6 +145,7 @@ struct StagedDocumentExport: Sendable {
     let temporaryURL: URL
     let reservation: ExportDestinationReservation
     let byteCount: Int64
+    let documentID: DocumentID
     let generation: BufferGeneration
     let sourceFingerprint: String
 
@@ -228,9 +232,27 @@ private extension ExportDestination {
 }
 
 extension URL {
-    func clioTemporarySibling() -> URL {
-        deletingLastPathComponent().appendingPathComponent(
-            ".clio-export-\(UUID().uuidString).tmp"
+    func clioExportStagingURL(
+        format: ExportFormat,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("Clio Export Staging", isDirectory: true)
+        try fileManager.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let values = try root.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+        ])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw DocumentExportError.unsupportedDestination(root)
+        }
+        return root.appendingPathComponent(
+            "export-\(UUID().uuidString.lowercased()).\(format.rawValue)",
+            isDirectory: false
         )
     }
 }
