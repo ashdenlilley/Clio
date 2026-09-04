@@ -39,7 +39,13 @@ final class WorkspacePerformanceContractTests: XCTestCase {
                     databaseURL: baseURL.appendingPathComponent("contract.sqlite3"),
                     identityStore: identityStore
                 )
-                return await reopened.search(WorkspaceSearchQuery(text: "workspace"))
+                // A reopened disposable index has no in-memory global root
+                // catalog until synchronization. Query the authorized scope
+                // explicitly; this measures a cold SQLite connection, not app
+                // relaunch or catalog restoration.
+                return await reopened.search(
+                    WorkspaceSearchQuery(text: "workspace", workspaceFilter: workspace.id)
+                )
             }
             print("CLIO_PERFORMANCE cold_connection_first=\(cold.first) settled=\(cold.settled)")
             XCTAssertLessThanOrEqual(cold.first, PerformanceContract.coldSearchFirstResult)
