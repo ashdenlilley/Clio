@@ -11,6 +11,7 @@ final class WorkspaceCatalog {
         case workspaceUnavailable(WorkspaceID)
         case mismatchedWorkspaceReference
         case mismatchedWorkspaceIdentity(expected: WorkspaceID, actual: WorkspaceID)
+        case selectedFolderDoesNotContainDocument(URL)
 
         var errorDescription: String? {
             switch self {
@@ -20,6 +21,8 @@ final class WorkspaceCatalog {
                 "The document reference does not belong to its workspace."
             case .mismatchedWorkspaceIdentity:
                 "The authorized workspace did not retain its stored identity."
+            case let .selectedFolderDoesNotContainDocument(url):
+                "The selected folder does not contain \(url.lastPathComponent)."
             }
         }
     }
@@ -179,12 +182,17 @@ final class WorkspaceCatalog {
     @discardableResult
     func addAuthorizedFolder(
         _ folderURL: URL,
-        bookmark suppliedBookmark: Data? = nil
+        bookmark suppliedBookmark: Data? = nil,
+        containing requiredDocumentURL: URL? = nil
     ) throws -> WorkspaceDescriptor {
         let standardizedURL = folderURL.standardizedFileURL
         if let existing = descriptors.first(where: {
             $0.rootURL == standardizedURL.resolvingSymlinksInPath()
         }) {
+            if let requiredDocumentURL,
+               activeWorkspaces[existing.id]?.contains(requiredDocumentURL) != true {
+                throw CatalogError.selectedFolderDoesNotContainDocument(requiredDocumentURL)
+            }
             return existing
         }
 
@@ -192,6 +200,9 @@ final class WorkspaceCatalog {
         let resolution = try bookmarkResolver(bookmark)
         let workspaceID = WorkspaceID()
         let workspace = try makeWorkspace(id: workspaceID, rootURL: resolution.url)
+        if let requiredDocumentURL, !workspace.contains(requiredDocumentURL) {
+            throw CatalogError.selectedFolderDoesNotContainDocument(requiredDocumentURL)
+        }
         let descriptor = WorkspaceDescriptor(id: workspaceID, rootURL: workspace.rootURL)
         let refreshedBookmark = resolution.isStale
             ? try bookmarkMaker(resolution.url)

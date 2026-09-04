@@ -88,12 +88,33 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
 
+  ClioUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ClioUITests
+    dependencies:
+      - target: Clio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac.ui-tests
+        PRODUCT_NAME: ClioUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Clio
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "-"
+
 schemes:
   Clio:
     build:
       targets:
         Clio: all
         ClioTests:
+          - test
+        ClioUITests:
           - test
     run:
       config: Debug
@@ -102,6 +123,7 @@ schemes:
       gatherCoverageData: true
       targets:
         - ClioTests
+        - ClioUITests
     profile:
       config: Release
     analyze:

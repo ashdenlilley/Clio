@@ -19,7 +19,7 @@ struct ClioApp: App {
             .environment(applicationDelegate.appState)
             .preferredColorScheme(.dark)
         } defaultValue: {
-            .mostRecent()
+            applicationDelegate.initialWindowRequest
         }
         .defaultSize(width: 900, height: 700)
         .windowResizability(.contentMinSize)
@@ -76,17 +76,21 @@ private struct EditorWindowRoot: View {
 @MainActor
 final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     let appState: AppState
+    let initialWindowRequest: EditorWindowRequest
 
     override init() {
         #if DEBUG
         CrashTestDriver.runIfRequested()
         #endif
-        appState = AppState()
+        let configuration = ClioLaunchConfiguration.current()
+        appState = configuration.appState
+        initialWindowRequest = configuration.initialWindowRequest
         super.init()
     }
 
     init(appState: AppState) {
         self.appState = appState
+        initialWindowRequest = .mostRecent()
         super.init()
     }
 

@@ -21,6 +21,13 @@ struct EditorViewportState: Codable, Hashable, Sendable {
     }
 }
 
+/// The bounded edit description emitted by AppKit before an editor mutation.
+/// `replacedRange` is expressed in the pre-edit string's UTF-16 coordinates.
+struct EditorTextEdit: Codable, Hashable, Sendable {
+    let replacedRange: UTF16Range
+    let replacement: String
+}
+
 struct EditorTabRestorationState: Codable, Hashable, Sendable, Identifiable {
     let id: UUID
     let documentID: DocumentID
@@ -76,6 +83,118 @@ enum ClioCommandID: String, Codable, CaseIterable, Hashable, Sendable, Identifia
 struct ClioCommandInvocation: Codable, Hashable, Sendable {
     let command: ClioCommandID
     let arguments: [String]
+}
+
+enum ClioCommandParseError: LocalizedError, Equatable {
+    case missingSlash
+    case missingCommand
+    case unknownCommand(String)
+    case unterminatedQuote
+    case danglingEscape
+    case invalidExportFormat(String)
+    case tooManyExportArguments
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSlash:
+            return "Commands begin with /."
+        case .missingCommand:
+            return "Type a command after /."
+        case let .unknownCommand(command):
+            return "Unknown command: /\(command)"
+        case .unterminatedQuote:
+            return "Close the quoted argument before running this command."
+        case .danglingEscape:
+            return "An argument cannot end with an escape character."
+        case let .invalidExportFormat(format):
+            return "Unsupported export format “\(format)”. Use pdf or html."
+        case .tooManyExportArguments:
+            return "Export accepts one format: pdf or html."
+        }
+    }
+}
+
+enum ClioCommandParser {
+    /// Returns the first, possibly partial command token for palette filtering.
+    /// Argument text is deliberately excluded so `/export pdf` keeps Export selected.
+    static func commandToken(in source: String) -> String {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutSlash = trimmed.first == "/" ? trimmed.dropFirst() : trimmed[...]
+        return String(withoutSlash.prefix { !$0.isWhitespace })
+    }
+
+    static func parse(_ source: String) throws -> ClioCommandInvocation {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.first == "/" else { throw ClioCommandParseError.missingSlash }
+        let tokens = try tokenize(String(trimmed.dropFirst()))
+        guard let commandName = tokens.first, !commandName.isEmpty else {
+            throw ClioCommandParseError.missingCommand
+        }
+        guard let command = ClioCommandID(rawValue: commandName.lowercased()) else {
+            throw ClioCommandParseError.unknownCommand(commandName)
+        }
+
+        let arguments = Array(tokens.dropFirst())
+        if command == .export {
+            guard arguments.count <= 1 else {
+                throw ClioCommandParseError.tooManyExportArguments
+            }
+            if let format = arguments.first,
+               !["pdf", "html"].contains(format.lowercased()) {
+                throw ClioCommandParseError.invalidExportFormat(format)
+            }
+        }
+        return ClioCommandInvocation(command: command, arguments: arguments)
+    }
+
+    private static func tokenize(_ source: String) throws -> [String] {
+        enum Quote { case single, double }
+
+        var tokens: [String] = []
+        var token = ""
+        var quote: Quote?
+        var isEscaping = false
+        var hasToken = false
+
+        for character in source {
+            if isEscaping {
+                token.append(character)
+                hasToken = true
+                isEscaping = false
+                continue
+            }
+            if character == "\\", quote != .single {
+                isEscaping = true
+                hasToken = true
+                continue
+            }
+            switch (quote, character) {
+            case (.single, "'"):
+                quote = nil
+            case (.double, "\""):
+                quote = nil
+            case (nil, "'"):
+                quote = .single
+                hasToken = true
+            case (nil, "\""):
+                quote = .double
+                hasToken = true
+            case (nil, _) where character.isWhitespace:
+                if hasToken {
+                    tokens.append(token)
+                    token = ""
+                    hasToken = false
+                }
+            default:
+                token.append(character)
+                hasToken = true
+            }
+        }
+        guard !isEscaping else { throw ClioCommandParseError.danglingEscape }
+        guard quote == nil else { throw ClioCommandParseError.unterminatedQuote }
+        if hasToken { tokens.append(token) }
+        return tokens
+    }
 }
 
 enum ClioCommandSource: String, Codable, CaseIterable, Hashable, Sendable {

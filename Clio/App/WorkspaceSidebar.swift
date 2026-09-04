@@ -3,6 +3,7 @@ import SwiftUI
 struct WorkspaceSidebar: View {
     @Environment(AppState.self) private var appState
     @Environment(EditorWindowSession.self) private var windowSession
+    @FocusState private var focusedTabID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,8 +49,13 @@ struct WorkspaceSidebar: View {
                 windowSession.setSidebarPinned(!windowSession.isSidebarPinned)
             }
         }
+        .onHover { windowSession.setSidebarHovered($0) }
+        .onChange(of: focusedTabID) { _, value in
+            windowSession.setSidebarFocused(value != nil)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Document sidebar")
+        .accessibilityIdentifier("sidebar")
     }
 
     private var openDocuments: some View {
@@ -78,6 +84,11 @@ struct WorkspaceSidebar: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .focused($focusedTabID, equals: tab.id)
+                    .accessibilityIdentifier("sidebar.tab")
+                    .modifier(SidebarSelectedTrait(
+                        isSelected: tab.id == windowSession.activeTabID
+                    ))
 
                     Button {
                         windowSession.close(tabID: tab.id)
@@ -122,6 +133,7 @@ struct SidebarToggleButton: View {
         .foregroundStyle(Color(nsColor: Palette.foreground))
         .help(windowSession.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
         .accessibilityLabel(windowSession.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        .accessibilityIdentifier("sidebar.toggle")
     }
 }
 
@@ -131,6 +143,7 @@ private struct WorkspaceTreeSection: View {
     let workspace: WorkspaceDescriptor
     let snapshot: WorkspaceTreeSnapshot?
     @State private var isExpanded = true
+    @FocusState private var hasKeyboardFocus: Bool
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
@@ -143,6 +156,8 @@ private struct WorkspaceTreeSection: View {
                     children: \.children
                 ) { item in
                     if let relativePath = item.relativePath {
+                        let isSelected = windowSession.activeTab?.workspaceID == workspace.id
+                            && windowSession.activeTab?.relativePath == relativePath
                         Button {
                             appState.openWorkspaceFile(
                                 workspaceID: workspace.id,
@@ -156,7 +171,10 @@ private struct WorkspaceTreeSection: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .focused($hasKeyboardFocus)
                         .help(item.helpText)
+                        .accessibilityIdentifier("sidebar.workspace.file")
+                        .modifier(SidebarSelectedTrait(isSelected: isSelected))
                         .onDrag {
                             NSItemProvider(
                                 object: (appState.dragPayload(
@@ -204,6 +222,22 @@ private struct WorkspaceTreeSection: View {
                 }
         }
         .padding(.horizontal, 12)
+        .onChange(of: hasKeyboardFocus) { _, focused in
+            windowSession.setSidebarFocused(focused)
+        }
+    }
+}
+
+private struct SidebarSelectedTrait: ViewModifier {
+    let isSelected: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isSelected {
+            content.accessibilityAddTraits(.isSelected)
+        } else {
+            content
+        }
     }
 }
 

@@ -85,10 +85,14 @@ final class NavigationSessionTests: XCTestCase {
         let window = EditorWindowSession(request: .newDocument())
         window.activeTab?.draftText = "First line\n"
 
-        window.noteEditorChange(
-            from: "First line\n",
-            to: "First line\n/"
+        XCTAssertTrue(
+            EditorCoordinator.isInlineSlashTrigger(
+                in: "First line\n",
+                range: NSRange(location: 11, length: 0),
+                replacement: "/"
+            )
         )
+        window.presentInlineSlashPalette()
 
         XCTAssertTrue(window.isPalettePresented)
         XCTAssertEqual(window.paletteSource, .inlineSlash)
@@ -100,7 +104,20 @@ final class NavigationSessionTests: XCTestCase {
         let window = EditorWindowSession(request: .newDocument())
         window.activeTab?.draftText = "path"
 
-        window.noteEditorChange(from: "path", to: "path/")
+        XCTAssertFalse(
+            EditorCoordinator.isInlineSlashTrigger(
+                in: "path",
+                range: NSRange(location: 4, length: 0),
+                replacement: "/"
+            )
+        )
+        window.noteEditorChange(
+            to: "path/",
+            edit: EditorTextEdit(
+                replacedRange: UTF16Range(location: 4, length: 0),
+                replacement: "/"
+            )
+        )
 
         XCTAssertFalse(window.isPalettePresented)
     }
@@ -118,6 +135,133 @@ final class NavigationSessionTests: XCTestCase {
                 "/typewriter", "/sidebar", "/settings",
             ]
         )
+    }
+
+    func testSlashCommandParserPreservesExportArgumentsAndQuotedValues() throws {
+        XCTAssertEqual(
+            try ClioCommandParser.parse("/export pdf"),
+            ClioCommandInvocation(command: .export, arguments: ["pdf"])
+        )
+        XCTAssertEqual(
+            try ClioCommandParser.parse("  /search \"two words\" one\\ two  "),
+            ClioCommandInvocation(
+                command: .search,
+                arguments: ["two words", "one two"]
+            )
+        )
+        XCTAssertThrowsError(try ClioCommandParser.parse("/export docx")) {
+            XCTAssertEqual($0 as? ClioCommandParseError, .invalidExportFormat("docx"))
+        }
+        XCTAssertThrowsError(try ClioCommandParser.parse("/search 'unfinished")) {
+            XCTAssertEqual($0 as? ClioCommandParseError, .unterminatedQuote)
+        }
+    }
+
+    func testPaletteArgumentsDoNotBreakFilteringAndSelectionIsClamped() throws {
+        let window = EditorWindowSession(request: .newDocument())
+        window.presentPalette(query: "/export html")
+
+        XCTAssertEqual(window.filteredCommands.map(\.command), [.export])
+        XCTAssertEqual(
+            try window.invocation(for: .export),
+            ClioCommandInvocation(command: .export, arguments: ["html"])
+        )
+
+        window.presentPalette()
+        window.movePaletteSelection(by: 10_000)
+        XCTAssertEqual(
+            window.paletteSelectionIndex,
+            ClioCommandDescriptor.all.count - 1
+        )
+        window.movePaletteSelection(by: -10_000)
+        XCTAssertEqual(window.paletteSelectionIndex, 0)
+    }
+
+    func testSlashTriggerUsesOnlyTheEditedRangeAndIgnoresMarkedText() {
+        XCTAssertTrue(
+            EditorCoordinator.isInlineSlashTrigger(
+                in: "🙂\n",
+                range: NSRange(location: 3, length: 0),
+                replacement: "/"
+            )
+        )
+        XCTAssertFalse(
+            EditorCoordinator.isInlineSlashTrigger(
+                in: "🙂\n",
+                range: NSRange(location: 3, length: 0),
+                replacement: "/",
+                hasMarkedText: true
+            )
+        )
+        XCTAssertFalse(
+            EditorCoordinator.isInlineSlashTrigger(
+                in: "text",
+                range: NSRange(location: 2, length: 0),
+                replacement: "/"
+            )
+        )
+    }
+
+    func testIncrementalWordCountStaysExactAcrossLocalEdits() throws {
+        try withTemporaryDirectory { folder in
+            let workspace = try Workspace(
+                rootURL: folder,
+                accessSecurityScopedResource: false
+            )
+            let session = EditorSession(openingMode: .newDocument)
+            session.activate(in: workspace, documentURLs: [])
+
+            session.editorTextDidChange(
+                "One two",
+                edit: EditorTextEdit(
+                    replacedRange: UTF16Range(location: 0, length: 0),
+                    replacement: "One two"
+                )
+            )
+            XCTAssertEqual(session.wordCount, 2)
+
+            session.editorTextDidChange(
+                "One two three",
+                edit: EditorTextEdit(
+                    replacedRange: UTF16Range(location: 7, length: 0),
+                    replacement: " three"
+                )
+            )
+            XCTAssertEqual(session.wordCount, 3)
+        }
+    }
+
+    func testBackgroundWordCountPublishesOnlyTheLatestGeneration() async throws {
+        try await withTemporaryDirectory { folder in
+            let workspace = try Workspace(
+                rootURL: folder,
+                accessSecurityScopedResource: false
+            )
+            let session = EditorSession(openingMode: .newDocument)
+            session.activate(in: workspace, documentURLs: [])
+            let longWord = String(repeating: "a", count: 10_000)
+
+            session.editorTextDidChange(
+                longWord + " two",
+                edit: EditorTextEdit(
+                    replacedRange: UTF16Range(location: 0, length: 0),
+                    replacement: longWord + " two"
+                )
+            )
+            session.editorTextDidChange(
+                longWord + " two three",
+                edit: EditorTextEdit(
+                    replacedRange: UTF16Range(
+                        location: longWord.utf16.count + 4,
+                        length: 0
+                    ),
+                    replacement: " three"
+                )
+            )
+
+            try await Task.sleep(for: .milliseconds(350))
+            XCTAssertEqual(session.wordCount, 3)
+        }
     }
 
     func testHorizontalGestureRevealsAndReverseGestureHidesUnpinnedSidebar() {
@@ -202,6 +346,123 @@ final class NavigationSessionTests: XCTestCase {
             XCTAssertEqual(window.tabs.count, 1)
             XCTAssertEqual(window.activeTabID, originalTabID)
         }
+    }
+
+    func testOpeningSearchResultAppliesMatchToExistingTabViewport() throws {
+        try withTemporaryDirectory { folder in
+            let fileURL = folder.appendingPathComponent("shared.md")
+            try Data("before needle after".utf8).write(to: fileURL)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let appState = AppState(
+                defaults: defaults,
+                workspaceCatalog: catalog,
+                searchIndex: nil
+            )
+            let window = EditorWindowSession(request: .mostRecent())
+            window.connect(to: appState)
+            let tab = try XCTUnwrap(window.activeTab)
+            let match = UTF16Range(location: 7, length: 6)
+
+            appState.openSearchResult(
+                WorkspaceSearchResult(
+                    documentID: tab.documentID,
+                    workspaceID: descriptor.id,
+                    relativePath: "shared.md",
+                    documentMatchRange: match,
+                    score: 1
+                ),
+                from: window
+            )
+
+            XCTAssertEqual(window.tabs.count, 1)
+            XCTAssertEqual(tab.viewportState.selection, match)
+            XCTAssertEqual(tab.viewportState.topVisibleUTF16Offset, match.location)
+        }
+    }
+
+    func testEditorCoordinatorAppliesViewportNavigationAfterInitialRestore() {
+        var text = "before needle after"
+        var viewport = EditorViewportState.zero
+        let textBinding = Binding(
+            get: { text },
+            set: { text = $0 }
+        )
+        let viewportBinding = Binding(
+            get: { viewport },
+            set: { viewport = $0 }
+        )
+        let coordinator = EditorCoordinator(
+            text: textBinding,
+            viewport: viewportBinding,
+            configuration: EditorConfiguration()
+        )
+        let surface = EditorContainerView(
+            textView: EditorTextView.makeTextKit2TextView()
+        )
+        coordinator.attach(to: surface)
+        coordinator.update(
+            text: textBinding,
+            viewport: viewportBinding,
+            configuration: EditorConfiguration()
+        )
+
+        viewport = EditorViewportState(
+            selection: UTF16Range(location: 7, length: 6),
+            topVisibleUTF16Offset: 7,
+            fractionalYOffset: 0
+        )
+        coordinator.update(
+            text: textBinding,
+            viewport: viewportBinding,
+            configuration: EditorConfiguration()
+        )
+
+        XCTAssertEqual(
+            surface.textView.selectedRange(),
+            NSRange(location: 7, length: 6)
+        )
+    }
+
+    func testCatalogRejectsNonParentBeforePersistingGrant() throws {
+        try withTemporaryDirectory { selectedFolder in
+            try withTemporaryDirectory { otherFolder in
+                let outsideDocument = otherFolder.appendingPathComponent("outside.md")
+                try Data("outside".utf8).write(to: outsideDocument)
+                let defaults = makeDefaults()
+                let catalog = makeCatalog(defaults: defaults)
+
+                XCTAssertThrowsError(
+                    try catalog.addAuthorizedFolder(
+                        selectedFolder,
+                        containing: outsideDocument
+                    )
+                ) {
+                    XCTAssertEqual(
+                        $0 as? WorkspaceCatalog.CatalogError,
+                        .selectedFolderDoesNotContainDocument(outsideDocument)
+                    )
+                }
+                XCTAssertTrue(catalog.descriptors.isEmpty)
+                XCTAssertTrue(makeCatalog(defaults: defaults).descriptors.isEmpty)
+            }
+        }
+    }
+
+    func testSidebarInteractionHooksPauseDeferredDismissal() {
+        let window = EditorWindowSession(request: .newDocument())
+        window.revealSidebarTemporarily()
+        window.setSidebarHovered(true)
+
+        XCTAssertTrue(window.isSidebarInteractionActive)
+        XCTAssertTrue(window.isSidebarVisible)
+
+        window.setSidebarHovered(false)
+        window.setSidebarFocused(true)
+        XCTAssertTrue(window.isSidebarInteractionActive)
+        window.setSidebarFocused(false)
+        XCTAssertFalse(window.isSidebarInteractionActive)
     }
 
     func testPowerboxFileCanSaveDirectlyWhileParentIndexGrantIsPending() throws {
@@ -331,6 +592,44 @@ final class NavigationSessionTests: XCTestCase {
             XCTAssertEqual(window.isSidebarVisible, !originalSidebar)
             XCTAssertTrue(window.isPalettePresented)
             XCTAssertEqual(window.paletteMode, .search)
+        }
+    }
+
+    func testExportCommandForwardsParsedArguments() async throws {
+        try await withTemporaryDirectory { folder in
+            let defaults = makeDefaults()
+            let workspace = try Workspace(
+                rootURL: folder,
+                accessSecurityScopedResource: false
+            )
+            let appState = AppState(
+                defaults: defaults,
+                initialWorkspace: workspace,
+                searchIndex: nil
+            )
+            let window = EditorWindowSession(request: .newDocument())
+            window.connect(to: appState)
+            var captured: [String]?
+            let observer = NotificationCenter.default.addObserver(
+                forName: .clioRequestedExport,
+                object: nil,
+                queue: .main
+            ) { notification in
+                captured = notification.userInfo?[ClioExportNotificationKey.arguments]
+                    as? [String]
+            }
+            defer { NotificationCenter.default.removeObserver(observer) }
+
+            await appState.perform(
+                ClioCommandInvocation(command: .export, arguments: ["pdf"]),
+                context: ClioCommandContext(
+                    windowID: window.id,
+                    tabID: window.activeTabID,
+                    source: .inlineSlash
+                )
+            )
+
+            XCTAssertEqual(captured, ["pdf"])
         }
     }
 

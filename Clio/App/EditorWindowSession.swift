@@ -42,6 +42,7 @@ final class EditorWindowSession: Identifiable {
     var isSidebarVisible: Bool
     var isSidebarPinned: Bool
     var isFullScreenEnabled: Bool
+    private(set) var isSidebarInteractionActive = false
 
     var isPalettePresented = false
     var paletteMode = CommandPaletteMode.commands
@@ -51,6 +52,7 @@ final class EditorWindowSession: Identifiable {
     var searchResults: [WorkspaceSearchResult] = []
     var paletteErrorMessage: String?
     var isSearching = false
+    private(set) var paletteSelectionIndex = 0
     private(set) var focusRestorationGeneration = 0
 
     @ObservationIgnored
@@ -64,6 +66,18 @@ final class EditorWindowSession: Identifiable {
 
     @ObservationIgnored
     private var horizontalGestureDistance: CGFloat = 0
+
+    @ObservationIgnored
+    private var isSidebarHovered = false
+
+    @ObservationIgnored
+    private var isSidebarFocused = false
+
+    @ObservationIgnored
+    private var deferredSidebarDismissal: SidebarDismissal?
+
+    @ObservationIgnored
+    private var activeSidebarDismissal: SidebarDismissal?
 
     init(request: EditorWindowRequest) {
         id = request.id
@@ -109,15 +123,22 @@ final class EditorWindowSession: Identifiable {
     }
 
     var filteredCommands: [ClioCommandDescriptor] {
-        let needle = paletteQuery
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let needle = ClioCommandParser.commandToken(in: paletteQuery)
         guard !needle.isEmpty else { return ClioCommandDescriptor.all }
         return ClioCommandDescriptor.all.filter {
             $0.command.rawValue.localizedCaseInsensitiveContains(needle)
                 || $0.title.localizedCaseInsensitiveContains(needle)
                 || $0.detail.localizedCaseInsensitiveContains(needle)
         }
+    }
+
+    var selectedPaletteItemAnchor: String? {
+        if paletteMode == .commands {
+            guard filteredCommands.indices.contains(paletteSelectionIndex) else { return nil }
+            return "command:\(filteredCommands[paletteSelectionIndex].command.rawValue)"
+        }
+        guard searchResults.indices.contains(paletteSelectionIndex) else { return nil }
+        return "search:\(searchResults[paletteSelectionIndex].id.uuidString)"
     }
 
     var restorationState: EditorWindowRestorationState {
@@ -194,27 +215,30 @@ final class EditorWindowSession: Identifiable {
         appState?.focusWindow(id)
     }
 
-    func noteEditorChange(from oldText: String, to newText: String) {
-        if Self.isSlashTrigger(oldText: oldText, newText: newText) {
-            activeTab?.editorTextDidChange(oldText)
-            presentPalette(source: .inlineSlash, query: "/")
-            return
-        }
-
-        activeTab?.editorTextDidChange(newText)
+    func noteEditorChange(to newText: String, edit: EditorTextEdit? = nil) {
+        activeTab?.editorTextDidChange(newText, edit: edit)
         scheduleWritingCollapse()
+    }
+
+    func presentInlineSlashPalette() {
+        presentPalette(source: .inlineSlash, query: "/")
     }
 
     func toggleSidebar() {
         sidebarTimer?.cancel()
         sidebarTimer = nil
+        deferredSidebarDismissal = nil
+        activeSidebarDismissal = nil
         isSidebarVisible.toggle()
+        if !isSidebarVisible { clearSidebarInteraction() }
     }
 
     func setSidebarPinned(_ pinned: Bool) {
         isSidebarPinned = pinned
         sidebarTimer?.cancel()
         sidebarTimer = nil
+        deferredSidebarDismissal = nil
+        activeSidebarDismissal = nil
         if !pinned, isSidebarVisible {
             scheduleTemporarySidebarDismissal(after: Self.temporarySidebarDelay)
         }
@@ -228,7 +252,20 @@ final class EditorWindowSession: Identifiable {
     func hideSidebar() {
         sidebarTimer?.cancel()
         sidebarTimer = nil
+        deferredSidebarDismissal = nil
+        activeSidebarDismissal = nil
         isSidebarVisible = false
+        clearSidebarInteraction()
+    }
+
+    func setSidebarHovered(_ hovered: Bool) {
+        isSidebarHovered = hovered
+        sidebarInteractionDidChange()
+    }
+
+    func setSidebarFocused(_ focused: Bool) {
+        isSidebarFocused = focused
+        sidebarInteractionDidChange()
     }
 
     func handleHorizontalGesture(deltaX: CGFloat, phaseEnded: Bool) {
@@ -255,6 +292,7 @@ final class EditorWindowSession: Identifiable {
         paletteMode = mode
         paletteQuery = query
         paletteErrorMessage = nil
+        paletteSelectionIndex = 0
         isPalettePresented = true
         if mode == .search {
             updateSearch()
@@ -271,6 +309,8 @@ final class EditorWindowSession: Identifiable {
 
     func updatePaletteQuery(_ query: String) {
         paletteQuery = query
+        paletteErrorMessage = nil
+        paletteSelectionIndex = 0
         if paletteMode == .search {
             updateSearch()
         }
@@ -288,7 +328,51 @@ final class EditorWindowSession: Identifiable {
         appState?.openSearchResult(result, from: self)
     }
 
+    func selectPaletteItem(at index: Int) {
+        let count = paletteMode == .commands
+            ? filteredCommands.count
+            : searchResults.count
+        guard count > 0 else {
+            paletteSelectionIndex = 0
+            return
+        }
+        paletteSelectionIndex = min(max(0, index), count - 1)
+    }
+
+    func movePaletteSelection(by offset: Int) {
+        selectPaletteItem(at: paletteSelectionIndex + offset)
+    }
+
+    func performSelectedPaletteItem() {
+        if paletteMode == .search {
+            guard searchResults.indices.contains(paletteSelectionIndex) else { return }
+            chooseSearchResult(searchResults[paletteSelectionIndex])
+            return
+        }
+        guard filteredCommands.indices.contains(paletteSelectionIndex) else { return }
+        let command = filteredCommands[paletteSelectionIndex].command
+        do {
+            try perform(invocation(for: command))
+        } catch {
+            paletteErrorMessage = error.localizedDescription
+        }
+    }
+
+    func invocation(for command: ClioCommandID) throws -> ClioCommandInvocation {
+        let token = ClioCommandParser.commandToken(in: paletteQuery).lowercased()
+        guard token == command.rawValue else {
+            return ClioCommandInvocation(command: command, arguments: [])
+        }
+        let trimmed = paletteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commandLine = trimmed.first == "/" ? trimmed : "/\(trimmed)"
+        return try ClioCommandParser.parse(commandLine)
+    }
+
     func perform(_ command: ClioCommandID) {
+        perform(ClioCommandInvocation(command: command, arguments: []))
+    }
+
+    func perform(_ invocation: ClioCommandInvocation) {
         guard let appState else { return }
         let context = ClioCommandContext(
             windowID: id,
@@ -298,7 +382,7 @@ final class EditorWindowSession: Identifiable {
         dismissPalette()
         Task { @MainActor in
             await appState.perform(
-                ClioCommandInvocation(command: command, arguments: []),
+                invocation,
                 context: context
             )
         }
@@ -306,50 +390,82 @@ final class EditorWindowSession: Identifiable {
 }
 
 private extension EditorWindowSession {
-    static func isSlashTrigger(oldText: String, newText: String) -> Bool {
-        var characters = Array(newText)
-        let oldCharacters = Array(oldText)
-        guard characters.count == oldCharacters.count + 1 else { return false }
-        var insertion = oldCharacters.count
-        for index in oldCharacters.indices where characters[index] != oldCharacters[index] {
-            insertion = index
-            break
+    enum SidebarDismissal {
+        case writing
+        case temporary
+    }
+
+    func sidebarInteractionDidChange() {
+        let isActive = isSidebarHovered || isSidebarFocused
+        guard isSidebarInteractionActive != isActive else { return }
+        isSidebarInteractionActive = isActive
+        if isActive {
+            if let activeSidebarDismissal {
+                deferredSidebarDismissal = activeSidebarDismissal
+            }
+            sidebarTimer?.cancel()
+            sidebarTimer = nil
+            activeSidebarDismissal = nil
+        } else if let deferredSidebarDismissal {
+            self.deferredSidebarDismissal = nil
+            switch deferredSidebarDismissal {
+            case .writing:
+                scheduleWritingCollapse()
+            case .temporary:
+                scheduleTemporarySidebarDismissal(after: Self.temporarySidebarDelay)
+            }
         }
-        guard characters[insertion] == "/" else { return false }
-        characters.remove(at: insertion)
-        guard characters == oldCharacters else { return false }
-        guard insertion > 0 else { return true }
-        let preceding = oldCharacters[insertion - 1]
-        return preceding == "\n" || preceding == "\r"
+    }
+
+    func clearSidebarInteraction() {
+        isSidebarHovered = false
+        isSidebarFocused = false
+        isSidebarInteractionActive = false
     }
 
     func scheduleWritingCollapse() {
         guard isSidebarVisible, !isSidebarPinned else { return }
+        guard !isSidebarInteractionActive else {
+            deferredSidebarDismissal = .writing
+            return
+        }
         guard sidebarTimer == nil else { return }
+        activeSidebarDismissal = .writing
         sidebarTimer = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: Self.writingCollapseDelay)
             } catch {
                 return
             }
-            guard let self, !self.isSidebarPinned else { return }
+            guard let self,
+                  !self.isSidebarPinned,
+                  !self.isSidebarInteractionActive else { return }
             self.isSidebarVisible = false
             self.sidebarTimer = nil
+            self.activeSidebarDismissal = nil
         }
     }
 
     func scheduleTemporarySidebarDismissal(after duration: Duration) {
         guard !isSidebarPinned else { return }
+        guard !isSidebarInteractionActive else {
+            deferredSidebarDismissal = .temporary
+            return
+        }
         sidebarTimer?.cancel()
+        activeSidebarDismissal = .temporary
         sidebarTimer = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: duration)
             } catch {
                 return
             }
-            guard let self, !self.isSidebarPinned else { return }
+            guard let self,
+                  !self.isSidebarPinned,
+                  !self.isSidebarInteractionActive else { return }
             self.isSidebarVisible = false
             self.sidebarTimer = nil
+            self.activeSidebarDismissal = nil
         }
     }
 
@@ -374,6 +490,7 @@ private extension EditorWindowSession {
                 ) {
                     guard !Task.isCancelled else { return }
                     self.searchResults = batch.results
+                    self.selectPaletteItem(at: self.paletteSelectionIndex)
                     self.isSearching = !batch.isFinal
                 }
             } catch is CancellationError {

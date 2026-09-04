@@ -32,6 +32,7 @@ final class EditorTextView: NSTextView {
         let stack = EditorTextKitStack()
         let textView = EditorTextView(frame: .zero, textContainer: stack.textContainer)
         textView.retainedTextKitStack = stack
+        textView.setAccessibilityIdentifier("editor.text")
         return textView
     }
 
