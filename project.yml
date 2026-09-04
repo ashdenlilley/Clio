@@ -47,6 +47,9 @@ targets:
       - path: Clio/Resources/ThirdPartyNotices
         type: folder
         buildPhase: resources
+    dependencies:
+      - sdk: libsqlite3.tbd
+      - package: Markdown
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac
@@ -65,9 +68,6 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
-    dependencies:
-      - package: Markdown
-
   ClioTests:
     type: bundle.unit-test
     platform: macOS
