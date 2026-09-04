@@ -572,8 +572,13 @@ final class WorkspaceIndexTests: XCTestCase {
                     isStale: false
                 )
             }
-            let makeWorkspace: (WorkspaceID, URL) throws -> Workspace = {
-                try Workspace(id: $0, rootURL: $1, accessSecurityScopedResource: false)
+            let makeWorkspace: (WorkspaceID, URL, CrashRecoveryJournal) throws -> Workspace = {
+                try Workspace(
+                    id: $0,
+                    rootURL: $1,
+                    accessSecurityScopedResource: false,
+                    crashRecoveryJournal: $2
+                )
             }
 
             let first = WorkspaceCatalog(
@@ -635,7 +640,7 @@ final class WorkspaceIndexTests: XCTestCase {
                         isStale: false
                     )
                 },
-                workspaceFactory: { _, url in
+                workspaceFactory: { _, url, _ in
                     try Workspace(
                         id: WorkspaceID(),
                         rootURL: url,
@@ -666,8 +671,17 @@ final class WorkspaceIndexTests: XCTestCase {
                     isStale: false
                 )
             }
-            let makeWorkspace: @MainActor (WorkspaceID, URL) throws -> Workspace = {
-                try Workspace(id: $0, rootURL: $1, accessSecurityScopedResource: false)
+            let makeWorkspace: @MainActor (
+                WorkspaceID,
+                URL,
+                CrashRecoveryJournal
+            ) throws -> Workspace = {
+                try Workspace(
+                    id: $0,
+                    rootURL: $1,
+                    accessSecurityScopedResource: false,
+                    crashRecoveryJournal: $2
+                )
             }
             let initial = WorkspaceCatalog(
                 defaults: defaults,
@@ -702,6 +716,105 @@ final class WorkspaceIndexTests: XCTestCase {
                 workspaceFactory: makeWorkspace
             )
             XCTAssertEqual(restored.descriptors.first?.id, descriptor.id)
+        }
+    }
+
+    @MainActor
+    func testWorkspaceCatalogRecoversCrossRootMoveAfterRestoringBothGrants() async throws {
+        try await withTemporaryDirectory { rootURL in
+            let sourceRoot = rootURL.appendingPathComponent("Source", isDirectory: true)
+            let destinationRoot = rootURL.appendingPathComponent("Destination", isDirectory: true)
+            let journalURL = rootURL.appendingPathComponent("Journal", isDirectory: true)
+            try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let journal = CrashRecoveryJournal(rootURL: journalURL)
+            let makeBookmark: @MainActor (URL) throws -> Data = { Data($0.path.utf8) }
+            let resolveBookmark: @MainActor (Data) throws -> Workspace.BookmarkResolution = {
+                Workspace.BookmarkResolution(
+                    url: URL(fileURLWithPath: String(decoding: $0, as: UTF8.self)),
+                    isStale: false
+                )
+            }
+            do {
+                let seed = WorkspaceCatalog(
+                    defaults: defaults,
+                    bookmarkMaker: makeBookmark,
+                    bookmarkResolver: resolveBookmark,
+                    crashRecoveryJournal: journal,
+                    workspaceFactory: { id, url, injectedJournal in
+                        try Workspace(
+                            id: id,
+                            rootURL: url,
+                            accessSecurityScopedResource: false,
+                            crashRecoveryJournal: injectedJournal
+                        )
+                    }
+                )
+                _ = try seed.addAuthorizedFolder(sourceRoot)
+                _ = try seed.addAuthorizedFolder(destinationRoot)
+                try await Task.sleep(for: .milliseconds(100))
+            }
+
+            let sourceURL = sourceRoot.appendingPathComponent("draft.md")
+            let destinationURL = destinationRoot.appendingPathComponent("draft.md")
+            let sourceData = Data("recover this source inode".utf8)
+            try sourceData.write(to: sourceURL)
+            let documentID = DocumentID()
+            let transaction = try InterruptedMoveTransactions.begin(
+                documentID: documentID,
+                generation: BufferGeneration(bufferID: documentID.rawValue, revision: 4),
+                sourceRootURL: sourceRoot,
+                destinationRootURL: destinationRoot,
+                sourceURL: sourceURL,
+                destinationURL: destinationURL,
+                sourceRevision: try DocumentRevisionReader.revision(at: sourceURL),
+                destinationRevision: nil,
+                candidate: Data("destination candidate".utf8)
+            )
+            try InterruptedMoveTransactions.quarantineSource(transaction)
+
+            var factoryJournals: [CrashRecoveryJournal] = []
+            let catalog = WorkspaceCatalog(
+                defaults: defaults,
+                bookmarkMaker: makeBookmark,
+                bookmarkResolver: resolveBookmark,
+                crashRecoveryJournal: journal,
+                workspaceFactory: { id, url, injectedJournal in
+                    factoryJournals.append(injectedJournal)
+                    return try Workspace(
+                        id: id,
+                        rootURL: url,
+                        accessSecurityScopedResource: false,
+                        crashRecoveryJournal: injectedJournal
+                    )
+                }
+            )
+
+            XCTAssertEqual(catalog.descriptors.count, 2)
+
+            let deadline = ContinuousClock.now + .seconds(2)
+            while catalog.recoveredInterruptedMoveCount == 0,
+                  catalog.recoveryFailureMessage == nil,
+                  ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+
+            XCTAssertEqual(catalog.recoveredInterruptedMoveCount, 1)
+            XCTAssertNil(catalog.recoveryFailureMessage)
+            XCTAssertEqual(factoryJournals.count, 2)
+            XCTAssertTrue(factoryJournals.allSatisfy { $0 === journal })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: transaction.manifestURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: transaction.manifest.quarantineURL.path))
+            XCTAssertTrue(
+                try journal.validRecords().contains {
+                    $0.documentID == documentID
+                        && $0.reason == .interruptedMove
+                        && $0.data == sourceData
+                }
+            )
         }
     }
 
@@ -1731,7 +1844,12 @@ private extension WorkspaceIndexTests {
                 )
             },
             workspaceFactory: {
-                try Workspace(id: $0, rootURL: $1, accessSecurityScopedResource: false)
+                try Workspace(
+                    id: $0,
+                    rootURL: $1,
+                    accessSecurityScopedResource: false,
+                    crashRecoveryJournal: $2
+                )
             }
         )
     }

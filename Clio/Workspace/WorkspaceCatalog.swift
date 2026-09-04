@@ -32,6 +32,8 @@ final class WorkspaceCatalog {
 
     private(set) var descriptors: [WorkspaceDescriptor] = []
     private(set) var authorizationFailures: [AuthorizationFailure] = []
+    private(set) var recoveryFailureMessage: String?
+    private(set) var recoveredInterruptedMoveCount = 0
 
     @ObservationIgnored
     private let defaults: UserDefaults
@@ -43,24 +45,48 @@ final class WorkspaceCatalog {
     private let bookmarkResolver: @MainActor (Data) throws -> Workspace.BookmarkResolution
 
     @ObservationIgnored
-    private let workspaceFactory: @MainActor (WorkspaceID, URL) throws -> Workspace
+    private let workspaceFactory: @MainActor (
+        WorkspaceID,
+        URL,
+        CrashRecoveryJournal
+    ) throws -> Workspace
+
+    @ObservationIgnored
+    private let crashRecoveryJournal: CrashRecoveryJournal
 
     @ObservationIgnored
     private var activeWorkspaces: [WorkspaceID: Workspace] = [:]
+
+    @ObservationIgnored
+    private var moveRecoveryTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var moveRecoveryRescanRequested = false
 
     init(
         defaults: UserDefaults = .standard,
         bookmarkMaker: @escaping @MainActor (URL) throws -> Data = Workspace.makeSecurityScopedBookmark,
         bookmarkResolver: @escaping @MainActor (Data) throws -> Workspace.BookmarkResolution = Workspace.resolveSecurityScopedBookmark,
-        workspaceFactory: @escaping @MainActor (WorkspaceID, URL) throws -> Workspace = {
-            try Workspace(id: $0, rootURL: $1)
+        crashRecoveryJournal: CrashRecoveryJournal = .shared,
+        workspaceFactory: @escaping @MainActor (
+            WorkspaceID,
+            URL,
+            CrashRecoveryJournal
+        ) throws -> Workspace = {
+            try Workspace(id: $0, rootURL: $1, crashRecoveryJournal: $2)
         }
     ) {
         self.defaults = defaults
         self.bookmarkMaker = bookmarkMaker
         self.bookmarkResolver = bookmarkResolver
         self.workspaceFactory = workspaceFactory
+        self.crashRecoveryJournal = crashRecoveryJournal
         restore()
+        scheduleInterruptedMoveRecovery()
+    }
+
+    deinit {
+        moveRecoveryTask?.cancel()
     }
 
     var workspaces: [Workspace] {
@@ -135,6 +161,7 @@ final class WorkspaceCatalog {
         descriptors.append(descriptor)
         descriptors.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         persist(adding: StoredWorkspace(descriptor: descriptor, bookmark: refreshedBookmark))
+        scheduleInterruptedMoveRecovery()
         return descriptor
     }
 
@@ -167,6 +194,7 @@ final class WorkspaceCatalog {
         descriptors.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         authorizationFailures.removeAll { $0.id == id }
         persist(adding: StoredWorkspace(descriptor: descriptor, bookmark: refreshedBookmark))
+        scheduleInterruptedMoveRecovery()
     }
 
     func dismissAuthorizationFailure(_ id: WorkspaceID) {
@@ -175,8 +203,38 @@ final class WorkspaceCatalog {
 }
 
 private extension WorkspaceCatalog {
+    func scheduleInterruptedMoveRecovery() {
+        guard moveRecoveryTask == nil else {
+            moveRecoveryRescanRequested = true
+            return
+        }
+        moveRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.moveRecoveryRescanRequested = false
+                let roots = self.workspaces.map(\.rootURL)
+                let journal = self.crashRecoveryJournal
+                do {
+                    let recovered = try await Task.detached(priority: .utility) {
+                        try InterruptedMoveTransactions.recover(
+                            inAuthorizedRoots: roots,
+                            journal: journal
+                        )
+                    }.value
+                    self.recoveredInterruptedMoveCount += recovered
+                    self.recoveryFailureMessage = nil
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self.recoveryFailureMessage = error.localizedDescription
+                }
+            } while self.moveRecoveryRescanRequested
+            self.moveRecoveryTask = nil
+        }
+    }
+
     func makeWorkspace(id: WorkspaceID, rootURL: URL) throws -> Workspace {
-        let workspace = try workspaceFactory(id, rootURL)
+        let workspace = try workspaceFactory(id, rootURL, crashRecoveryJournal)
         guard workspace.id == id else {
             throw CatalogError.mismatchedWorkspaceIdentity(
                 expected: id,
