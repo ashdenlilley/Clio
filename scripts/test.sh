@@ -50,7 +50,8 @@ if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
 fi
 
 # The real SIGKILL recovery subprocess runs under the unsigned unit host.
-# UI automation requires an ad-hoc-signed runner; run it separately and serially
+# UI automation and the real display-link test require an ad-hoc-signed runner;
+# run them separately from the unsigned suite and serially
 # so the two hosts cannot steal focus or terminate each other's application.
 xcodebuild \
     -project Clio.xcodeproj \
@@ -70,7 +71,7 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
     if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
         set -- -resultBundlePath "${UI_RESULT_PATH}"
     fi
-    xcodebuild \
+    TEST_RUNNER_CLIO_RUN_NATIVE_MOTION_TESTS=1 xcodebuild \
         -project Clio.xcodeproj \
         -scheme Clio \
         -configuration Debug \
@@ -79,6 +80,7 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         -onlyUsePackageVersionsFromResolvedFile \
         -disableAutomaticPackageResolution \
         -only-testing:ClioUITests \
+        -only-testing:ClioTests/WindowMotionAdapterTests/testNativeDisplayLinkAdvancesVisibleWindowAndStopsAtRest \
         "$@" \
         CODE_SIGNING_ALLOWED=YES \
         CODE_SIGN_IDENTITY=- \
