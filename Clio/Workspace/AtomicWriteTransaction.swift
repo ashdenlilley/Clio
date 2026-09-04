@@ -33,6 +33,28 @@ struct AtomicWriteTransactionContext: Sendable {
   let manifestURL: URL
 }
 
+enum AtomicExportRecoveryArtifactKind: Sendable, Equatable {
+  case renderedCandidate
+  case displacedDestination
+  case completedDestination
+}
+
+struct AtomicExportRecoveryArtifact: Sendable, Equatable {
+  let id: UUID
+  let kind: AtomicExportRecoveryArtifactKind
+  let manifestURL: URL
+  let contentURL: URL
+  let destinationURL: URL
+  let byteCount: Int64
+  let contentDigest: String
+  let createdAt: Date
+}
+
+struct AtomicExportRecoveryInspection: Sendable, Equatable {
+  let artifacts: [AtomicExportRecoveryArtifact]
+  let manifestOnlyTransactions: [URL]
+}
+
 enum AtomicWriteTransactions {
   static let manifestPrefix = ".clio-transaction-"
   static let manifestSuffix = ".plist"
@@ -199,9 +221,182 @@ enum AtomicWriteTransactions {
     }
     return recovered
   }
+
+  /// Export recovery deliberately remains file-backed. This exact-directory
+  /// inspection hashes bounded files through a fixed-size buffer and never
+  /// creates a `CrashRecoveryRecord`, whose payload is reserved for canonical
+  /// Markdown buffers no larger than the editor's 50 MiB contract.
+  static func inspectInterruptedExportTransactions(
+    in rootURL: URL
+  ) throws -> AtomicExportRecoveryInspection {
+    let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+    guard
+      let urls = try? FileManager.default.contentsOfDirectory(
+        at: root,
+        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+      )
+    else {
+      return AtomicExportRecoveryInspection(
+        artifacts: [],
+        manifestOnlyTransactions: []
+      )
+    }
+
+    var artifacts: [AtomicExportRecoveryArtifact] = []
+    var manifestOnlyTransactions: [URL] = []
+    for url in urls where isManifestName(url.lastPathComponent) {
+      try Task.checkCancellation()
+      guard let manifest = validManifest(at: url, inside: root),
+        ["html", "pdf"].contains(
+          manifest.destinationURL.pathExtension.lowercased()
+        )
+      else { continue }
+
+      let destination = revisionIfSafe(
+        at: manifest.destinationURL,
+        inside: root,
+        maximumByteCount: maximumRecoverableByteCount
+      )
+      let temporary = revisionIfSafe(
+        at: manifest.temporaryURL,
+        inside: root,
+        maximumByteCount: maximumRecoverableByteCount
+      )
+      let destinationIsCandidate = destination.map {
+        matches(
+          $0,
+          byteCount: manifest.candidateByteCount,
+          digest: manifest.candidateDigest
+        )
+      } ?? false
+      let temporaryIsCandidate = temporary.map {
+        matches(
+          $0,
+          byteCount: manifest.candidateByteCount,
+          digest: manifest.candidateDigest
+        )
+      } ?? false
+      let temporaryIsAbsent = isAbsent(manifest.temporaryURL)
+      let destinationIsExpected = manifest.expectedRevision.map { expected in
+        destination.map { Workspace.sameContent($0, expected) } ?? false
+      } ?? isAbsent(manifest.destinationURL)
+      let temporaryIsExpected = manifest.expectedRevision.map { expected in
+        temporary.map { Workspace.sameContent($0, expected) } ?? false
+      } ?? false
+
+      let artifact: AtomicExportRecoveryArtifact?
+      if temporaryIsCandidate, let temporary {
+        artifact = exportArtifact(
+          .renderedCandidate,
+          contentURL: manifest.temporaryURL,
+          revision: temporary,
+          manifest: manifest,
+          manifestURL: url
+        )
+      } else if temporaryIsExpected, let temporary {
+        artifact = exportArtifact(
+          .displacedDestination,
+          contentURL: manifest.temporaryURL,
+          revision: temporary,
+          manifest: manifest,
+          manifestURL: url
+        )
+      } else if destinationIsCandidate, temporaryIsAbsent,
+        let destination
+      {
+        artifact = exportArtifact(
+          .completedDestination,
+          contentURL: manifest.destinationURL,
+          revision: destination,
+          manifest: manifest,
+          manifestURL: url
+        )
+      } else {
+        artifact = nil
+      }
+
+      if let artifact {
+        artifacts.append(artifact)
+      } else if temporaryIsAbsent, destinationIsExpected {
+        manifestOnlyTransactions.append(url.standardizedFileURL)
+      }
+    }
+    return AtomicExportRecoveryInspection(
+      artifacts: artifacts,
+      manifestOnlyTransactions: manifestOnlyTransactions
+    )
+  }
+
+  /// Removes only the exact files represented by a freshly revalidated item.
+  /// A completed destination is never removed; dismissing it clears metadata.
+  static func discardInterruptedExportArtifact(
+    _ artifact: AtomicExportRecoveryArtifact,
+    in rootURL: URL
+  ) throws {
+    let inspection = try inspectInterruptedExportTransactions(in: rootURL)
+    guard inspection.artifacts.contains(artifact) else {
+      throw DocumentRevisionReader.RevisionError.changedWhileReading(
+        artifact.contentURL
+      )
+    }
+    if artifact.kind != .completedDestination,
+      FileManager.default.fileExists(atPath: artifact.contentURL.path)
+    {
+      try FileManager.default.removeItem(at: artifact.contentURL)
+      try syncDirectory(rootURL)
+    }
+    if FileManager.default.fileExists(atPath: artifact.manifestURL.path) {
+      try FileManager.default.removeItem(at: artifact.manifestURL)
+      try syncDirectory(rootURL)
+    }
+  }
+
+  static func discardManifestOnlyTransaction(
+    at manifestURL: URL,
+    in rootURL: URL
+  ) throws {
+    let inspection = try inspectInterruptedExportTransactions(in: rootURL)
+    let manifest = manifestURL.standardizedFileURL
+    guard inspection.manifestOnlyTransactions.contains(manifest) else {
+      throw DocumentRevisionReader.RevisionError.changedWhileReading(manifest)
+    }
+    try FileManager.default.removeItem(at: manifest)
+    try syncDirectory(rootURL)
+  }
 }
 
 extension AtomicWriteTransactions {
+  fileprivate static func exportArtifact(
+    _ kind: AtomicExportRecoveryArtifactKind,
+    contentURL: URL,
+    revision: DiskRevision,
+    manifest: AtomicWriteTransactionManifest,
+    manifestURL: URL
+  ) -> AtomicExportRecoveryArtifact {
+    AtomicExportRecoveryArtifact(
+      id: manifest.id,
+      kind: kind,
+      manifestURL: manifestURL.standardizedFileURL,
+      contentURL: contentURL.standardizedFileURL,
+      destinationURL: manifest.destinationURL.standardizedFileURL,
+      byteCount: revision.byteCount,
+      contentDigest: revision.contentDigest,
+      createdAt: manifest.createdAt
+    )
+  }
+
+  fileprivate static func revisionIfSafe(
+    at url: URL,
+    inside rootURL: URL,
+    maximumByteCount: Int64
+  ) -> DiskRevision? {
+    guard isSafeRegularFile(url, inside: rootURL) else { return nil }
+    return try? DocumentRevisionReader.revision(
+      at: url,
+      maximumByteCount: maximumByteCount
+    )
+  }
+
   fileprivate static func isManifestName(_ name: String) -> Bool {
     name.hasPrefix(manifestPrefix) && name.hasSuffix(manifestSuffix)
   }

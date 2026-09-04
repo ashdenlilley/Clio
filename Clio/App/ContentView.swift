@@ -66,6 +66,13 @@ struct ContentView: View {
                             filename: editorSession.filename,
                             restore: editorSession.saveNow
                         )
+                    } else if let recovery = appState.pendingExportRecoveries.first {
+                        ExportRecoveryBanner(
+                            item: recovery,
+                            remainingCount: appState.pendingExportRecoveries.count,
+                            reveal: { appState.revealExportRecovery(recovery) },
+                            discard: { appState.discardExportRecovery(recovery) }
+                        )
                     } else if let errorMessage = editorSession.errorMessage
                         ?? appState.crashRecoveryMessage
                         ?? appState.workspaceErrorMessage {
@@ -153,6 +160,69 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             editorSession.flushForLifecycleEvent()
+        }
+    }
+}
+
+private struct ExportRecoveryBanner: View {
+    let item: ExportRecoveryItem
+    let remainingCount: Int
+    let reveal: () -> Void
+    let discard: () -> Void
+    @State private var isConfirmingDiscard = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "doc.badge.clock")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail)
+                    .foregroundStyle(Color(nsColor: Palette.muted))
+            }
+            Spacer(minLength: 8)
+            Button("Show in Finder", action: reveal)
+            if item.kind == .completedDestination {
+                Button("Dismiss", action: discard)
+            } else {
+                Button("Discard", role: .destructive) {
+                    isConfirmingDiscard = true
+                }
+            }
+        }
+        .font(.custom(Typography.family, fixedSize: 12))
+        .foregroundStyle(Color(nsColor: Palette.foreground))
+        .padding(12)
+        .background(Color(nsColor: Palette.backgroundRaised))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(nsColor: Palette.hairline))
+                .frame(height: 1)
+        }
+        .alert("Discard recovered export?", isPresented: $isConfirmingDiscard) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard", role: .destructive, action: discard)
+        } message: {
+            Text("This permanently removes Clio's preserved copy of \(item.filename).")
+        }
+    }
+
+    private var detail: String {
+        let size = item.byteCount.formatted(.byteCount(style: .file))
+        guard remainingCount > 1 else {
+            return "\(size) · preserved securely for seven days"
+        }
+        return "\(size) · \(remainingCount - 1) more preserved · kept securely for seven days"
+    }
+
+    private var title: String {
+        switch item.kind {
+        case .renderedCandidate:
+            "Interrupted export preserved: \(item.filename)"
+        case .displacedDestination:
+            "Pre-export version preserved: \(item.filename)"
+        case .completedDestination:
+            "Export completed before Clio closed: \(item.filename)"
         }
     }
 }

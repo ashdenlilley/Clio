@@ -97,6 +97,93 @@ final class ExportPresentationTests: XCTestCase {
         }
     }
 
+    func testSnapshotForExportSettlesQueuedEditorDeltaBeforeFingerprinting() async throws {
+        try await withTemporaryDirectory { directory in
+            let source = String(repeating: "queued export text\n", count: 32_768)
+            let fileURL = directory.appendingPathComponent("Queued.md")
+            try Data(source.utf8).write(to: fileURL)
+            let workspace = try Workspace(
+                rootURL: directory,
+                accessSecurityScopedResource: false
+            )
+            let registry = DocumentBufferRegistry(
+                identityStore: DocumentIdentityStore(storageURL: nil)
+            )
+            let session = EditorSession(openingMode: .mostRecent)
+            await session.activateInBackground(
+                in: workspace,
+                documentURLs: [fileURL],
+                registry: registry
+            )
+
+            let suffix = "settled-before-export"
+            session.editorTextDidChange(MarkdownTextEdit(
+                replacedRange: UTF16Range(
+                    location: (source as NSString).length,
+                    length: 0
+                ),
+                replacement: suffix
+            ))
+
+            let snapshot = try await session.snapshotForExport()
+
+            XCTAssertEqual(snapshot.source, source + suffix)
+            XCTAssertEqual(snapshot.generation.bufferID, session.document?.id.rawValue)
+            XCTAssertEqual(snapshot.generation.revision, session.contentRevision)
+            XCTAssertEqual(
+                snapshot.sourceFingerprint,
+                StableSourceFingerprint.make(source + suffix)
+            )
+            XCTAssertFalse(session.hasUnsettledEditorEdits)
+            session.deactivate()
+        }
+    }
+
+    func testSnapshotForExportSettlesAnotherEditorBoundToSameDocument() async throws {
+        try await withTemporaryDirectory { directory in
+            let source = String(repeating: "shared editor text\n", count: 32_768)
+            let fileURL = directory.appendingPathComponent("Shared.md")
+            try Data(source.utf8).write(to: fileURL)
+            let workspace = try Workspace(
+                rootURL: directory,
+                accessSecurityScopedResource: false
+            )
+            let registry = DocumentBufferRegistry(
+                identityStore: DocumentIdentityStore(storageURL: nil)
+            )
+            let exporter = EditorSession(openingMode: .mostRecent)
+            let secondEditor = EditorSession(openingMode: .mostRecent)
+            await exporter.activateInBackground(
+                in: workspace,
+                documentURLs: [fileURL],
+                registry: registry
+            )
+            await secondEditor.activateInBackground(
+                in: workspace,
+                documentURLs: [fileURL],
+                registry: registry
+            )
+            XCTAssertTrue(exporter.document === secondEditor.document)
+
+            let suffix = "settled-from-second-editor"
+            secondEditor.editorTextDidChange(MarkdownTextEdit(
+                replacedRange: UTF16Range(
+                    location: (source as NSString).length,
+                    length: 0
+                ),
+                replacement: suffix
+            ))
+
+            let snapshot = try await exporter.snapshotForExport()
+
+            XCTAssertEqual(snapshot.source, source + suffix)
+            XCTAssertFalse(exporter.hasUnsettledEditorEdits)
+            XCTAssertFalse(secondEditor.hasUnsettledEditorEdits)
+            exporter.deactivate()
+            secondEditor.deactivate()
+        }
+    }
+
     func testCollisionRequiresChoiceAndKeepBothPreservesReviewedOccupant() async throws {
         try await withTemporaryDirectory { directory in
             let destination = directory.appendingPathComponent("Draft.html")
@@ -121,6 +208,52 @@ final class ExportPresentationTests: XCTestCase {
             let copy = directory.appendingPathComponent("Draft (2).html")
             XCTAssertEqual(presentation.completedReceipt?.destinationURL, copy)
             XCTAssertTrue(try String(contentsOf: copy).contains("<h1>Clio</h1>"))
+        }
+    }
+
+    func testCancelledPageSetupCannotRestoreOptionsAfterTabChange() async throws {
+        let panel = FakeExportPanelPresenter(destination: nil)
+        panel.suspendPageSetup = true
+        let presentation = makePresentation(panel: panel)
+        let window = NSWindow()
+        presentation.attach(
+            snapshotProvider: { self.snapshot(source: "text", filename: "Text.md") },
+            sourceURLProvider: { nil },
+            sourceFilenameProvider: { "Text.md" },
+            windowProvider: { window }
+        )
+        presentation.requestExport()
+        presentation.presentPageSetup()
+        try await waitUntil { panel.pageSetupContinuation != nil }
+        presentation.cancel()
+        panel.pageSetupContinuation?.resume(returning: nil)
+        panel.pageSetupContinuation = nil
+        await Task.yield()
+        XCTAssertFalse(presentation.isOptionsPresented)
+        XCTAssertFalse(presentation.isExporting)
+    }
+
+    func testCancelledSnapshotCannotStartExportAfterTabChange() async throws {
+        try await withTemporaryDirectory { directory in
+            let destination = directory.appendingPathComponent("cancelled.html")
+            let panel = FakeExportPanelPresenter(destination: destination)
+            let presentation = makePresentation(panel: panel)
+            let window = NSWindow()
+            var continuation: CheckedContinuation<DocumentTextSnapshot, Never>?
+            presentation.attach(
+                snapshotProvider: { await withCheckedContinuation { continuation = $0 } },
+                sourceURLProvider: { nil },
+                sourceFilenameProvider: { "Text.md" },
+                windowProvider: { window }
+            )
+            presentation.requestExport(as: .html)
+            try await waitUntil { continuation != nil }
+            presentation.cancel()
+            continuation?.resume(returning: snapshot(source: "old tab", filename: "Text.md"))
+            await Task.yield()
+            XCTAssertFalse(presentation.isExporting)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertNil(presentation.completedReceipt)
         }
     }
 
@@ -170,6 +303,8 @@ private final class FakeExportPanelPresenter: ExportPanelPresenting {
     private(set) var configurations: [ExportSavePanelConfiguration] = []
     private(set) var initialDirectories: [URL?] = []
     private(set) var pageSetupRequests = 0
+    var suspendPageSetup = false
+    var pageSetupContinuation: CheckedContinuation<PDFPrintSettings?, Never>?
 
     init(destination: URL?, pageSettings: PDFPrintSettings? = nil) {
         self.destination = destination
@@ -191,6 +326,9 @@ private final class FakeExportPanelPresenter: ExportPanelPresenting {
         on _: NSWindow
     ) async -> PDFPrintSettings? {
         pageSetupRequests += 1
+        if suspendPageSetup {
+            return await withCheckedContinuation { pageSetupContinuation = $0 }
+        }
         return pageSettings
     }
 }

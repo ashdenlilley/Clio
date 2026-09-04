@@ -159,14 +159,15 @@ struct DocumentTextSnapshot: Sendable {
         generation: BufferGeneration,
         filename: String,
         source: String,
-        sourceFingerprint: String
+        sourceFingerprint: String,
+        utf8ByteCount: Int? = nil
     ) {
         self.documentID = documentID
         self.generation = generation
         self.filename = filename
         self.source = source
         self.sourceFingerprint = sourceFingerprint
-        sizeMode = .mode(forUTF8ByteCount: source.utf8.count)
+        sizeMode = .mode(forUTF8ByteCount: utf8ByteCount ?? source.utf8.count)
     }
 }
 

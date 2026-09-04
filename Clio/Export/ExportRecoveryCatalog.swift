@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -18,11 +19,18 @@ protocol ExportRecoveryCataloging: AnyObject, Sendable {
     func recoveryStrategy(for destinationURL: URL) async -> ExportRecoveryStrategy
 }
 
+protocol ExportTransactionRecoveryCataloging: AnyObject, Sendable {
+    func interruptedExports() async throws -> [ExportRecoveryItem]
+    func reveal(_ item: ExportRecoveryItem) async throws
+    func discard(_ item: ExportRecoveryItem) async throws
+}
+
 /// Export destinations may sit outside every searchable workspace. This
 /// app-owned catalog retains only their parent grants, allowing startup to
 /// recover crash-safe atomic transactions without broadly scanning the user's
 /// filesystem or treating export folders as writing workspaces.
-final class ExportRecoveryCatalog: ExportRecoveryCataloging, @unchecked Sendable {
+final class ExportRecoveryCatalog: ExportRecoveryCataloging,
+    ExportTransactionRecoveryCataloging, @unchecked Sendable {
     typealias BookmarkMaker = @Sendable (URL) throws -> Data
     typealias BookmarkResolver = @Sendable (Data) throws -> Workspace.BookmarkResolution
 
@@ -48,6 +56,7 @@ final class ExportRecoveryCatalog: ExportRecoveryCataloging, @unchecked Sendable
     private let fileManager: FileManager
     private let bookmarkMaker: BookmarkMaker
     private let bookmarkResolver: BookmarkResolver
+    private let now: @Sendable () -> Date
     private let queue = DispatchQueue(
         label: "olympus.clio.export-recovery",
         qos: .utility
@@ -61,12 +70,14 @@ final class ExportRecoveryCatalog: ExportRecoveryCataloging, @unchecked Sendable
         },
         bookmarkResolver: @escaping BookmarkResolver = {
             try Workspace.resolveSecurityScopedBookmark($0)
-        }
+        },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.rootURL = rootURL.standardizedFileURL
         self.fileManager = fileManager
         self.bookmarkMaker = bookmarkMaker
         self.bookmarkResolver = bookmarkResolver
+        self.now = now
     }
 
     func remember(destinationDirectory: URL) throws {
@@ -114,59 +125,232 @@ final class ExportRecoveryCatalog: ExportRecoveryCataloging, @unchecked Sendable
 
     /// Performs exact-directory scans. Workspace recovery remains recursive;
     /// export recovery inspects only manifests immediately beside destinations
-    /// that were actually selected in NSSavePanel.
-    @discardableResult
-    func recoverInterruptedExports(
-        journal: CrashRecoveryJournal
-    ) throws -> Int {
-        try queue.sync {
-            let catalog = try load()
-            var recovered = 0
-            var refreshedEntries: [Entry] = []
-            refreshedEntries.reserveCapacity(catalog.entries.count)
+    /// that were actually selected in NSSavePanel. Derived bytes remain in
+    /// their bounded files instead of entering the Markdown recovery journal.
+    func interruptedExports() async throws -> [ExportRecoveryItem] {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .utility) { [self] in
+            try interruptedExportsSynchronously()
+        }
+        return try await withTaskCancellationHandler {
+            let value = try await worker.value
+            try Task.checkCancellation()
+            return value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
 
-            for entry in catalog.entries {
-                do {
-                    let resolution = try bookmarkResolver(entry.bookmark)
-                    let didStart = resolution.url.startAccessingSecurityScopedResource()
-                    defer {
-                        if didStart {
-                            resolution.url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-                    recovered += try AtomicWriteTransactions
-                        .recoverInterruptedTransactions(
-                            in: resolution.url,
-                            journal: journal,
-                            recursively: false
-                        )
-                    let refreshedBookmark = resolution.isStale
-                        ? try bookmarkMaker(resolution.url)
-                        : entry.bookmark
-                    refreshedEntries.append(Entry(
-                        directoryURL: resolution.url,
-                        bookmark: refreshedBookmark,
-                        lastUsedAt: entry.lastUsedAt
-                    ))
-                } catch {
-                    // Keep disconnected volumes and temporarily revoked roots
-                    // in the bounded catalog so a later launch can retry.
-                    refreshedEntries.append(entry)
+    func reveal(_ item: ExportRecoveryItem) async throws {
+        let resolved = try await Task.detached(priority: .utility) { [self] in
+            try resolveArtifact(item)
+        }.value
+        defer {
+            if resolved.didStartAccess {
+                resolved.accessURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        await MainActor.run {
+            NSWorkspace.shared.activateFileViewerSelecting([
+                resolved.artifact.contentURL
+            ])
+        }
+    }
+
+    func discard(_ item: ExportRecoveryItem) async throws {
+        try await Task.detached(priority: .utility) { [self] in
+            let resolved = try resolveArtifact(item)
+            defer {
+                if resolved.didStartAccess {
+                    resolved.accessURL.stopAccessingSecurityScopedResource()
                 }
             }
-
-            if refreshedEntries != catalog.entries {
-                try persist(Catalog(
-                    schemaVersion: Catalog.schemaVersion,
-                    entries: refreshedEntries
-                ))
-            }
-            return recovered
-        }
+            try AtomicWriteTransactions.discardInterruptedExportArtifact(
+                resolved.artifact,
+                in: resolved.accessURL
+            )
+        }.value
     }
 }
 
 private extension ExportRecoveryCatalog {
+    struct ResolvedArtifact: Sendable {
+        let artifact: AtomicExportRecoveryArtifact
+        let accessURL: URL
+        let didStartAccess: Bool
+    }
+
+    func interruptedExportsSynchronously() throws -> [ExportRecoveryItem] {
+        let entries = try queue.sync { try load().entries }
+        var recovered: [ExportRecoveryItem] = []
+        var inspectedDirectories = Set<URL>()
+
+        for entry in entries {
+            try Task.checkCancellation()
+            do {
+                let resolution = try bookmarkResolver(entry.bookmark)
+                let resolvedDirectory = resolution.url.standardizedFileURL
+                    .resolvingSymlinksInPath()
+                guard inspectedDirectories.insert(resolvedDirectory).inserted else {
+                    if resolution.isStale {
+                        try remember(destinationDirectory: resolution.url)
+                    }
+                    continue
+                }
+                let didStart = resolution.url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStart {
+                        resolution.url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                let inspection = try AtomicWriteTransactions
+                    .inspectInterruptedExportTransactions(in: resolution.url)
+                for manifestURL in inspection.manifestOnlyTransactions {
+                    try AtomicWriteTransactions.discardManifestOnlyTransaction(
+                        at: manifestURL,
+                        in: resolution.url
+                    )
+                }
+                let expirationDate = now().addingTimeInterval(
+                    -RecoveryStore.retention
+                )
+                for artifact in inspection.artifacts {
+                    if artifact.createdAt < expirationDate {
+                        try AtomicWriteTransactions
+                            .discardInterruptedExportArtifact(
+                                artifact,
+                                in: resolution.url
+                            )
+                    } else if let item = recoveryItem(
+                        from: artifact,
+                        directoryURL: resolution.url
+                    ) {
+                        recovered.append(item)
+                    }
+                }
+                if resolution.isStale {
+                    try remember(destinationDirectory: resolution.url)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Keep disconnected volumes and temporarily revoked roots in
+                // the bounded catalog so a later launch can retry.
+            }
+        }
+        return recovered.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    func resolveArtifact(_ item: ExportRecoveryItem) throws -> ResolvedArtifact {
+        guard case .rememberedDirectory(
+            let directoryURL,
+            let storedManifestURL
+        ) = item.storage else {
+            throw DocumentRevisionReader.RevisionError.changedWhileReading(
+                item.candidateURL
+            )
+        }
+        let storedDirectory = directoryURL.standardizedFileURL
+        guard storedManifestURL.deletingLastPathComponent().standardizedFileURL
+                == storedDirectory,
+              item.candidateURL.deletingLastPathComponent().standardizedFileURL
+                == storedDirectory,
+              item.intendedDestinationURL.deletingLastPathComponent().standardizedFileURL
+                == storedDirectory else {
+            throw DocumentRevisionReader.RevisionError.changedWhileReading(
+                item.candidateURL
+            )
+        }
+        let entry = try queue.sync {
+            try load().entries.first {
+                $0.directoryURL.standardizedFileURL == storedDirectory
+            }
+        }
+        guard let entry else {
+            throw Workspace.WorkspaceError.securityScopedAccessDenied(directoryURL)
+        }
+        let resolution = try bookmarkResolver(entry.bookmark)
+        let accessURL = resolution.url.standardizedFileURL
+        let didStartAccess = accessURL.startAccessingSecurityScopedResource()
+        do {
+            let expectedManifestURL = accessURL.appendingPathComponent(
+                storedManifestURL.lastPathComponent,
+                isDirectory: false
+            ).standardizedFileURL
+            let expectedContentURL = accessURL.appendingPathComponent(
+                item.candidateURL.lastPathComponent,
+                isDirectory: false
+            ).standardizedFileURL
+            let expectedDestinationURL = accessURL.appendingPathComponent(
+                item.intendedDestinationURL.lastPathComponent,
+                isDirectory: false
+            ).standardizedFileURL
+            let inspection = try AtomicWriteTransactions
+                .inspectInterruptedExportTransactions(in: accessURL)
+            guard let artifact = inspection.artifacts.first(where: {
+                $0.id == item.id
+                    && $0.byteCount == item.byteCount
+                    && $0.contentDigest == item.contentDigest
+                    && recoveryKind(from: $0.kind) == item.kind
+                    && $0.manifestURL.standardizedFileURL == expectedManifestURL
+                    && $0.contentURL.standardizedFileURL == expectedContentURL
+                    && $0.destinationURL.standardizedFileURL
+                        == expectedDestinationURL
+            }) else {
+                throw DocumentRevisionReader.RevisionError.changedWhileReading(
+                    item.candidateURL
+                )
+            }
+            return ResolvedArtifact(
+                artifact: artifact,
+                accessURL: accessURL,
+                didStartAccess: didStartAccess
+            )
+        } catch {
+            if didStartAccess { accessURL.stopAccessingSecurityScopedResource() }
+            throw error
+        }
+    }
+
+    func recoveryItem(
+        from artifact: AtomicExportRecoveryArtifact,
+        directoryURL: URL
+    ) -> ExportRecoveryItem? {
+        guard let format = ExportFormat(
+            rawValue: artifact.destinationURL.pathExtension.lowercased()
+        ) else { return nil }
+        return ExportRecoveryItem(
+            id: artifact.id,
+            kind: recoveryKind(from: artifact.kind),
+            format: format,
+            candidateURL: artifact.contentURL,
+            intendedDestinationURL: artifact.destinationURL,
+            byteCount: artifact.byteCount,
+            contentDigest: artifact.contentDigest,
+            documentID: DocumentID(rawValue: artifact.id),
+            generation: BufferGeneration(bufferID: artifact.id, revision: 0),
+            sourceFingerprint: artifact.contentDigest,
+            createdAt: artifact.createdAt,
+            storage: .rememberedDirectory(
+                directoryURL: directoryURL.standardizedFileURL,
+                manifestURL: artifact.manifestURL
+            )
+        )
+    }
+
+    func recoveryKind(
+        from kind: AtomicExportRecoveryArtifactKind
+    ) -> ExportRecoveryKind {
+        switch kind {
+        case .renderedCandidate: .renderedCandidate
+        case .displacedDestination: .displacedDestination
+        case .completedDestination: .completedDestination
+        }
+    }
+
     static var defaultRootURL: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,

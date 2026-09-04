@@ -7,20 +7,50 @@ struct ExportRecoveryCheckpoint: Sendable, Equatable {
     let candidateURL: URL
 }
 
+enum ExportRecoveryKind: Sendable, Equatable {
+    case renderedCandidate
+    case displacedDestination
+    case completedDestination
+}
+
+enum ExportRecoveryStorage: Sendable, Equatable {
+    case appContainer(manifestURL: URL)
+    case rememberedDirectory(directoryURL: URL, manifestURL: URL)
+}
+
+/// A validated, file-backed derived export left by an interrupted save. The
+/// rendered bytes stay in Clio's container; unlike canonical Markdown crash
+/// buffers, they are never copied into the in-memory recovery journal.
+struct ExportRecoveryItem: Sendable, Equatable, Identifiable {
+    let id: UUID
+    let kind: ExportRecoveryKind
+    let format: ExportFormat
+    let candidateURL: URL
+    let intendedDestinationURL: URL
+    let byteCount: Int64
+    let contentDigest: String
+    let documentID: DocumentID
+    let generation: BufferGeneration
+    let sourceFingerprint: String
+    let createdAt: Date
+    let storage: ExportRecoveryStorage
+
+    var filename: String { intendedDestinationURL.lastPathComponent }
+}
+
 protocol ExportRecoveryCheckpointing: Sendable {
     func checkpoint(_ staged: StagedDocumentExport) async throws
         -> ExportRecoveryCheckpoint
     func complete(_ checkpoint: ExportRecoveryCheckpoint) async throws
-    func recoverInterruptedCheckpoints(
-        journal: CrashRecoveryJournal
-    ) async throws -> Int
+    func interruptedCheckpoints() async throws -> [ExportRecoveryItem]
+    func discard(_ item: ExportRecoveryItem) async throws
 }
 
 /// File-only Powerbox grants cannot safely be widened to a destination folder.
 /// This store clones a bounded rendered artifact into Clio's container and
 /// publishes a tiny append-only manifest before the destination is touched.
 /// Normal completion removes both; a process crash leaves the derived export
-/// available to the existing seven-day recovery flow.
+/// available here for seven days without ever materializing the whole artifact.
 actor ExportRecoveryCheckpointStore: ExportRecoveryCheckpointing {
     static let shared = ExportRecoveryCheckpointStore(rootURL: defaultRootURL)
 
@@ -48,10 +78,16 @@ actor ExportRecoveryCheckpointStore: ExportRecoveryCheckpointing {
 
     nonisolated let rootURL: URL
     private let fileManager: FileManager
+    private let now: @Sendable () -> Date
 
-    init(rootURL: URL, fileManager: FileManager = .default) {
+    init(
+        rootURL: URL,
+        fileManager: FileManager = .default,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.rootURL = rootURL.standardizedFileURL
         self.fileManager = fileManager
+        self.now = now
     }
 
     func checkpoint(
@@ -99,7 +135,7 @@ actor ExportRecoveryCheckpointStore: ExportRecoveryCheckpointing {
                 documentID: staged.documentID,
                 generation: staged.generation,
                 sourceFingerprint: staged.sourceFingerprint,
-                createdAt: Date()
+                createdAt: now()
             )
             let encoder = PropertyListEncoder()
             encoder.outputFormat = .binary
@@ -130,22 +166,19 @@ actor ExportRecoveryCheckpointStore: ExportRecoveryCheckpointing {
         guard checkpoint.manifestURL.deletingLastPathComponent().standardizedFileURL == rootURL,
               checkpoint.candidateURL.deletingLastPathComponent().standardizedFileURL == rootURL
         else { return }
-        if fileManager.fileExists(atPath: checkpoint.manifestURL.path) {
-            try fileManager.removeItem(at: checkpoint.manifestURL)
-            try syncDirectory(rootURL)
-        }
         if fileManager.fileExists(atPath: checkpoint.candidateURL.path) {
             try fileManager.removeItem(at: checkpoint.candidateURL)
             try syncDirectory(rootURL)
         }
+        if fileManager.fileExists(atPath: checkpoint.manifestURL.path) {
+            try fileManager.removeItem(at: checkpoint.manifestURL)
+            try syncDirectory(rootURL)
+        }
     }
 
-    @discardableResult
-    func recoverInterruptedCheckpoints(
-        journal: CrashRecoveryJournal
-    ) throws -> Int {
-        guard fileManager.fileExists(atPath: rootURL.path) else { return 0 }
-        let urls = try fileManager.contentsOfDirectory(
+    func interruptedCheckpoints() throws -> [ExportRecoveryItem] {
+        guard fileManager.fileExists(atPath: rootURL.path) else { return [] }
+        var urls = try fileManager.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: [
                 .isRegularFileKey,
@@ -153,35 +186,92 @@ actor ExportRecoveryCheckpointStore: ExportRecoveryCheckpointing {
                 .fileSizeKey,
             ]
         )
-        var recovered = 0
+        var promotedURLs: [URL] = []
+        for pendingURL in urls where isPendingManifestName(
+            pendingURL.lastPathComponent
+        ) {
+            try Task.checkCancellation()
+            guard let manifest = validManifest(at: pendingURL) else { continue }
+            let checkpoint = makeCheckpoint(id: manifest.id, format: manifest.format)
+            guard pendingURL.lastPathComponent
+                    == ".\(Self.manifestPrefix)\(manifest.id.uuidString.lowercased()).pending",
+                  checkpoint.candidateURL.lastPathComponent
+                    == manifest.candidateFilename,
+                  fileManager.fileExists(atPath: checkpoint.candidateURL.path)
+            else { continue }
+            let result = pendingURL.withUnsafeFileSystemRepresentation { source in
+                checkpoint.manifestURL.withUnsafeFileSystemRepresentation { destination in
+                    renamex_np(source, destination, UInt32(RENAME_EXCL))
+                }
+            }
+            if result == 0 {
+                try syncDirectory(rootURL)
+                promotedURLs.append(checkpoint.manifestURL)
+            }
+        }
+        urls.append(contentsOf: promotedURLs)
+        let expirationDate = now().addingTimeInterval(-RecoveryStore.retention)
+        var recovered: [ExportRecoveryItem] = []
         for manifestURL in urls where isManifestName(manifestURL.lastPathComponent) {
             try Task.checkCancellation()
             guard let manifest = validManifest(at: manifestURL) else { continue }
             let checkpoint = makeCheckpoint(id: manifest.id, format: manifest.format)
             guard checkpoint.manifestURL == manifestURL.standardizedFileURL,
                   checkpoint.candidateURL.lastPathComponent == manifest.candidateFilename,
-                  let snapshot = try? DocumentRevisionReader.snapshot(
+                  let revision = try? DocumentRevisionReader.revision(
                     at: checkpoint.candidateURL,
                     maximumByteCount: AtomicWriteTransactions.maximumRecoverableByteCount
                   ),
-                  snapshot.revision.byteCount == manifest.byteCount,
-                  snapshot.revision.contentDigest == manifest.digest else {
+                  revision.byteCount == manifest.byteCount,
+                  revision.byteCount <= AtomicWriteTransactions.maximumRecoverableByteCount,
+                  revision.contentDigest == manifest.digest else {
                 continue
             }
-            _ = try journal.checkpoint(CrashRecoveryRecord(
+            if manifest.createdAt < expirationDate {
+                try complete(checkpoint)
+                continue
+            }
+            recovered.append(ExportRecoveryItem(
                 id: manifest.id,
+                kind: .renderedCandidate,
+                format: manifest.format,
+                candidateURL: checkpoint.candidateURL,
+                intendedDestinationURL: manifest.destinationURL,
+                byteCount: manifest.byteCount,
+                contentDigest: manifest.digest,
                 documentID: manifest.documentID,
                 generation: manifest.generation,
-                filename: manifest.destinationURL.lastPathComponent,
-                targetURL: manifest.destinationURL,
-                reason: .atomicCandidate,
+                sourceFingerprint: manifest.sourceFingerprint,
                 createdAt: manifest.createdAt,
-                data: snapshot.data
+                storage: .appContainer(manifestURL: checkpoint.manifestURL)
             ))
-            try complete(checkpoint)
-            recovered += 1
         }
-        return recovered
+        return recovered.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    func discard(_ item: ExportRecoveryItem) throws {
+        guard case .appContainer(let manifestURL) = item.storage else { return }
+        let checkpoint = makeCheckpoint(id: item.id, format: item.format)
+        guard checkpoint.manifestURL == manifestURL.standardizedFileURL,
+              checkpoint.candidateURL == item.candidateURL.standardizedFileURL,
+              let manifest = validManifest(at: checkpoint.manifestURL),
+              manifest.id == item.id,
+              manifest.digest == item.contentDigest,
+              manifest.byteCount == item.byteCount,
+              let revision = try? DocumentRevisionReader.revision(
+                at: checkpoint.candidateURL,
+                maximumByteCount: AtomicWriteTransactions.maximumRecoverableByteCount
+              ),
+              revision.byteCount == item.byteCount,
+              revision.contentDigest == item.contentDigest else {
+            throw DocumentRevisionReader.RevisionError.changedWhileReading(
+                item.candidateURL
+            )
+        }
+        try complete(checkpoint)
     }
 }
 
@@ -252,6 +342,15 @@ private extension ExportRecoveryCheckpointStore {
         let identifier = name
             .dropFirst(Self.manifestPrefix.count)
             .dropLast(Self.manifestSuffix.count)
+        return UUID(uuidString: String(identifier)) != nil
+    }
+
+    func isPendingManifestName(_ name: String) -> Bool {
+        guard name.hasPrefix(".\(Self.manifestPrefix)"),
+              name.hasSuffix(".pending") else { return false }
+        let identifier = name
+            .dropFirst(Self.manifestPrefix.count + 1)
+            .dropLast(".pending".count)
         return UUID(uuidString: String(identifier)) != nil
     }
 

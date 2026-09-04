@@ -316,6 +316,7 @@ final class DocumentExportPresentation {
     }
 
     func requestExport(arguments: [String] = []) {
+        guard !isExporting else { return }
         do {
             if let format = try ExportCommandRoute.format(for: arguments) {
                 requestExport(as: format)
@@ -374,6 +375,7 @@ final class DocumentExportPresentation {
                     current: printSettingsStore.settings,
                     on: window
                   )
+            guard !Task.isCancelled else { return }
             if let settings {
                 do {
                     try printSettingsStore.update(settings)
@@ -413,6 +415,10 @@ final class DocumentExportPresentation {
         operationTask = nil
         coordinator.cancel()
         isExporting = false
+        isOptionsPresented = false
+        pendingCollision = nil
+        retryRequest = nil
+        failure = nil
     }
 
     func dismissFailure() {
@@ -464,6 +470,7 @@ private extension DocumentExportPresentation {
                 let recoveryStrategy = await recoveryCatalog.recoveryStrategy(
                     for: destination
                 )
+                try Task.checkCancellation()
                 guard let snapshotProvider else {
                     throw ExportPresentationError.noDocument
                 }
@@ -471,6 +478,7 @@ private extension DocumentExportPresentation {
                 // The batched editor implementation settles queued TextKit
                 // deltas here before creating the immutable generation.
                 let snapshot = try await snapshotProvider()
+                try Task.checkCancellation()
                 let request = ExportRequest(
                     format: format,
                     snapshot: snapshot,
@@ -482,6 +490,7 @@ private extension DocumentExportPresentation {
             } catch is CancellationError {
                 return
             } catch {
+                guard !Task.isCancelled else { return }
                 failure = ExportFailureMapper.failure(for: error)
             }
         }
@@ -514,8 +523,10 @@ private extension DocumentExportPresentation {
                 retryRequest = nil
                 completedReceipt = receipt
             } catch is CancellationError {
+                guard !Task.isCancelled else { return }
                 isExporting = false
             } catch let error as DocumentExportError {
+                guard !Task.isCancelled else { return }
                 isExporting = false
                 if let collision = error.retryCollision {
                     pendingCollision = collision
@@ -530,6 +541,7 @@ private extension DocumentExportPresentation {
                     failure = ExportFailureMapper.failure(for: error)
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 isExporting = false
                 failure = ExportFailureMapper.failure(for: error)
             }
@@ -755,23 +767,30 @@ private extension PDFPrintSettings {
 }
 
 extension EditorSession {
-    /// Export owns one immutable document generation. In the immediate editor
-    /// this is already canonical; the batched editor replaces this method's
-    /// body with `settlePendingEditorEdits()` before taking the same snapshot.
+    /// Export owns one immutable document generation. Crossing the editor's
+    /// settled-snapshot boundary guarantees that every TextKit delta accepted
+    /// before this call is reflected before parsing or rendering begins.
     func snapshotForExport() async throws -> DocumentTextSnapshot {
-        guard let document else { throw ExportPresentationError.noDocument }
-        let snapshot = document.snapshot()
-        return DocumentTextSnapshot(
-            documentID: snapshot.documentID,
-            generation: BufferGeneration(
-                bufferID: snapshot.documentID.rawValue,
-                revision: snapshot.revision
-            ),
-            filename: snapshot.preferredFilename,
-            source: snapshot.text,
-            sourceFingerprint: try StableSourceFingerprint.makeCheckingCancellation(
-                snapshot.text
+        guard let snapshot = try await settledDocumentSnapshot() else {
+            throw ExportPresentationError.noDocument
+        }
+        return try await MarkdownBackgroundWork.run { cancellation in
+            let fingerprint = try StableSourceFingerprint.makeCheckingCancellation(
+                snapshot.text,
+                cancellation: cancellation
             )
-        )
+            try cancellation.check()
+            return DocumentTextSnapshot(
+                documentID: snapshot.documentID,
+                generation: BufferGeneration(
+                    bufferID: snapshot.documentID.rawValue,
+                    revision: snapshot.revision
+                ),
+                filename: snapshot.preferredFilename,
+                source: snapshot.text,
+                sourceFingerprint: fingerprint,
+                utf8ByteCount: snapshot.utf8ByteCount
+            )
+        }
     }
 }

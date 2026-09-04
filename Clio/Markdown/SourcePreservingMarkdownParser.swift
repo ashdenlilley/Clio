@@ -27,7 +27,10 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         }
     }
 
-    static func reducedHighlightingSpans(in source: String) throws -> [MarkdownSpan] {
+    static func reducedHighlightingSpans(
+        in source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) throws -> [MarkdownSpan] {
         let text = source as NSString
         let cap = min(text.length, reducedHighlightUTF16Limit)
         let composedCap = cap < text.length
@@ -39,7 +42,8 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         var parser = MarkdownPresentationLexer(
             source: text.substring(to: min(prefixEnd, text.length)),
             mode: .reduced,
-            spanLimit: reducedHighlightUTF16Limit
+            spanLimit: reducedHighlightUTF16Limit,
+            cancellation: cancellation
         )
         return try parser.parse().spans.filter {
             !semanticDelimiterKinds.contains($0.kind)
@@ -161,7 +165,10 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         }
 
         try cancellation.check()
-        let visibleSpans = try reducedHighlightingSpans(in: snapshot.source)
+        let visibleSpans = try reducedHighlightingSpans(
+            in: snapshot.source,
+            cancellation: cancellation
+        )
         try cancellation.check()
         let extensionBlocks = try MarkdownExtensionModelScanner(
             snapshot.source,
@@ -643,7 +650,8 @@ private struct MarkdownPresentationLexer {
                 result.spans.append(contentsOf: try MarkdownCodeTokenizer.spans(
                     in: map.substring(bodyRange),
                     offset: bodyRange.location,
-                    language: language
+                    language: language,
+                    cancellation: cancellation
                 ))
             }
         }
