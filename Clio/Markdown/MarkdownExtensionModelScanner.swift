@@ -5,9 +5,14 @@ import Foundation
 /// footnote near the end of a 10–50 MiB document remains exportable.
 struct MarkdownExtensionModelScanner {
     private let source: NSString
+    private let cancellation: MarkdownBackgroundWork.CancellationProbe?
 
-    init(_ source: String) {
+    init(
+        _ source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) {
         self.source = source as NSString
+        self.cancellation = cancellation
     }
 
     func scan() throws -> [MarkdownBlock] {
@@ -20,7 +25,10 @@ struct MarkdownExtensionModelScanner {
         }
         var lineCount = 0
         while cursor < source.length {
-            if lineCount.isMultiple(of: 256) { try Task.checkCancellation() }
+            if lineCount.isMultiple(of: 256) {
+                try Task.checkCancellation()
+                try cancellation?.check()
+            }
             let line = lineRange(at: cursor)
             if let definition = footnote(at: line) {
                 blocks.append(definition.block)
@@ -43,7 +51,10 @@ struct MarkdownExtensionModelScanner {
         var cursor = NSMaxRange(first)
         var lineCount = 0
         while cursor < source.length {
-            if lineCount.isMultiple(of: 256) { try Task.checkCancellation() }
+            if lineCount.isMultiple(of: 256) {
+                try Task.checkCancellation()
+                try cancellation?.check()
+            }
             let line = lineRange(at: cursor)
             if equalsTrimmed(line, "---") || equalsTrimmed(line, "...") {
                 let range = NSRange(location: 0, length: NSMaxRange(line))

@@ -2,11 +2,14 @@ import Foundation
 
 enum MarkdownParserError: LocalizedError, Equatable {
     case sourceExceedsSafeLimit(Int)
+    case semanticComplexityExceeded(Int)
 
     var errorDescription: String? {
         switch self {
         case .sourceExceedsSafeLimit(let bytes):
             return "This document is \(bytes) bytes; Clio safely supports files through 50 MiB."
+        case .semanticComplexityExceeded(let limit):
+            return "This document contains more than \(limit.formatted()) Markdown elements. Clio stopped parsing it safely before memory use became unbounded."
         }
     }
 }
@@ -15,62 +18,13 @@ enum MarkdownParserError: LocalizedError, Equatable {
 /// semantic parser and Clio's marker-aware presentation lexer.
 struct SourcePreservingMarkdownParser: MarkdownParsing {
     static let reducedHighlightUTF16Limit = 1_048_576
+    static let safeSemanticChunkUTF16Limit = 512 * 1_024
+    static let safeSemanticElementLimit = 100_000
 
     func parse(_ snapshot: DocumentTextSnapshot) async throws -> ParsedMarkdown {
-        try Task.checkCancellation()
-        guard snapshot.sizeMode != .unsupported else {
-            throw MarkdownParserError.sourceExceedsSafeLimit(snapshot.source.utf8.count)
+        try await MarkdownBackgroundWork.run { cancellation in
+            try Self.parseSynchronously(snapshot, cancellation: cancellation)
         }
-
-        let semantics = try SwiftMarkdownSemanticParser(source: snapshot.source).parse()
-        try Task.checkCancellation()
-
-        if snapshot.sizeMode == .safeLargeFile {
-            let visibleSpans = try Self.reducedHighlightingSpans(in: snapshot.source)
-            let boundedSemanticSpans = semantics.spans.filter {
-                $0.range.upperBound <= Self.reducedHighlightUTF16Limit
-            }
-            let extensionBlocks = try MarkdownExtensionModelScanner(snapshot.source).scan()
-            let diagnostic = MarkdownDiagnostic(
-                severity: .note,
-                message: "Reduced highlighting is active for this large document.",
-                range: nil
-            )
-            return ParsedMarkdown(
-                documentID: snapshot.documentID,
-                generation: snapshot.generation,
-                sourceFingerprint: snapshot.sourceFingerprint,
-                sizeMode: snapshot.sizeMode,
-                document: MarkdownDocumentModel(blocks: Self.applyingExtensions(
-                    extensionBlocks,
-                    to: semantics.blocks
-                )),
-                spans: Self.normalizedSpans(visibleSpans + boundedSemanticSpans),
-                diagnostics: [diagnostic]
-            )
-        }
-
-        var parser = MarkdownPresentationLexer(
-            source: snapshot.source,
-            mode: MarkdownHighlightingMode(sizeMode: snapshot.sizeMode)
-        )
-        let presentation = try parser.parse()
-        let blocks = Self.applyingExtensions(
-            presentation.extensionBlocks,
-            to: semantics.blocks
-        )
-        return ParsedMarkdown(
-            documentID: snapshot.documentID,
-            generation: snapshot.generation,
-            sourceFingerprint: snapshot.sourceFingerprint,
-            sizeMode: snapshot.sizeMode,
-            document: MarkdownDocumentModel(blocks: blocks),
-            spans: Self.normalizedSpans(
-                presentation.spans.filter { !Self.semanticDelimiterKinds.contains($0.kind) }
-                    + semantics.spans
-            ),
-            diagnostics: presentation.diagnostics
-        )
     }
 
     static func reducedHighlightingSpans(in source: String) throws -> [MarkdownSpan] {
@@ -98,13 +52,20 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
         documentID: DocumentID = DocumentID(),
         generation: BufferGeneration = BufferGeneration()
     ) async throws -> ParsedMarkdown {
-        try await Self().parse(DocumentTextSnapshot(
-            documentID: documentID,
-            generation: generation,
-            filename: filename,
-            source: source,
-            sourceFingerprint: try StableSourceFingerprint.makeCheckingCancellation(source)
-        ))
+        try await MarkdownBackgroundWork.run { cancellation in
+            let fingerprint = try StableSourceFingerprint.makeCheckingCancellation(
+                source,
+                cancellation: cancellation
+            )
+            let snapshot = DocumentTextSnapshot(
+                documentID: documentID,
+                generation: generation,
+                filename: filename,
+                source: source,
+                sourceFingerprint: fingerprint
+            )
+            return try parseSynchronously(snapshot, cancellation: cancellation)
+        }
     }
 
     static func spanOrder(_ lhs: MarkdownSpan, _ rhs: MarkdownSpan) -> Bool {
@@ -120,6 +81,140 @@ struct SourcePreservingMarkdownParser: MarkdownParsing {
     private static let semanticDelimiterKinds: Set<MarkdownSemanticKind> = [
         .emphasis, .strong, .strikethrough,
     ]
+
+    private static func parseSynchronously(
+        _ snapshot: DocumentTextSnapshot,
+        cancellation: MarkdownBackgroundWork.CancellationProbe
+    ) throws -> ParsedMarkdown {
+        try cancellation.check()
+        guard snapshot.sizeMode != .unsupported else {
+            throw MarkdownParserError.sourceExceedsSafeLimit(snapshot.source.utf8.count)
+        }
+
+        if snapshot.sizeMode == .safeLargeFile {
+            return try parseSafeLarge(snapshot, cancellation: cancellation)
+        }
+
+        let semantics = try SwiftMarkdownSemanticParser(
+            source: snapshot.source,
+            cancellation: cancellation
+        ).parse()
+        try cancellation.check()
+        var parser = MarkdownPresentationLexer(
+            source: snapshot.source,
+            mode: MarkdownHighlightingMode(sizeMode: snapshot.sizeMode),
+            cancellation: cancellation
+        )
+        let presentation = try parser.parse()
+        try cancellation.check()
+        let blocks = applyingExtensions(
+            presentation.extensionBlocks,
+            to: semantics.blocks
+        )
+        return ParsedMarkdown(
+            documentID: snapshot.documentID,
+            generation: snapshot.generation,
+            sourceFingerprint: snapshot.sourceFingerprint,
+            sizeMode: snapshot.sizeMode,
+            document: MarkdownDocumentModel(blocks: blocks),
+            spans: normalizedSpans(
+                presentation.spans.filter { !semanticDelimiterKinds.contains($0.kind) }
+                    + semantics.spans
+            ),
+            diagnostics: presentation.diagnostics
+        )
+    }
+
+    private static func parseSafeLarge(
+        _ snapshot: DocumentTextSnapshot,
+        cancellation: MarkdownBackgroundWork.CancellationProbe
+    ) throws -> ParsedMarkdown {
+        var semanticBlocks: [MarkdownBlock] = []
+        var boundedSemanticSpans: [MarkdownSpan] = []
+        var semanticElementCount = 0
+
+        for chunk in safeSemanticChunks(in: snapshot.source) {
+            try cancellation.check()
+            let local = try SwiftMarkdownSemanticParser(
+                source: chunk.source,
+                cancellation: cancellation
+            ).parse()
+            let shiftedBlocks = local.blocks.map { $0.offset(by: chunk.utf16Offset) }
+            semanticElementCount += shiftedBlocks.reduce(0) { $0 + $1.semanticElementCount }
+            semanticElementCount += local.spans.count
+            guard semanticElementCount <= safeSemanticElementLimit else {
+                throw MarkdownParserError.semanticComplexityExceeded(safeSemanticElementLimit)
+            }
+            semanticBlocks.append(contentsOf: shiftedBlocks)
+            if chunk.utf16Offset < reducedHighlightUTF16Limit {
+                boundedSemanticSpans.append(contentsOf: local.spans.lazy
+                    .map { $0.offset(by: chunk.utf16Offset) }
+                    .filter { $0.range.upperBound <= reducedHighlightUTF16Limit })
+            }
+        }
+
+        try cancellation.check()
+        let visibleSpans = try reducedHighlightingSpans(in: snapshot.source)
+        try cancellation.check()
+        let extensionBlocks = try MarkdownExtensionModelScanner(
+            snapshot.source,
+            cancellation: cancellation
+        ).scan()
+        let diagnostic = MarkdownDiagnostic(
+            severity: .note,
+            message: "Reduced highlighting and bounded semantic parsing are active for this large document.",
+            range: nil
+        )
+        return ParsedMarkdown(
+            documentID: snapshot.documentID,
+            generation: snapshot.generation,
+            sourceFingerprint: snapshot.sourceFingerprint,
+            sizeMode: snapshot.sizeMode,
+            document: MarkdownDocumentModel(blocks: applyingExtensions(
+                extensionBlocks,
+                to: semanticBlocks
+            )),
+            spans: normalizedSpans(visibleSpans + boundedSemanticSpans),
+            diagnostics: [diagnostic]
+        )
+    }
+
+    static func safeSemanticChunks(in source: String) -> [MarkdownSemanticChunk] {
+        let text = source as NSString
+        guard text.length > 0 else {
+            return [MarkdownSemanticChunk(source: "", utf16Offset: 0)]
+        }
+        var chunks: [MarkdownSemanticChunk] = []
+        chunks.reserveCapacity(max(1, text.length / safeSemanticChunkUTF16Limit + 1))
+        var location = 0
+        while location < text.length {
+            var end = min(text.length, location + safeSemanticChunkUTF16Limit)
+            if end < text.length {
+                end = text.rangeOfComposedCharacterSequence(at: end).location
+                let searchStart = max(location, end - 65_536)
+                let newline = text.range(
+                    of: "\n",
+                    options: .backwards,
+                    range: NSRange(location: searchStart, length: end - searchStart)
+                )
+                if newline.location != NSNotFound, NSMaxRange(newline) > location {
+                    end = NSMaxRange(newline)
+                }
+            }
+            if end <= location {
+                end = min(text.length, NSMaxRange(
+                    text.rangeOfComposedCharacterSequence(at: location)
+                ))
+            }
+            let range = NSRange(location: location, length: end - location)
+            chunks.append(MarkdownSemanticChunk(
+                source: text.substring(with: range),
+                utf16Offset: location
+            ))
+            location = end
+        }
+        return chunks
+    }
 
     /// Front matter and footnotes are intentional Clio extensions layered on
     /// top of CommonMark/GFM. Extension blocks replace native interpretations
@@ -157,7 +252,10 @@ enum StableSourceFingerprint {
         return String(value, radix: 16)
     }
 
-    static func makeCheckingCancellation(_ source: String) throws -> String {
+    static func makeCheckingCancellation(
+        _ source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) throws -> String {
         var value: UInt64 = 14_695_981_039_346_656_037
         var scanned = 0
         for byte in source.utf8 {
@@ -166,11 +264,173 @@ enum StableSourceFingerprint {
             scanned += 1
             if scanned == 65_536 {
                 try Task.checkCancellation()
+                try cancellation?.check()
                 scanned = 0
             }
         }
         try Task.checkCancellation()
+        try cancellation?.check()
         return String(value, radix: 16)
+    }
+}
+
+struct MarkdownSemanticChunk: Sendable {
+    let source: String
+    let utf16Offset: Int
+}
+
+private extension MarkdownSpan {
+    func offset(by amount: Int) -> Self {
+        Self(
+            kind: kind,
+            role: role,
+            range: range.offset(by: amount),
+            level: level
+        )
+    }
+}
+
+private extension MarkdownInline {
+    func offset(by amount: Int) -> Self {
+        switch self {
+        case .text(let value, let range):
+            return .text(value: value, range: range.offset(by: amount))
+        case .emphasis(let content, let range):
+            return .emphasis(content: content.map { $0.offset(by: amount) }, range: range.offset(by: amount))
+        case .strong(let content, let range):
+            return .strong(content: content.map { $0.offset(by: amount) }, range: range.offset(by: amount))
+        case .strikethrough(let content, let range):
+            return .strikethrough(content: content.map { $0.offset(by: amount) }, range: range.offset(by: amount))
+        case .code(let value, let range):
+            return .code(value: value, range: range.offset(by: amount))
+        case .link(let destination, let title, let content, let range):
+            return .link(
+                destination: destination,
+                title: title,
+                content: content.map { $0.offset(by: amount) },
+                range: range.offset(by: amount)
+            )
+        case .image(let source, let title, let alt, let range):
+            return .image(
+                source: source,
+                title: title,
+                alt: alt.map { $0.offset(by: amount) },
+                range: range.offset(by: amount)
+            )
+        case .autolink(let text, let destination, let range):
+            return .autolink(text: text, destination: destination, range: range.offset(by: amount))
+        case .footnoteReference(let label, let range):
+            return .footnoteReference(label: label, range: range.offset(by: amount))
+        case .softBreak(let range):
+            return .softBreak(range: range.offset(by: amount))
+        case .hardBreak(let range):
+            return .hardBreak(range: range.offset(by: amount))
+        case .rawHTML(let source, let range):
+            return .rawHTML(source: source, range: range.offset(by: amount))
+        }
+    }
+
+    var semanticElementCount: Int {
+        switch self {
+        case .emphasis(let children, _), .strong(let children, _),
+             .strikethrough(let children, _):
+            return 1 + children.reduce(0) { $0 + $1.semanticElementCount }
+        case .link(_, _, let children, _):
+            return 1 + children.reduce(0) { $0 + $1.semanticElementCount }
+        case .image(_, _, let children, _):
+            return 1 + children.reduce(0) { $0 + $1.semanticElementCount }
+        default:
+            return 1
+        }
+    }
+}
+
+private extension MarkdownBlock {
+    func offset(by amount: Int) -> Self {
+        switch self {
+        case .paragraph(let content, let range):
+            return .paragraph(content: content.map { $0.offset(by: amount) }, range: range.offset(by: amount))
+        case .heading(let level, let content, let range):
+            return .heading(
+                level: level,
+                content: content.map { $0.offset(by: amount) },
+                range: range.offset(by: amount)
+            )
+        case .blockquote(let blocks, let range):
+            return .blockquote(blocks: blocks.map { $0.offset(by: amount) }, range: range.offset(by: amount))
+        case .list(let list):
+            return .list(MarkdownList(
+                isOrdered: list.isOrdered,
+                start: list.start,
+                isTight: list.isTight,
+                items: list.items.map { item in
+                    MarkdownListItem(
+                        taskState: item.taskState,
+                        blocks: item.blocks.map { $0.offset(by: amount) },
+                        range: item.range.offset(by: amount)
+                    )
+                },
+                range: list.range.offset(by: amount)
+            ))
+        case .codeFence(let language, let source, let range):
+            return .codeFence(language: language, source: source, range: range.offset(by: amount))
+        case .table(let table):
+            return .table(MarkdownTable(
+                alignments: table.alignments,
+                header: table.header.map { cell in
+                    MarkdownTableCell(
+                        content: cell.content.map { $0.offset(by: amount) },
+                        range: cell.range.offset(by: amount)
+                    )
+                },
+                rows: table.rows.map { row in
+                    row.map { cell in
+                        MarkdownTableCell(
+                            content: cell.content.map { $0.offset(by: amount) },
+                            range: cell.range.offset(by: amount)
+                        )
+                    }
+                },
+                range: table.range.offset(by: amount)
+            ))
+        case .thematicBreak(let range):
+            return .thematicBreak(range: range.offset(by: amount))
+        case .frontMatter(let source, let range):
+            return .frontMatter(source: source, range: range.offset(by: amount))
+        case .footnoteDefinition(let label, let blocks, let range):
+            return .footnoteDefinition(
+                label: label,
+                blocks: blocks.map { $0.offset(by: amount) },
+                range: range.offset(by: amount)
+            )
+        case .rawHTML(let source, let range):
+            return .rawHTML(source: source, range: range.offset(by: amount))
+        }
+    }
+
+    var semanticElementCount: Int {
+        switch self {
+        case .paragraph(let content, _), .heading(_, let content, _):
+            return 1 + content.reduce(0) { $0 + $1.semanticElementCount }
+        case .blockquote(let blocks, _), .footnoteDefinition(_, let blocks, _):
+            return 1 + blocks.reduce(0) { $0 + $1.semanticElementCount }
+        case .list(let list):
+            return 1 + list.items.reduce(0) { total, item in
+                total + 1 + item.blocks.reduce(0) { $0 + $1.semanticElementCount }
+            }
+        case .table(let table):
+            return 1 + (table.header + table.rows.flatMap { $0 }).reduce(0) { total, cell in
+                total + 1 + cell.content.reduce(0) { $0 + $1.semanticElementCount }
+            }
+        default:
+            return 1
+        }
+    }
+}
+
+private extension UTF16Range {
+    func offset(by amount: Int) -> Self {
+        Self(location: location + amount, length: length)
     }
 }
 
@@ -207,19 +467,29 @@ private struct MarkdownPresentationLexer {
     private let map: MarkdownSource
     private let mode: MarkdownHighlightingMode
     private let spanLimit: Int?
+    private let cancellation: MarkdownBackgroundWork.CancellationProbe?
     private var result = MarkdownPresentationResult()
     private var lineIndex = 0
 
-    init(source: String, mode: MarkdownHighlightingMode, spanLimit: Int? = nil) {
+    init(
+        source: String,
+        mode: MarkdownHighlightingMode,
+        spanLimit: Int? = nil,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) {
         map = MarkdownSource(source)
         self.mode = mode
         self.spanLimit = spanLimit
+        self.cancellation = cancellation
     }
 
     mutating func parse() throws -> MarkdownPresentationResult {
         if parseFrontMatter() { lineIndex += 1 }
         while lineIndex < map.lines.count {
-            if lineIndex.isMultiple(of: 256) { try Task.checkCancellation() }
+            if lineIndex.isMultiple(of: 256) {
+                try Task.checkCancellation()
+                try cancellation?.check()
+            }
             if map.lines[lineIndex].isBlank {
                 lineIndex += 1
             } else if try parseFence() {
@@ -245,6 +515,7 @@ private struct MarkdownPresentationLexer {
             }
         }
         try Task.checkCancellation()
+        try cancellation?.check()
         return result
     }
 

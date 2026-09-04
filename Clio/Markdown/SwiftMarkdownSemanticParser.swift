@@ -12,16 +12,24 @@ struct SwiftMarkdownSemanticResult {
 struct SwiftMarkdownSemanticParser {
     private let source: String
     private let coordinates: SwiftMarkdownSourceCoordinates
+    private let cancellation: MarkdownBackgroundWork.CancellationProbe?
 
-    init(source: String) throws {
+    init(
+        source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) throws {
         self.source = source
-        coordinates = try SwiftMarkdownSourceCoordinates(source)
+        self.cancellation = cancellation
+        coordinates = try SwiftMarkdownSourceCoordinates(
+            source,
+            cancellation: cancellation
+        )
     }
 
     func parse() throws -> SwiftMarkdownSemanticResult {
-        try Task.checkCancellation()
+        try checkCancellation()
         let document = Markdown.Document(parsing: source, options: [.disableSmartOpts])
-        try Task.checkCancellation()
+        try checkCancellation()
         var spans: [MarkdownSpan] = []
         let blocks = try document.children.compactMap { child in
             try convertBlock(child, spans: &spans)
@@ -33,7 +41,7 @@ struct SwiftMarkdownSemanticParser {
         _ node: Markup,
         spans: inout [MarkdownSpan]
     ) throws -> MarkdownBlock? {
-        try Task.checkCancellation()
+        try checkCancellation()
         let nodeRange = range(of: node)
         if let heading = node as? Markdown.Heading {
             add(.heading, .content, contentRange(of: heading) ?? nodeRange, level: heading.level, to: &spans)
@@ -103,7 +111,7 @@ struct SwiftMarkdownSemanticParser {
         add(kind, .content, range, to: &spans)
         var items: [MarkdownListItem] = []
         for item in listItems {
-            try Task.checkCancellation()
+            try checkCancellation()
             let itemRange = self.range(of: item)
             let task: MarkdownTaskState?
             switch item.checkbox {
@@ -189,7 +197,7 @@ struct SwiftMarkdownSemanticParser {
         _ node: Markup,
         spans: inout [MarkdownSpan]
     ) throws -> MarkdownInline? {
-        try Task.checkCancellation()
+        try checkCancellation()
         let nodeRange = range(of: node)
         if let emphasis = node as? Markdown.Emphasis {
             addDelimiterSpans(.emphasis, node: emphasis, to: &spans)
@@ -527,23 +535,56 @@ struct SwiftMarkdownSemanticParser {
         let value = substring(range)
         return !value.contains("\n\n") && !value.contains("\r\n\r\n")
     }
+
+    private func checkCancellation() throws {
+        try Task.checkCancellation()
+        try cancellation?.check()
+    }
 }
 
 private struct SwiftMarkdownSourceCoordinates {
+    private struct ByteCheckpoint {
+        let utf8Offset: Int
+        let utf16Offset: Int
+        let index: String.Index
+    }
+
+    private static let checkpointStride = 4_096
     private let source: String
     private let utf8LineStarts: [Int]
     private let utf16LineStarts: [Int]
+    private let byteCheckpoints: [ByteCheckpoint]
     private let utf8Count: Int
 
-    init(_ source: String) throws {
+    init(
+        _ source: String,
+        cancellation: MarkdownBackgroundWork.CancellationProbe? = nil
+    ) throws {
         self.source = source
         utf8Count = source.utf8.count
         var byteStarts = [0]
         var wordStarts = [0]
+        var checkpoints = [ByteCheckpoint(
+            utf8Offset: 0,
+            utf16Offset: 0,
+            index: source.startIndex
+        )]
         var byteOffset = 0
         var utf16Offset = 0
         var scanned = 0
-        for scalar in source.unicodeScalars {
+        var checkpointByteOffset = 0
+        var index = source.unicodeScalars.startIndex
+        while index != source.unicodeScalars.endIndex {
+            let scalar = source.unicodeScalars[index]
+            let sourceIndex = index.samePosition(in: source) ?? source.startIndex
+            if byteOffset - checkpointByteOffset >= Self.checkpointStride {
+                checkpoints.append(ByteCheckpoint(
+                    utf8Offset: byteOffset,
+                    utf16Offset: utf16Offset,
+                    index: sourceIndex
+                ))
+                checkpointByteOffset = byteOffset
+            }
             let byteWidth = scalar.utf8.count
             let wordWidth = scalar.utf16.count
             byteOffset += byteWidth
@@ -555,11 +596,14 @@ private struct SwiftMarkdownSourceCoordinates {
             scanned += byteWidth
             if scanned >= 65_536 {
                 try Task.checkCancellation()
+                try cancellation?.check()
                 scanned = 0
             }
+            index = source.unicodeScalars.index(after: index)
         }
         utf8LineStarts = byteStarts
         utf16LineStarts = wordStarts
+        byteCheckpoints = checkpoints
     }
 
     func range(_ sourceRange: Markdown.SourceRange) -> UTF16Range {
@@ -574,18 +618,30 @@ private struct SwiftMarkdownSourceCoordinates {
             utf8Count,
             utf8LineStarts[line] + max(0, location.column - 1)
         )
-        let byteIndex = source.utf8.index(source.utf8.startIndex, offsetBy: byteOffset)
+        let checkpoint = checkpoint(atOrBeforeUTF8Offset: byteOffset)
+        let byteIndex = source.utf8.index(
+            checkpoint.index,
+            offsetBy: byteOffset - checkpoint.utf8Offset
+        )
         guard let stringIndex = String.Index(byteIndex, within: source) else {
             return utf16LineStarts[line]
         }
-        let lineByteIndex = source.utf8.index(
-            source.utf8.startIndex,
-            offsetBy: utf8LineStarts[line]
-        )
-        guard let lineIndex = String.Index(lineByteIndex, within: source) else {
-            return utf16LineStarts[line]
+        return checkpoint.utf16Offset
+            + source[checkpoint.index..<stringIndex].utf16.count
+    }
+
+    private func checkpoint(atOrBeforeUTF8Offset target: Int) -> ByteCheckpoint {
+        var lower = 0
+        var upper = byteCheckpoints.count
+        while lower + 1 < upper {
+            let middle = (lower + upper) / 2
+            if byteCheckpoints[middle].utf8Offset <= target {
+                lower = middle
+            } else {
+                upper = middle
+            }
         }
-        return utf16LineStarts[line] + source[lineIndex..<stringIndex].utf16.count
+        return byteCheckpoints[lower]
     }
 }
 

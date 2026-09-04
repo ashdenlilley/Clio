@@ -1,8 +1,89 @@
 import AppKit
+import Darwin
 import XCTest
 @testable import Clio
 
 final class MarkdownPerformanceTests: XCTestCase {
+    @MainActor
+    func testDenseParseKeepsMainActorHeartbeatResponsiveAndCancelsPromptly() async throws {
+        let block = "## heading\n\nParagraph with **strong** and [link](https://example.com).\n\n"
+        let source = String(repeating: block, count: 32_000)
+        let parse = Task { try await SourcePreservingMarkdownParser.parse(source: source) }
+
+        var heartbeats = 0
+        for _ in 0..<8 {
+            try await Task.sleep(for: .milliseconds(15))
+            heartbeats += 1
+        }
+
+        let clock = ContinuousClock()
+        let cancellationStarted = clock.now
+        parse.cancel()
+        do {
+            _ = try await parse.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // The abandoned cmark generation is contained by the parser pool.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(heartbeats, 8)
+        XCTAssertLessThan(
+            cancellationStarted.duration(to: clock.now),
+            .milliseconds(250)
+        )
+    }
+
+    func testSafeLargeDenseInputStopsAtComplexityBudgetWithBoundedRSS() async throws {
+        let byteCount = PerformanceContract.safeLargeFileByteLimit
+        let unit = "# h\n\n"
+        let repeated = String(repeating: unit, count: byteCount / unit.utf8.count)
+        let source = repeated + String(
+            repeating: "x",
+            count: byteCount - repeated.utf8.count
+        )
+        XCTAssertEqual(source.utf8.count, byteCount)
+        let residentBefore = currentResidentMemoryBytes()
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        do {
+            _ = try await SourcePreservingMarkdownParser.parse(source: source)
+            XCTFail("Expected a controlled semantic-complexity failure")
+        } catch let error as MarkdownParserError {
+            XCTAssertEqual(
+                error,
+                .semanticComplexityExceeded(
+                    SourcePreservingMarkdownParser.safeSemanticElementLimit
+                )
+            )
+        }
+
+        let residentAfter = currentResidentMemoryBytes()
+        let residentGrowth = residentAfter > residentBefore
+            ? residentAfter - residentBefore
+            : 0
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(20))
+        XCTAssertLessThan(residentGrowth, 768 * 1_024 * 1_024)
+    }
+
+    func testSparseCoordinateCheckpointsPreserveDenseUnicodeTailRanges() async throws {
+        let unit = "αβγ paragraph with **strong**.\n\n"
+        let source = String(repeating: unit, count: 48_000) + "# 尾部 sentinel\n"
+        let parsed = try await SourcePreservingMarkdownParser.parse(source: source)
+        let text = source as NSString
+        let tail = try XCTUnwrap(parsed.document.blocks.last)
+        let range: UTF16Range
+        guard case .heading(level: 1, content: _, range: let headingRange) = tail else {
+            return XCTFail("Expected the final Unicode heading")
+        }
+        range = headingRange
+
+        XCTAssertEqual(text.substring(with: range.nsRange), "# 尾部 sentinel")
+        XCTAssertGreaterThan(range.location, 1_000_000)
+    }
+
     func testIncrementalHighlightingWorkIsBoundedToEditedIsland() async throws {
         let block = "Paragraph with **strong** and [link](https://example.com).\n\n"
         let source = String(repeating: block, count: 32_000) + "Unique *needle* here.\n"
@@ -81,6 +162,29 @@ final class MarkdownPerformanceTests: XCTestCase {
     }
 }
 
+private func currentResidentMemoryBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size
+    )
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(
+                mach_task_self_,
+                task_flavor_t(MACH_TASK_BASIC_INFO),
+                $0,
+                &count
+            )
+        }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return UInt64(info.resident_size)
+}
+
 private extension NSRange {
     var utf16: UTF16Range { UTF16Range(location: location, length: length) }
+}
+
+private extension UTF16Range {
+    var nsRange: NSRange { NSRange(location: location, length: length) }
 }
