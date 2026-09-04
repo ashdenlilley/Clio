@@ -35,6 +35,8 @@ targets:
       - path: Clio/Resources/Fonts
         type: folder
         buildPhase: resources
+    dependencies:
+      - sdk: libsqlite3.tbd
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac
