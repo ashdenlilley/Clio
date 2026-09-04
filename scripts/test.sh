@@ -41,7 +41,8 @@ if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
     if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         UNIT_RESULT_PATH="${CLIO_TEST_RESULT_PATH}.unit.xcresult"
         UI_RESULT_PATH="${CLIO_TEST_RESULT_PATH}.ui.xcresult"
-        for result_path in "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}"; do
+        NATIVE_RESULT_PATH="${CLIO_TEST_RESULT_PATH}.native.xcresult"
+        for result_path in "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}" "${NATIVE_RESULT_PATH}"; do
             [[ ! -e "${result_path}" && ! -L "${result_path}" ]] \
                 || clio_die "refusing to overwrite test results: ${result_path}"
         done
@@ -71,7 +72,7 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
     if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
         set -- -resultBundlePath "${UI_RESULT_PATH}"
     fi
-    TEST_RUNNER_CLIO_RUN_NATIVE_MOTION_TESTS=1 xcodebuild \
+    xcodebuild \
         -project Clio.xcodeproj \
         -scheme Clio \
         -configuration Debug \
@@ -80,6 +81,25 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         -onlyUsePackageVersionsFromResolvedFile \
         -disableAutomaticPackageResolution \
         -only-testing:ClioUITests \
+        "$@" \
+        CODE_SIGNING_ALLOWED=YES \
+        CODE_SIGN_IDENTITY=- \
+        test
+
+    # Keep the unit-host lifecycle separate from UI automation: combining the
+    # targets can leave the unit host running in the background during UI launch.
+    set --
+    if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
+        set -- -resultBundlePath "${NATIVE_RESULT_PATH}"
+    fi
+    TEST_RUNNER_CLIO_RUN_NATIVE_MOTION_TESTS=1 xcodebuild \
+        -project Clio.xcodeproj \
+        -scheme Clio \
+        -configuration Debug \
+        -destination 'platform=macOS' \
+        -derivedDataPath "${DERIVED_DATA_PATH}/UITests" \
+        -onlyUsePackageVersionsFromResolvedFile \
+        -disableAutomaticPackageResolution \
         -only-testing:ClioTests/WindowMotionAdapterTests/testNativeDisplayLinkAdvancesVisibleWindowAndStopsAtRest \
         "$@" \
         CODE_SIGNING_ALLOWED=YES \
@@ -87,7 +107,7 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         test
     if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
         xcrun xcresulttool merge --output-path "${CLIO_TEST_RESULT_PATH}" \
-            "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}"
+            "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}" "${NATIVE_RESULT_PATH}"
     fi
 fi
 
