@@ -57,7 +57,7 @@ xcodebuild \
     -scheme Clio \
     -configuration Debug \
     -destination 'platform=macOS' \
-    -derivedDataPath "${DERIVED_DATA_PATH}" \
+    -derivedDataPath "${DERIVED_DATA_PATH}/UnitTests" \
     -onlyUsePackageVersionsFromResolvedFile \
     -disableAutomaticPackageResolution \
     -only-testing:ClioTests \
@@ -75,7 +75,7 @@ if [[ "${HAS_UI_TESTS}" == "1" ]]; then
         -scheme Clio \
         -configuration Debug \
         -destination 'platform=macOS' \
-        -derivedDataPath "${DERIVED_DATA_PATH}" \
+        -derivedDataPath "${DERIVED_DATA_PATH}/UITests" \
         -onlyUsePackageVersionsFromResolvedFile \
         -disableAutomaticPackageResolution \
         -only-testing:ClioUITests \
