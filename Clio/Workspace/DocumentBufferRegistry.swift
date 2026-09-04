@@ -100,8 +100,15 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
             return document
         }
         guard let locator = try? workspace.locator(for: standardizedURL),
-              let id = locators[locator] else { return nil }
-        return documents[id]
+              let id = locators[locator]
+                ?? identityStore.storedDocumentID(for: locator),
+              let document = documents[id] else { return nil }
+        // Discovery can know an overlapping parent/nested locator before that
+        // alias has ever been opened. Cache the authoritative mapping so a
+        // later move event can still find the one live buffer after the source
+        // path itself has disappeared.
+        locators[locator] = id
+        return document
     }
 
     func document(withID id: DocumentID) -> Document? { documents[id] }
