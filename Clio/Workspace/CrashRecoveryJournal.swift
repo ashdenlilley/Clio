@@ -96,6 +96,7 @@ struct CrashRecoverySnapshot: Sendable {
 /// write never replaces an older valid generation.
 final class CrashRecoveryJournal: @unchecked Sendable {
   static let shared = CrashRecoveryJournal(rootURL: defaultRootURL)
+  static let maximumRecordByteCount: Int64 = 64 * 1_024 * 1_024
 
   let rootURL: URL
 
@@ -333,7 +334,10 @@ extension CrashRecoveryJournal {
       let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
       values.isRegularFile == true,
       values.isSymbolicLink != true,
-      let data = try? Data(contentsOf: url),
+      let data = try? DocumentRevisionReader.snapshot(
+        at: url,
+        maximumByteCount: Self.maximumRecordByteCount
+      ).data,
       let record = try? PropertyListDecoder().decode(CrashRecoveryRecord.self, from: data),
       record.contentDigest == DocumentRevisionReader.digest(record.data)
     else {

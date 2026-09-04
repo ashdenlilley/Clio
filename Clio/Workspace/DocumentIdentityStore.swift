@@ -98,6 +98,7 @@ final class DocumentIdentityStore: @unchecked Sendable {
     private var backgroundPersistenceError: Error?
 
     static let maximumRetainedTombstones = 1_024
+    static let maximumStorageByteCount: Int64 = 16 * 1_024 * 1_024
 
     struct Statistics: Equatable {
         let locators: Int
@@ -117,10 +118,11 @@ final class DocumentIdentityStore: @unchecked Sendable {
             return
         }
         do {
-            state = try JSONDecoder().decode(
-                State.self,
-                from: Data(contentsOf: storageURL)
-            )
+            let data = try DocumentRevisionReader.snapshot(
+                at: storageURL,
+                maximumByteCount: Self.maximumStorageByteCount
+            ).data
+            state = try JSONDecoder().decode(State.self, from: data)
         } catch {
             state = State()
             startupError = StoreError.corruptStore(storageURL)

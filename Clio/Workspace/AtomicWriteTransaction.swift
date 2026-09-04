@@ -37,6 +37,7 @@ enum AtomicWriteTransactions {
   static let manifestPrefix = ".clio-transaction-"
   static let manifestSuffix = ".plist"
   static let temporaryPrefix = ".clio-save-"
+  static let maximumManifestByteCount: Int64 = 1 * 1_024 * 1_024
   static let maximumRecoverableByteCount = Int64(
     PerformanceContract.safeLargeFileByteLimit * 4
   )
@@ -206,7 +207,10 @@ extension AtomicWriteTransactions {
     inside rootURL: URL
   ) -> AtomicWriteTransactionManifest? {
     guard isSafeRegularFile(manifestURL, inside: rootURL),
-      let data = try? Data(contentsOf: manifestURL),
+      let data = try? DocumentRevisionReader.snapshot(
+        at: manifestURL,
+        maximumByteCount: maximumManifestByteCount
+      ).data,
       let manifest = try? PropertyListDecoder().decode(
         AtomicWriteTransactionManifest.self,
         from: data

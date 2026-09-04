@@ -29,6 +29,7 @@ enum InterruptedMoveTransactions {
   static let manifestPrefix = ".clio-move-transaction-"
   static let manifestSuffix = ".plist"
   static let quarantinePrefix = ".clio-move-source-"
+  static let maximumManifestByteCount: Int64 = 1 * 1_024 * 1_024
 
   static func begin(
     documentID: DocumentID,
@@ -254,7 +255,10 @@ extension InterruptedMoveTransactions {
     authorizedRoots: Set<URL>
   ) -> InterruptedMoveManifest? {
     guard isSafeRegularFile(url, inside: root),
-      let data = try? Data(contentsOf: url),
+      let data = try? DocumentRevisionReader.snapshot(
+        at: url,
+        maximumByteCount: maximumManifestByteCount
+      ).data,
       let manifest = try? PropertyListDecoder().decode(InterruptedMoveManifest.self, from: data),
       manifest.schemaVersion == InterruptedMoveManifest.schemaVersion,
       manifest.sourceRootURL.standardizedFileURL.resolvingSymlinksInPath() == root,

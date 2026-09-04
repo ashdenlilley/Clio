@@ -5,6 +5,94 @@ import XCTest
 
 @MainActor
 final class FilesystemHardeningTests: XCTestCase {
+    func testStartupMetadataReadersRejectOversizedSparseArtifacts() throws {
+        try withDirectory { rootURL in
+            let journalURL = rootURL.appendingPathComponent("Journal", isDirectory: true)
+            let workspaceURL = rootURL.appendingPathComponent("Workspace", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: journalURL,
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: workspaceURL,
+                withIntermediateDirectories: true
+            )
+
+            let atomicID = UUID()
+            let atomicManifest = workspaceURL.appendingPathComponent(
+                AtomicWriteTransactions.manifestPrefix
+                    + atomicID.uuidString.lowercased()
+                    + AtomicWriteTransactions.manifestSuffix
+            )
+            try makeSparseFile(
+                at: atomicManifest,
+                byteCount: AtomicWriteTransactions.maximumManifestByteCount + 1
+            )
+
+            let moveID = UUID()
+            let moveManifest = workspaceURL.appendingPathComponent(
+                InterruptedMoveTransactions.manifestPrefix
+                    + moveID.uuidString.lowercased()
+                    + InterruptedMoveTransactions.manifestSuffix
+            )
+            try makeSparseFile(
+                at: moveManifest,
+                byteCount: InterruptedMoveTransactions.maximumManifestByteCount + 1
+            )
+
+            let recoveryRecord = journalURL.appendingPathComponent(
+                "buffer-(UUID().uuidString.lowercased()).clio-recovery"
+            )
+            try makeSparseFile(
+                at: recoveryRecord,
+                byteCount: CrashRecoveryJournal.maximumRecordByteCount + 1
+            )
+
+            let journal = CrashRecoveryJournal(rootURL: journalURL)
+            XCTAssertEqual(
+                try AtomicWriteTransactions.recoverInterruptedTransactions(
+                    in: workspaceURL,
+                    journal: journal
+                ),
+                0
+            )
+            XCTAssertEqual(
+                try InterruptedMoveTransactions.recover(
+                    in: workspaceURL,
+                    journal: journal
+                ),
+                0
+            )
+            XCTAssertTrue(try journal.validRecords().isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: atomicManifest.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: moveManifest.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: recoveryRecord.path))
+        }
+    }
+
+    func testIdentityStoreRejectsOversizedSparseStartupFile() throws {
+        try withDirectory { rootURL in
+            let storageURL = rootURL.appendingPathComponent("DocumentIdentities.json")
+            try makeSparseFile(
+                at: storageURL,
+                byteCount: DocumentIdentityStore.maximumStorageByteCount + 1
+            )
+            let store = DocumentIdentityStore(storageURL: storageURL)
+            let locator = try DocumentLocator(
+                workspaceID: WorkspaceID(),
+                relativePath: "draft.md"
+            )
+
+            XCTAssertThrowsError(
+                try store.resolve(DocumentIdentityCandidate(locator: locator))
+            ) { error in
+                guard case DocumentIdentityStore.StoreError.corruptStore = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+        }
+    }
+
     func testOversizedSparseDocumentIsRejectedBeforePayloadAllocation() throws {
         try withDirectory { rootURL in
             let fileURL = rootURL.appendingPathComponent("oversized.md")
@@ -161,6 +249,13 @@ private extension FilesystemHardeningTests {
             $0.lastPathComponent.hasPrefix(AtomicWriteTransactions.manifestPrefix)
                 || $0.lastPathComponent.hasPrefix(AtomicWriteTransactions.temporaryPrefix)
         }
+    }
+
+    func makeSparseFile(at url: URL, byteCount: Int64) throws {
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(byteCount))
+        try handle.close()
     }
 
     func setExtendedAttribute(name: String, value: Data, at url: URL) throws {
