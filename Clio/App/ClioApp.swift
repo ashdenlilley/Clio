@@ -39,6 +39,7 @@ private struct EditorWindowRoot: View {
     let appState: AppState
     @Binding private var request: EditorWindowRequest
     @State private var editorSession: EditorSession
+    @State private var exportPresentation: DocumentExportPresentation
 
     init(request: Binding<EditorWindowRequest>, appState: AppState) {
         _request = request
@@ -52,14 +53,18 @@ private struct EditorWindowRoot: View {
                 startInFullScreen: initialRequest.isFullScreen
             )
         )
+        _exportPresentation = State(initialValue: DocumentExportPresentation())
     }
 
     var body: some View {
         ContentView()
             .environment(editorSession)
+            .environment(exportPresentation)
             .focusedSceneValue(\.editorSession, editorSession)
+            .focusedSceneValue(\.documentExportPresentation, exportPresentation)
             .onAppear {
                 appState.register(editorSession)
+                exportPresentation.attach(to: editorSession)
             }
             .onDisappear {
                 appState.unregister(editorSession)
