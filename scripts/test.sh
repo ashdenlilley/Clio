@@ -32,12 +32,26 @@ PACKAGE_RESOLVED="${REPOSITORY_ROOT}/Clio.xcodeproj/project.xcworkspace/xcshared
 clio_require_exact_package_lock "${PACKAGE_RESOLVED}"
 
 set --
+HAS_UI_TESTS=0
+[[ ! -d "${REPOSITORY_ROOT}/ClioUITests" ]] || HAS_UI_TESTS=1
 if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
     [[ ! -e "${CLIO_TEST_RESULT_PATH}" && ! -L "${CLIO_TEST_RESULT_PATH}" ]] \
         || clio_die "refusing to overwrite test results: ${CLIO_TEST_RESULT_PATH}"
-    set -- -resultBundlePath "${CLIO_TEST_RESULT_PATH}"
+    UNIT_RESULT_PATH="${CLIO_TEST_RESULT_PATH}"
+    if [[ "${HAS_UI_TESTS}" == "1" ]]; then
+        UNIT_RESULT_PATH="${CLIO_TEST_RESULT_PATH}.unit.xcresult"
+        UI_RESULT_PATH="${CLIO_TEST_RESULT_PATH}.ui.xcresult"
+        for result_path in "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}"; do
+            [[ ! -e "${result_path}" && ! -L "${result_path}" ]] \
+                || clio_die "refusing to overwrite test results: ${result_path}"
+        done
+    fi
+    set -- -resultBundlePath "${UNIT_RESULT_PATH}"
 fi
 
+# The real SIGKILL recovery subprocess runs under the unsigned unit host.
+# UI automation requires an ad-hoc-signed runner; run it separately and serially
+# so the two hosts cannot steal focus or terminate each other's application.
 xcodebuild \
     -project Clio.xcodeproj \
     -scheme Clio \
@@ -46,9 +60,34 @@ xcodebuild \
     -derivedDataPath "${DERIVED_DATA_PATH}" \
     -onlyUsePackageVersionsFromResolvedFile \
     -disableAutomaticPackageResolution \
+    -only-testing:ClioTests \
     "$@" \
     CODE_SIGNING_ALLOWED=NO \
     test
+
+if [[ "${HAS_UI_TESTS}" == "1" ]]; then
+    set --
+    if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
+        set -- -resultBundlePath "${UI_RESULT_PATH}"
+    fi
+    xcodebuild \
+        -project Clio.xcodeproj \
+        -scheme Clio \
+        -configuration Debug \
+        -destination 'platform=macOS' \
+        -derivedDataPath "${DERIVED_DATA_PATH}" \
+        -onlyUsePackageVersionsFromResolvedFile \
+        -disableAutomaticPackageResolution \
+        -only-testing:ClioUITests \
+        "$@" \
+        CODE_SIGNING_ALLOWED=YES \
+        CODE_SIGN_IDENTITY=- \
+        test
+    if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
+        xcrun xcresulttool merge --output-path "${CLIO_TEST_RESULT_PATH}" \
+            "${UNIT_RESULT_PATH}" "${UI_RESULT_PATH}"
+    fi
+fi
 
 if [[ "${SKIP_RELEASE_BUILD}" != "1" ]]; then
     xcodebuild \
