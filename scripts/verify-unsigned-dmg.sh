@@ -74,12 +74,24 @@ find "${APP_PATH}/Contents/Resources" -name 'LICENSE-Hack.md' -print -quit | gre
     echo "error: third-party notices are missing" >&2
     exit 1
 }
-grep -q 'swift-markdown' "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" || {
-    echo "error: bundled swift-markdown notice is missing" >&2
+DEPENDENCY_NOTICES="${APP_PATH}/Contents/Resources/ThirdPartyNotices"
+for notice in \
+    NOTICE.md \
+    Swift-Markdown-LICENSE-Part-1.txt \
+    Swift-Markdown-LICENSE-Part-2.txt \
+    Swift-CMark-COPYING-Part-1.txt \
+    Swift-CMark-COPYING-Part-2.txt; do
+    [[ -f "${DEPENDENCY_NOTICES}/${notice}" ]] || {
+        echo "error: bundled dependency notice ${notice} is missing" >&2
+        exit 1
+    }
+done
+grep -q 'swift-markdown' "${DEPENDENCY_NOTICES}/NOTICE.md" || {
+    echo "error: swift-markdown attribution is missing" >&2
     exit 1
 }
-grep -q 'swift-cmark' "${APP_PATH}/Contents/Resources/THIRD-PARTY-NOTICES.md" || {
-    echo "error: bundled swift-cmark notice is missing" >&2
+grep -q 'swift-cmark' "${DEPENDENCY_NOTICES}/NOTICE.md" || {
+    echo "error: swift-cmark attribution is missing" >&2
     exit 1
 }
 [[ -f "${APP_PATH}/Contents/Resources/AppIcon.icns" ]] || {
