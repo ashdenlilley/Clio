@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="blur"/>
+      <feOffset dy="24" result="offset"/>
+      <feColorMatrix in="offset" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .42 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a3a3c"/>
+      <stop offset="1" stop-color="#1c1c1e"/>
+    </linearGradient>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="82" y="70" width="860" height="860" rx="194" fill="#000000"/>
+    <rect x="83.5" y="71.5" width="857" height="857" rx="192.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  </g>
+  <path d="M699 337 C654 286 591 258 519 258 C374 258 274 364 274 506 C274 650 376 756 519 756 C592 756 655 729 701 678"
+        fill="none" stroke="#f5f5f7" stroke-width="88" stroke-linecap="round"/>
+  <circle cx="702" cy="338" r="44" fill="#0a84ff"/>
+  <circle cx="702" cy="678" r="44" fill="#bf5af2"/>
+  <rect x="464" y="462" width="96" height="88" rx="18" fill="#1c1c1e" stroke="#3a3a3c" stroke-width="3"/>
+  <path d="M491 482 L473 506 L491 530" fill="none" stroke="#64d2ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M526 531 L548 531" fill="none" stroke="#ff9f0a" stroke-width="12" stroke-linecap="round"/>
+</svg>

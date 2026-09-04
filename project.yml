@@ -32,8 +32,11 @@ targets:
           - Support/Info.plist
           - Support/Clio.entitlements
           - Resources/Fonts
+          - Resources/THIRD-PARTY-NOTICES.md
       - path: Clio/Resources/Fonts
         type: folder
+        buildPhase: resources
+      - path: Clio/Resources/THIRD-PARTY-NOTICES.md
         buildPhase: resources
     settings:
       base:
@@ -47,6 +50,7 @@ targets:
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
       configs:
