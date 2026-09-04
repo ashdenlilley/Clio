@@ -111,6 +111,20 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(font.fontName.hasPrefix("Hack"))
     }
 
+    func testAppDeclaresMarkdownAndTextDocumentsForFinderOpen() throws {
+        let documentTypes = try XCTUnwrap(
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleDocumentTypes")
+                as? [[String: Any]]
+        )
+        let extensions = Set(
+            documentTypes.flatMap {
+                $0["CFBundleTypeExtensions"] as? [String] ?? []
+            }
+        )
+
+        XCTAssertTrue(extensions.isSuperset(of: ["md", "markdown", "txt"]))
+    }
+
     private func makeDefaults() -> UserDefaults {
         let suiteName = "ClioTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

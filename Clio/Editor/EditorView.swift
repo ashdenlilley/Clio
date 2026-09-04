@@ -40,30 +40,45 @@ struct EditorConfiguration: Equatable {
 
 struct EditorView: NSViewRepresentable {
     @Binding private var text: String
+    private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
 
     init(
         text: Binding<String>,
+        viewport: Binding<EditorViewportState>? = nil,
         configuration: EditorConfiguration = EditorConfiguration()
     ) {
         _text = text
+        self.viewport = viewport
         self.configuration = configuration
     }
 
     func makeCoordinator() -> EditorCoordinator {
-        EditorCoordinator(text: $text, configuration: configuration)
+        EditorCoordinator(
+            text: $text,
+            viewport: viewport,
+            configuration: configuration
+        )
     }
 
     func makeNSView(context: Context) -> EditorContainerView {
         let textView = EditorTextView.makeTextKit2TextView()
         let surface = EditorContainerView(textView: textView)
         context.coordinator.attach(to: surface)
-        context.coordinator.update(text: $text, configuration: configuration)
+        context.coordinator.update(
+            text: $text,
+            viewport: viewport,
+            configuration: configuration
+        )
         return surface
     }
 
     func updateNSView(_ nsView: EditorContainerView, context: Context) {
-        context.coordinator.update(text: $text, configuration: configuration)
+        context.coordinator.update(
+            text: $text,
+            viewport: viewport,
+            configuration: configuration
+        )
     }
 }
 
@@ -85,9 +100,11 @@ final class EditorContainerView: NSView {
 
         wantsLayer = true
         layer?.backgroundColor = Palette.background.cgColor
+        focusRingType = .none
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.borderType = .noBorder
+        scrollView.focusRingType = .none
         scrollView.drawsBackground = true
         scrollView.backgroundColor = Palette.background
         scrollView.contentView.drawsBackground = true

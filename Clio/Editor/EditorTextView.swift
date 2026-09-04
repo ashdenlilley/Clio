@@ -71,6 +71,7 @@ final class EditorTextView: NSTextView {
         textColor = Palette.foreground
         insertionPointColor = Palette.caret
         selectedTextAttributes = [.backgroundColor: Palette.selection]
+        focusRingType = .none
 
         isEditable = true
         isSelectable = true

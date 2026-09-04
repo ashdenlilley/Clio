@@ -11,13 +11,15 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
     var openingMode: EditorOpeningMode
     var relativePath: String?
     var isFullScreen: Bool
+    var restoration: EditorWindowRestorationState?
 
     static func mostRecent() -> Self {
         Self(
             id: UUID(),
             openingMode: .mostRecent,
             relativePath: nil,
-            isFullScreen: false
+            isFullScreen: false,
+            restoration: nil
         )
     }
 
@@ -26,7 +28,8 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
             id: UUID(),
             openingMode: .newDocument,
             relativePath: nil,
-            isFullScreen: false
+            isFullScreen: false,
+            restoration: nil
         )
     }
 }
@@ -34,14 +37,24 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
 @MainActor
 @Observable
 final class EditorSession: Identifiable {
+    enum SessionError: LocalizedError {
+        case parentFolderAuthorizationRequired
+
+        var errorDescription: String? {
+            "Authorize this document’s parent folder before closing Clio."
+        }
+    }
+
     let id: UUID
     private(set) var openingMode: EditorOpeningMode
 
     var draftText = ""
     private(set) var relativePath = ""
+    private(set) var workspaceID: WorkspaceID?
     private(set) var document: Document?
     private(set) var errorMessage: String?
     var isFullScreenEnabled: Bool
+    var viewportState: EditorViewportState
 
     @ObservationIgnored
     private var workspace: Workspace?
@@ -56,22 +69,39 @@ final class EditorSession: Identifiable {
     private var preferredRelativePath: String?
 
     @ObservationIgnored
+    private var preferredWorkspaceID: WorkspaceID?
+
+    @ObservationIgnored
+    private var preferredFilenameForRestoration: String
+
+    @ObservationIgnored
+    private var restoredDocumentID: DocumentID?
+
+    @ObservationIgnored
     private var presentedErrorContext: PresentedErrorContext = .general
 
     init(
         id: UUID = UUID(),
         openingMode: EditorOpeningMode = .mostRecent,
         restoredRelativePath: String? = nil,
+        restoredLocator: DocumentLocator? = nil,
+        restoredViewport: EditorViewportState = .zero,
+        restoredPreferredFilename: String = Document.defaultFilename,
+        restoredDocumentID: DocumentID? = nil,
         startInFullScreen: Bool = false
     ) {
         self.id = id
         self.openingMode = openingMode
         isFullScreenEnabled = startInFullScreen
-        preferredRelativePath = restoredRelativePath
+        viewportState = restoredViewport
+        preferredFilenameForRestoration = restoredPreferredFilename
+        self.restoredDocumentID = restoredDocumentID
+        preferredWorkspaceID = restoredLocator?.workspaceID
+        preferredRelativePath = restoredLocator?.relativePath ?? restoredRelativePath
     }
 
     var isReady: Bool {
-        workspace != nil && document != nil
+        document != nil
     }
 
     var fileURL: URL? {
@@ -80,6 +110,35 @@ final class EditorSession: Identifiable {
 
     var hasPreferredDocument: Bool {
         preferredRelativePath != nil
+    }
+
+    var restoredWorkspaceID: WorkspaceID? {
+        preferredWorkspaceID
+    }
+
+    var restoredRelativePath: String? {
+        preferredRelativePath
+    }
+
+    var documentID: DocumentID {
+        restoredDocumentID ?? DocumentID(rawValue: document?.id ?? id)
+    }
+
+    var locator: DocumentLocator? {
+        let resolvedWorkspaceID = workspaceID ?? preferredWorkspaceID
+        let resolvedRelativePath = relativePath.isEmpty
+            ? preferredRelativePath
+            : relativePath
+        guard let resolvedWorkspaceID, let resolvedRelativePath,
+              !resolvedRelativePath.isEmpty else { return nil }
+        return try? DocumentLocator(
+            workspaceID: resolvedWorkspaceID,
+            relativePath: resolvedRelativePath
+        )
+    }
+
+    var displayName: String {
+        document?.filename ?? preferredFilenameForRestoration
     }
 
     var wordCount: Int {
@@ -93,6 +152,7 @@ final class EditorSession: Identifiable {
 
     func activate(
         in workspace: Workspace,
+        workspaceID: WorkspaceID? = nil,
         documentURLs: [URL]
     ) {
         autosaveErrorMonitor?.cancel()
@@ -123,11 +183,72 @@ final class EditorSession: Identifiable {
         }
 
         self.workspace = workspace
+        self.workspaceID = workspaceID
         document = initialDocument.document
+        preferredFilenameForRestoration = initialDocument.document.filename
         autosaver = Autosaver(workspace: workspace)
         draftText = initialDocument.document.text
+        viewportState = viewportState.clamped(
+            toUTF16Length: (draftText as NSString).length
+        )
         refreshRelativePath()
         errorMessage = initialDocument.warning
+        presentedErrorContext = .general
+    }
+
+    func activate(
+        documentURL: URL,
+        in workspace: Workspace,
+        workspaceID: WorkspaceID
+    ) throws {
+        autosaveErrorMonitor?.cancel()
+        autosaver?.cancel()
+
+        if restoredDocumentID == nil, let currentDocument = document {
+            restoredDocumentID = DocumentID(rawValue: currentDocument.id)
+        }
+
+        let loaded = try workspace.loadDocument(at: documentURL)
+        self.workspace = workspace
+        self.workspaceID = workspaceID
+        document = loaded
+        preferredFilenameForRestoration = loaded.filename
+        autosaver = Autosaver(workspace: workspace)
+        draftText = loaded.text
+        viewportState = viewportState.clamped(
+            toUTF16Length: (draftText as NSString).length
+        )
+        preferredWorkspaceID = workspaceID
+        preferredRelativePath = workspace.relativePath(for: documentURL)
+        refreshRelativePath()
+        errorMessage = nil
+        presentedErrorContext = .general
+    }
+
+    /// Opens a Powerbox-authorized file before its parent folder is granted.
+    /// The selected file remains directly writable while Clio asks for the
+    /// broader parent grant used by discovery and restoration.
+    func activateExternal(documentURL: URL) throws {
+        autosaveErrorMonitor?.cancel()
+        autosaver?.cancel()
+        let loaded = try Document(contentsOf: documentURL)
+        let directWorkspace = try? Workspace(
+            rootURL: documentURL.deletingLastPathComponent(),
+            accessSecurityScopedResource: false
+        )
+        workspace = directWorkspace
+        workspaceID = nil
+        document = loaded
+        preferredFilenameForRestoration = loaded.filename
+        autosaver = directWorkspace.map { Autosaver(workspace: $0) }
+        draftText = loaded.text
+        viewportState = viewportState.clamped(
+            toUTF16Length: (draftText as NSString).length
+        )
+        relativePath = documentURL.lastPathComponent
+        preferredRelativePath = nil
+        preferredWorkspaceID = nil
+        errorMessage = nil
         presentedErrorContext = .general
     }
 
@@ -136,6 +257,7 @@ final class EditorSession: Identifiable {
         autosaver?.cancel()
         autosaver = nil
         workspace = nil
+        workspaceID = nil
         document = nil
         draftText = ""
         relativePath = ""
@@ -144,10 +266,16 @@ final class EditorSession: Identifiable {
     }
 
     func editorTextDidChange(_ newText: String) {
-        guard let document, let autosaver else { return }
+        guard let document else { return }
 
         draftText = newText
         document.replaceText(with: newText)
+        guard let autosaver else {
+            errorMessage = SessionError.parentFolderAuthorizationRequired
+                .localizedDescription
+            presentedErrorContext = .save
+            return
+        }
         autosaver.documentDidChange(document)
         refreshRelativePath()
 
@@ -178,7 +306,13 @@ final class EditorSession: Identifiable {
     }
 
     func flush() throws {
-        guard let document, let autosaver else { return }
+        guard let document else { return }
+        guard let autosaver else {
+            if document.isDirty {
+                throw SessionError.parentFolderAuthorizationRequired
+            }
+            return
+        }
         try autosaver.flush(document)
         refreshRelativePath()
         clearPresentedSaveError()
@@ -213,6 +347,25 @@ final class EditorSession: Identifiable {
         guard fileURL == nil else { return }
         openingMode = .newDocument
         preferredRelativePath = nil
+        preferredWorkspaceID = nil
+    }
+
+
+    func updateViewport(_ state: EditorViewportState) {
+        viewportState = state.clamped(toUTF16Length: (draftText as NSString).length)
+    }
+
+    func restorationState() -> EditorTabRestorationState {
+        let restoredViewport = document == nil
+            ? viewportState
+            : viewportState.clamped(toUTF16Length: (draftText as NSString).length)
+        return EditorTabRestorationState(
+            id: id,
+            documentID: documentID,
+            locator: locator,
+            preferredFilename: displayName,
+            viewport: restoredViewport
+        )
     }
 }
 

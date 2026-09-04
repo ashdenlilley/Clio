@@ -6,6 +6,23 @@
 	<string>Fonts</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>md</string>
+				<string>markdown</string>
+				<string>txt</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Markdown or Text Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Clio</string>
 	<key>CFBundleExecutable</key>

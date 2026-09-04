@@ -10,7 +10,7 @@ struct WorkspaceSetupView: View {
                     .font(.custom(Typography.family, fixedSize: 24).bold())
                     .foregroundStyle(Color(nsColor: Palette.emphasis))
 
-                Text("Choose a folder for your writing. Clio opens plain Markdown and text files, and saves every edit directly to that folder.")
+                Text("Choose the first folder in your writing workspace. Clio keeps Markdown and text files on disk, and you can add more searchable folders at any time.")
                     .font(.custom(Typography.family, fixedSize: 13))
                     .foregroundStyle(Color(nsColor: Palette.muted))
                     .fixedSize(horizontal: false, vertical: true)
@@ -23,7 +23,7 @@ struct WorkspaceSetupView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(appState.accent.color)
 
-                Button("Choose Another Folder…") {
+                Button("Choose a Folder…") {
                     appState.chooseAnotherWorkspace()
                 }
                 .buttonStyle(.link)

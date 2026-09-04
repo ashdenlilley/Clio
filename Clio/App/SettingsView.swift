@@ -5,6 +5,7 @@ struct SettingsView: View {
 
     var body: some View {
         @Bindable var appState = appState
+        @Bindable var discovery = appState.discoverySettings
 
         Form {
             Section("Typography") {
@@ -74,12 +75,42 @@ struct SettingsView: View {
             }
 
             Section("Workspace") {
-                LabeledContent("Folder") {
-                    Text(appState.workspaceRootPath ?? "Not selected")
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .help(appState.workspaceRootPath ?? "No workspace selected")
+                if appState.workspaceDescriptors.isEmpty {
+                    Text("No folders selected")
                         .foregroundStyle(.secondary)
+                } else {
+                    ForEach(appState.workspaceDescriptors) { workspace in
+                        LabeledContent(workspace.displayName) {
+                            HStack {
+                                Text(workspace.rootURL.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(workspace.rootURL.path)
+                                    .foregroundStyle(.secondary)
+                                Button("Remove") {
+                                    appState.removeWorkspace(workspace.id)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+
+                ForEach(appState.workspaceCatalog.authorizationFailures) { failure in
+                    LabeledContent(failure.folderName) {
+                        HStack {
+                            Label("Access required", systemImage: "lock.trianglebadge.exclamationmark")
+                                .foregroundStyle(.orange)
+                            Button("Restore…") {
+                                appState.reauthorizeWorkspace(failure)
+                            }
+                            Button("Forget") {
+                                appState.removeWorkspace(failure.id)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .help(failure.message)
                 }
 
                 HStack {
@@ -87,7 +118,7 @@ struct SettingsView: View {
                         appState.chooseDefaultWorkspace()
                     }
 
-                    Button(appState.workspaceRootPath == nil ? "Choose Another Folder…" : "Change Folder…") {
+                    Button("Add Folder…") {
                         appState.chooseAnotherWorkspace()
                     }
                 }
@@ -104,12 +135,48 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 }
             }
+
+            Section("Workspace Rules") {
+                Toggle("Respect nested .gitignore files", isOn: $discovery.respectsGitIgnore)
+                Toggle("Include hidden files", isOn: $discovery.includesHiddenFiles)
+                Toggle("Include .txt files", isOn: $discovery.includesTextFiles)
+                Toggle("Show ignored files temporarily", isOn: $discovery.temporarilyShowsIgnored)
+
+                DisclosureGroup("Built-in exclusions") {
+                    ForEach(BuiltInExclusion.allCases) { exclusion in
+                        Toggle(
+                            exclusion.displayName,
+                            isOn: Binding(
+                                get: { discovery.enabledBuiltIns.contains(exclusion) },
+                                set: { discovery.set(exclusion, enabled: $0) }
+                            )
+                        )
+                    }
+                }
+
+                LabeledContent("Additional Git patterns") {
+                    TextEditor(text: $discovery.additionalPatternsText)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(width: 260, height: 66)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color(nsColor: Palette.hairline))
+                        }
+                        .help("One gitignore-style exclusion pattern per line")
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .tint(appState.accent.color)
         .frame(width: 500, height: 590)
         .background(Color(nsColor: Palette.background))
+        .onChange(of: discovery.policy) { _, _ in
+            appState.discoveryPolicyDidChange()
+        }
+        .onChange(of: discovery.temporarilyShowsIgnored) { _, _ in
+            appState.discoveryPolicyDidChange()
+        }
     }
 }
 

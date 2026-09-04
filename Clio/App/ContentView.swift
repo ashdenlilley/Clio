@@ -24,38 +24,39 @@ func isClioEditorWindow(_ window: NSWindow) -> Bool {
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
-    @Environment(EditorSession.self) private var editorSession
+    @Environment(EditorWindowSession.self) private var windowSession
 
     var body: some View {
-        @Bindable var appState = appState
-        @Bindable var editorSession = editorSession
-
         Group {
-            if appState.isWorkspaceReady, editorSession.isReady {
-                VStack(spacing: 0) {
-                    EditorView(
-                        text: Binding(
-                            get: { editorSession.draftText },
-                            set: { editorSession.editorTextDidChange($0) }
-                        ),
-                        configuration: EditorConfiguration(
-                            fontSize: CGFloat(appState.fontSize),
-                            measure: appState.measure,
-                            lineHeightMultiple: CGFloat(appState.lineHeight),
-                            isSpellCheckingEnabled: appState.isSpellCheckingEnabled,
-                            isTypewriterScrollingEnabled: appState.isTypewriterModeEnabled,
-                            typewriterAnchor: CGFloat(appState.typewriterAnchor),
-                            isFocusModeEnabled: appState.isFocusModeEnabled,
-                            focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
-                        )
-                    )
+            if let editorSession = windowSession.activeTab, editorSession.isReady {
+                HStack(spacing: 0) {
+                    if windowSession.isSidebarVisible {
+                        WorkspaceSidebar()
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
 
-                    StatusLine(
-                        relativePath: editorSession.relativePath,
-                        wordCountLabel: editorSession.wordCountLabel,
-                        fontSize: appState.fontSize,
-                        accent: appState.accent
-                    )
+                    editorPane(editorSession)
+                }
+                .overlay(alignment: .topLeading) {
+                    if !windowSession.isSidebarVisible {
+                        SidebarToggleButton()
+                            .padding(.leading, 76)
+                            .padding(.top, 7)
+                    }
+                }
+                .overlay {
+                    if windowSession.isPalettePresented {
+                        ZStack(alignment: .top) {
+                            Color.black.opacity(0.38)
+                                .ignoresSafeArea()
+                                .contentShape(Rectangle())
+                                .onTapGesture { windowSession.dismissPalette() }
+
+                            CommandPaletteView()
+                                .padding(.top, 58)
+                        }
+                        .transition(.opacity)
+                    }
                 }
                 .overlay(alignment: .top) {
                     if let errorMessage = editorSession.errorMessage
@@ -80,27 +81,87 @@ struct ContentView: View {
         .background(Color(nsColor: Palette.background))
         .background(
             WindowChromeProbe(
-                startInFullScreen: editorSession.isFullScreenEnabled,
-                editorSession: editorSession
+                windowSession: windowSession,
+                editorSession: windowSession.activeTab
             )
         )
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { notification in
             guard let window = notification.object as? NSWindow,
-                  clioEditorSessionID(for: window) == editorSession.id else { return }
-            editorSession.isFullScreenEnabled = true
+                  clioEditorSessionID(for: window) == windowSession.id else { return }
+            windowSession.isFullScreenEnabled = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { notification in
             guard let window = notification.object as? NSWindow,
-                  clioEditorSessionID(for: window) == editorSession.id else { return }
-            editorSession.isFullScreenEnabled = false
+                  clioEditorSessionID(for: window) == windowSession.id else { return }
+            windowSession.isFullScreenEnabled = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
-            editorSession.flushForLifecycleEvent()
+            windowSession.flushForLifecycleEvent()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            editorSession.flushForLifecycleEvent()
+            windowSession.flushForLifecycleEvent()
+        }
+        .onChange(of: windowSession.focusRestorationGeneration) { _, _ in
+            restoreEditorFocus()
         }
     }
+
+    private func editorPane(_ editorSession: EditorSession) -> some View {
+        VStack(spacing: 0) {
+            EditorView(
+                text: Binding(
+                    get: { editorSession.draftText },
+                    set: { newText in
+                        windowSession.noteEditorChange(
+                            from: editorSession.draftText,
+                            to: newText
+                        )
+                    }
+                ),
+                viewport: Binding(
+                    get: { editorSession.viewportState },
+                    set: { editorSession.updateViewport($0) }
+                ),
+                configuration: EditorConfiguration(
+                    fontSize: CGFloat(appState.fontSize),
+                    measure: appState.measure,
+                    lineHeightMultiple: CGFloat(appState.lineHeight),
+                    isSpellCheckingEnabled: appState.isSpellCheckingEnabled,
+                    isTypewriterScrollingEnabled: appState.isTypewriterModeEnabled,
+                    typewriterAnchor: CGFloat(appState.typewriterAnchor),
+                    isFocusModeEnabled: appState.isFocusModeEnabled,
+                    focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
+                )
+            )
+            .id(editorSession.id)
+
+            StatusLine(
+                relativePath: editorSession.relativePath,
+                wordCountLabel: editorSession.wordCountLabel,
+                fontSize: appState.fontSize,
+                accent: appState.accent
+            )
+        }
+        .background(Color(nsColor: Palette.background))
+    }
+
+    private func restoreEditorFocus() {
+        DispatchQueue.main.async {
+            guard let window = NSApplication.shared.windows.first(where: {
+                clioEditorSessionID(for: $0) == windowSession.id
+            }), let contentView = window.contentView,
+              let editor = findEditorTextView(in: contentView) else { return }
+            window.makeFirstResponder(editor)
+        }
+    }
+}
+
+private func findEditorTextView(in view: NSView) -> EditorTextView? {
+    if let editor = view as? EditorTextView { return editor }
+    for child in view.subviews {
+        if let editor = findEditorTextView(in: child) { return editor }
+    }
+    return nil
 }
 
 private struct WorkspaceErrorBanner: View {
@@ -118,7 +179,7 @@ private struct WorkspaceErrorBanner: View {
 
             Spacer(minLength: 8)
 
-            Button("Choose Folder…") {
+            Button("Add Folder…") {
                 appState.chooseAnotherWorkspace()
             }
 
@@ -176,18 +237,19 @@ private struct StatusLine: View {
 }
 
 private struct WindowChromeProbe: NSViewRepresentable {
-    let startInFullScreen: Bool
-    let editorSession: EditorSession
+    let windowSession: EditorWindowSession
+    let editorSession: EditorSession?
 
     func makeNSView(context: Context) -> WindowProbeView {
         let view = WindowProbeView()
-        view.startInFullScreen = startInFullScreen
+        view.windowSession = windowSession
         view.editorSession = editorSession
+        view.configureWindowIfNeeded()
         return view
     }
 
     func updateNSView(_ view: WindowProbeView, context: Context) {
-        view.startInFullScreen = startInFullScreen
+        view.windowSession = windowSession
         view.editorSession = editorSession
         view.configureWindowIfNeeded()
     }
@@ -198,11 +260,12 @@ private struct WindowChromeProbe: NSViewRepresentable {
 }
 
 private final class WindowProbeView: NSView, NSWindowDelegate {
-    var startInFullScreen = false
+    weak var windowSession: EditorWindowSession?
     weak var editorSession: EditorSession?
 
     private var hasAppliedInitialState = false
     private var forwardedWindowDelegate: NSWindowDelegate?
+    private var scrollMonitor: Any?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -213,21 +276,18 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         if let currentWindow = window, currentWindow !== newWindow {
             detachFromWindow()
         }
-
         super.viewWillMove(toWindow: newWindow)
     }
 
     func configureWindowIfNeeded() {
-        guard let window else { return }
+        guard let window, let windowSession else { return }
 
         let relativePath = editorSession?.relativePath ?? ""
         let documentTitle = relativePath.isEmpty ? "Untitled" : relativePath
         window.title = "\(documentTitle) — Clio"
         window.miniwindowTitle = documentTitle
         window.representedURL = editorSession?.fileURL
-        if let editorSession {
-            markAsClioEditorWindow(window, sessionID: editorSession.id)
-        }
+        markAsClioEditorWindow(window, sessionID: windowSession.id)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.tabbingMode = .disallowed
@@ -243,41 +303,45 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
             window.delegate = self
         }
 
+        installScrollMonitor(for: window)
         guard !hasAppliedInitialState else { return }
         hasAppliedInitialState = true
 
-        if startInFullScreen, !window.styleMask.contains(.fullScreen) {
+        if windowSession.isFullScreenEnabled,
+           !window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)
         }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard editorSession?.flushForLifecycleEvent() != false else {
+        guard windowSession?.flushForLifecycleEvent() != false else {
             sender.makeKeyAndOrderFront(nil)
-
             let alert = NSAlert()
             alert.alertStyle = .critical
-            alert.messageText = "Clio couldn’t save your document"
-            alert.informativeText = "The window stayed open so your unsaved text remains visible. Restore access to the workspace or free disk space, then try again."
+            alert.messageText = "Clio couldn’t save every document"
+            alert.informativeText = "The window stayed open so your unsaved text remains visible. Restore access or free disk space, then try again."
             alert.addButton(withTitle: "Keep Writing")
             alert.beginSheetModal(for: sender)
             return false
         }
-
         return forwardedWindowDelegate?.windowShouldClose?(sender) ?? true
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        editorSession?.flushForLifecycleEvent()
+        windowSession?.flushForLifecycleEvent()
         forwardedWindowDelegate?.windowDidResignKey?(notification)
     }
 
     func detachFromWindow() {
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
         if let window {
             if window.delegate === self {
                 window.delegate = forwardedWindowDelegate
             }
-            if clioEditorSessionID(for: window) == editorSession?.id {
+            if clioEditorSessionID(for: window) == windowSession?.id {
                 objc_setAssociatedObject(
                     window,
                     &clioEditorWindowSessionKey,
@@ -299,6 +363,28 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
             return forwardedWindowDelegate
         }
         return super.forwardingTarget(for: selector)
+    }
+
+    private func installScrollMonitor(for window: NSWindow) {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+            [weak self, weak window] event in
+            guard let self, event.window === window,
+                  event.hasPreciseScrollingDeltas,
+                  abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.25 else {
+                return event
+            }
+            let physicalDeltaX = event.isDirectionInvertedFromDevice
+                ? -event.scrollingDeltaX
+                : event.scrollingDeltaX
+            self.windowSession?.handleHorizontalGesture(
+                // AppKit reports a physical rightward swipe as a negative X
+                // delta. The model uses positive values for reveal progress.
+                deltaX: -physicalDeltaX,
+                phaseEnded: event.phase == .ended || event.momentumPhase == .ended
+            )
+            return event
+        }
     }
 }
 
