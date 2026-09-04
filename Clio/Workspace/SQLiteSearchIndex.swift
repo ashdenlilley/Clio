@@ -29,6 +29,7 @@ actor SQLiteSearchIndex: SearchIndexing {
     private let databaseURL: URL
     private let fileManager: FileManager
     private let scanner: WorkspaceScanner
+    private let identityStore: DocumentIdentityStore
     private var database: OpaquePointer?
     private var indexedWorkspaces: [WorkspaceDescriptor] = []
     private var discoveryPolicy = DiscoveryPolicy.default
@@ -37,11 +38,16 @@ actor SQLiteSearchIndex: SearchIndexing {
 
     init(
         databaseURL: URL = SQLiteSearchIndex.defaultDatabaseURL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        identityStore: DocumentIdentityStore = .shared
     ) throws {
         self.databaseURL = databaseURL
         self.fileManager = fileManager
-        scanner = WorkspaceScanner(fileManager: fileManager)
+        self.identityStore = identityStore
+        scanner = WorkspaceScanner(
+            fileManager: fileManager,
+            identityStore: identityStore
+        )
 
         try fileManager.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
@@ -112,10 +118,20 @@ actor SQLiteSearchIndex: SearchIndexing {
     }
 
     func apply(_ events: [WorkspaceEvent]) async throws {
+        // Access failures are lifecycle signals, not index mutations. Keep the
+        // last durable index queryable until the catalog is reauthorized.
+        let events = events.filter { $0.kind != .accessLost && $0.kind != .error }
         guard !events.isEmpty else { return }
         let affectedIDs = Set(events.map(\.workspaceID))
         let affected = indexedWorkspaces.filter { affectedIDs.contains($0.id) }
         guard !affected.isEmpty else { return }
+
+        for event in events {
+            guard let workspace = affected.first(where: { $0.id == event.workspaceID }) else {
+                continue
+            }
+            try reconcileIdentity(for: event, workspace: workspace)
+        }
 
         if events.contains(where: Self.requiresFullRebuild) {
             try await rebuild(workspaces: indexedWorkspaces, policy: discoveryPolicy)
@@ -178,16 +194,11 @@ actor SQLiteSearchIndex: SearchIndexing {
                         relativePath: removedRelativePath
                     )
                 }
-                if let movedFrom = update.movedFromRelativePath,
+                if update.movedFromRelativePath != nil,
                    let destination = update.file?.relativePath {
                     try deleteDocument(
                         workspaceID: update.workspace.id,
                         relativePath: destination
-                    )
-                    try migrateIdentity(
-                        workspaceID: update.workspace.id,
-                        from: movedFrom,
-                        to: destination
                     )
                 }
                 if let file = update.file {
@@ -252,7 +263,46 @@ private extension SQLiteSearchIndex {
         to: sqlite3_destructor_type.self
     )
 
+    /// The FTS database is disposable. Earlier builds made `document_id` the
+    /// row primary key, which prevented one physical file from appearing via
+    /// parent and nested workspace aliases. Drop only that obsolete cache;
+    /// authoritative identities live in `DocumentIdentityStore`.
+    static func discardLegacyIdentityCoupledSchema(_ database: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documents'",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            throw IndexError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        let schema: String?
+        if sqlite3_step(statement) == SQLITE_ROW,
+           let bytes = sqlite3_column_text(statement, 0) {
+            schema = String(cString: bytes).uppercased()
+        } else {
+            schema = nil
+        }
+        sqlite3_finalize(statement)
+        guard let schema else { return }
+        guard schema.contains("DOCUMENT_ID TEXT PRIMARY KEY") else { return }
+
+        for sql in [
+            "DROP TRIGGER IF EXISTS documents_fts_insert",
+            "DROP TRIGGER IF EXISTS documents_fts_delete",
+            "DROP TRIGGER IF EXISTS documents_fts_update",
+            "DROP TABLE IF EXISTS documents_fts",
+            "DROP TABLE IF EXISTS documents",
+            "DROP TABLE IF EXISTS document_identities",
+        ] {
+            try execute(sql, database: database)
+        }
+    }
+
     static func configure(_ database: OpaquePointer) throws {
+        try discardLegacyIdentityCoupledSchema(database)
         let statements = [
             "PRAGMA journal_mode=WAL",
             "PRAGMA synchronous=NORMAL",
@@ -261,7 +311,7 @@ private extension SQLiteSearchIndex {
             "PRAGMA recursive_triggers=ON",
             """
             CREATE TABLE IF NOT EXISTS documents (
-                document_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -271,14 +321,6 @@ private extension SQLiteSearchIndex {
                 excluded_source TEXT,
                 excluded_line INTEGER,
                 excluded_builtin TEXT,
-                UNIQUE(workspace_id, relative_path)
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS document_identities (
-                workspace_id TEXT NOT NULL,
-                relative_path TEXT NOT NULL,
-                document_id TEXT NOT NULL UNIQUE,
                 PRIMARY KEY(workspace_id, relative_path)
             )
             """,
@@ -409,10 +451,58 @@ private extension SQLiteSearchIndex {
         }
     }
 
+    func reconcileIdentity(
+        for event: WorkspaceEvent,
+        workspace: WorkspaceDescriptor
+    ) throws {
+        switch event.kind {
+        case .moved:
+            guard let sourceURL = event.previousFileURL,
+                  let destinationURL = event.fileURL,
+                  let sourcePath = Self.relativePath(for: sourceURL, workspace: workspace),
+                  let destinationPath = Self.relativePath(for: destinationURL, workspace: workspace),
+                  let source = try? DocumentLocator(
+                    workspaceID: workspace.id,
+                    relativePath: sourcePath
+                  ),
+                  let destination = try? DocumentLocator(
+                    workspaceID: workspace.id,
+                    relativePath: destinationPath
+                  ) else { return }
+            _ = try identityStore.migrate(
+                from: source,
+                to: destination,
+                physicalIdentity: .authorizedFile(at: destinationURL),
+                destinationPath: destinationURL.standardizedFileURL.resolvingSymlinksInPath().path
+            )
+
+        case .deleted:
+            guard let url = event.fileURL,
+                  let path = Self.relativePath(for: url, workspace: workspace) else { return }
+            if Self.isSupportedEventURL(url),
+               let locator = try? DocumentLocator(
+                workspaceID: workspace.id,
+                relativePath: path
+               ) {
+                try identityStore.tombstone(locator)
+            } else {
+                try identityStore.tombstoneDescendants(
+                    workspaceID: workspace.id,
+                    relativePath: path
+                )
+            }
+
+        case .created, .modified, .rootChanged, .rescanRequired, .accessLost, .error:
+            break
+        }
+    }
+
     static func requiresFullRebuild(_ event: WorkspaceEvent) -> Bool {
         switch event.kind {
-        case .rootChanged, .rescanRequired, .accessLost, .error:
+        case .rootChanged, .rescanRequired:
             return true
+        case .accessLost, .error:
+            return false
         case .created, .modified, .moved, .deleted:
             break
         }
@@ -664,12 +754,10 @@ private extension SQLiteSearchIndex {
         guard file.byteCount <= Int64(PerformanceContract.safeLargeFileByteLimit) else { return }
         let fileURL = workspace.rootURL.appendingPathComponent(file.relativePath)
         guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
-        let documentID = try persistentDocumentID(
+        try deleteDocument(
             workspaceID: workspace.id,
-            relativePath: file.relativePath,
-            proposedID: file.documentID
+            relativePath: file.relativePath
         )
-        try deleteDocument(documentID: documentID)
 
         let insertDocument = """
         INSERT OR REPLACE INTO documents (
@@ -681,7 +769,7 @@ private extension SQLiteSearchIndex {
         try executePrepared(
             sql: insertDocument,
             bindings: [
-                documentID.rawValue.uuidString,
+                file.documentID.rawValue.uuidString,
                 workspace.id.rawValue.uuidString,
                 file.relativePath,
                 content,
@@ -693,32 +781,6 @@ private extension SQLiteSearchIndex {
                 file.exclusionReason?.builtIn?.rawValue,
             ]
         )
-    }
-
-    func persistentDocumentID(
-        workspaceID: WorkspaceID,
-        relativePath: String,
-        proposedID: DocumentID
-    ) throws -> DocumentID {
-        let results = try queryRows(
-            sql: "SELECT document_id FROM document_identities WHERE workspace_id = ? AND relative_path = ? LIMIT 1",
-            bindings: [workspaceID.rawValue.uuidString, relativePath]
-        ) { statement in
-            try Self.documentID(column: 0, statement: statement)
-        }
-        if let existing = results.first {
-            return existing
-        }
-
-        try executePrepared(
-            sql: "INSERT INTO document_identities(workspace_id, relative_path, document_id) VALUES (?, ?, ?)",
-            bindings: [
-                workspaceID.rawValue.uuidString,
-                relativePath,
-                proposedID.rawValue.uuidString,
-            ]
-        )
-        return proposedID
     }
 
     func deleteWorkspace(_ workspaceID: WorkspaceID) throws {
@@ -735,40 +797,6 @@ private extension SQLiteSearchIndex {
         try executePrepared(
             sql: "DELETE FROM documents WHERE workspace_id = ? AND relative_path = ?",
             bindings: [workspaceID.rawValue.uuidString, relativePath]
-        )
-    }
-
-    func migrateIdentity(
-        workspaceID: WorkspaceID,
-        from sourcePath: String,
-        to destinationPath: String
-    ) throws {
-        guard sourcePath != destinationPath else { return }
-        let identifiers = try queryRows(
-            sql: "SELECT document_id FROM document_identities WHERE workspace_id = ? AND relative_path = ?",
-            bindings: [workspaceID.rawValue.uuidString, sourcePath]
-        ) { Self.text(column: 0, statement: $0) }
-        guard let identifier = identifiers.first else { return }
-
-        try executePrepared(
-            sql: "DELETE FROM document_identities WHERE workspace_id = ? AND relative_path = ?",
-            bindings: [workspaceID.rawValue.uuidString, destinationPath]
-        )
-        try executePrepared(
-            sql: "UPDATE document_identities SET relative_path = ? WHERE workspace_id = ? AND relative_path = ? AND document_id = ?",
-            bindings: [
-                destinationPath,
-                workspaceID.rawValue.uuidString,
-                sourcePath,
-                identifier,
-            ]
-        )
-    }
-
-    func deleteDocument(documentID: DocumentID) throws {
-        try executePrepared(
-            sql: "DELETE FROM documents WHERE document_id = ?",
-            bindings: [documentID.rawValue.uuidString]
         )
     }
 

@@ -14,13 +14,28 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
     private var locators: [DocumentLocator: DocumentID] = [:]
     private var autosavers: [DocumentID: Autosaver] = [:]
     private var sessions: [ObjectIdentifier: WeakSession] = [:]
+    let identityStore: DocumentIdentityStore
 
-    func open(_ fileURL: URL, in workspace: Workspace) throws -> Document {
+    init(identityStore: DocumentIdentityStore = .shared) {
+        self.identityStore = identityStore
+    }
+
+    func open(
+        _ fileURL: URL,
+        in workspace: Workspace,
+        preferredID: DocumentID? = nil
+    ) throws -> Document {
         let standardizedURL = fileURL.standardizedFileURL
         let locator = try workspace.locator(for: standardizedURL)
         let identity = PhysicalFileIdentity.authorizedFile(at: standardizedURL)
 
         if let existing = document(for: identity, locator: locator) {
+            try identityStore.bind(
+                existing.id,
+                locator: locator,
+                physicalIdentity: identity,
+                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
+            )
             updateAliases(
                 for: existing.id,
                 identity: identity,
@@ -29,20 +44,52 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
             return existing
         }
 
-        let id = documentID(for: identity, locator: locator)
-        let document = try Document(contentsOf: standardizedURL, id: id)
-        documents[id] = document
+        let id = try identityStore.resolve(
+            DocumentIdentityCandidate(
+                locator: locator,
+                physicalIdentity: identity,
+                canonicalPath: standardizedURL.resolvingSymlinksInPath().path,
+                preferredID: preferredID
+            )
+        )
+        let runtimeID = canonicalRuntimeID(
+            for: identity,
+            locator: locator,
+            preferredID: id
+        )
+        if runtimeID != id {
+            try identityStore.bind(
+                runtimeID,
+                locator: locator,
+                physicalIdentity: identity,
+                canonicalPath: standardizedURL.resolvingSymlinksInPath().path
+            )
+        }
+        let document = try Document(contentsOf: standardizedURL, id: runtimeID)
+        documents[runtimeID] = document
         return document
     }
 
     func register(_ document: Document, in workspace: Workspace) {
-        documents[document.id] = document
+        if let registered = documents[document.id], registered !== document {
+            return
+        }
         guard let fileURL = document.fileURL,
-              let locator = try? workspace.locator(for: fileURL) else { return }
+              let locator = try? workspace.locator(for: fileURL) else {
+            documents[document.id] = document
+            return
+        }
+        let identity = PhysicalFileIdentity.authorizedFile(at: fileURL)
+        if let registered = self.document(for: identity, locator: locator),
+           registered !== document {
+            return
+        }
+        documents[document.id] = document
         updateAliases(
             for: document.id,
-            identity: .authorizedFile(at: fileURL),
-            locator: locator
+            identity: identity,
+            locator: locator,
+            canonicalPath: fileURL.standardizedFileURL.resolvingSymlinksInPath().path
         )
     }
 
@@ -112,14 +159,81 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         for identity: PhysicalFileIdentity,
         locator: DocumentLocator
     ) -> DocumentID {
+        documentID(for: identity, locator: locator, preferredID: nil)
+    }
+
+    /// Adopts a discovery/index identity only when the file has not already
+    /// been registered. Physical identity and locator mappings always win, so
+    /// opening the same file from a tree, search result, Finder, or another
+    /// window can never create a second editable buffer.
+    func documentID(
+        for identity: PhysicalFileIdentity,
+        locator: DocumentLocator,
+        preferredID: DocumentID?,
+        canonicalPath: String? = nil
+    ) -> DocumentID {
+        let storedID = try? identityStore.resolve(
+            DocumentIdentityCandidate(
+                locator: locator,
+                physicalIdentity: identity,
+                canonicalPath: canonicalPath,
+                preferredID: preferredID
+            )
+        )
+        let id = canonicalRuntimeID(
+            for: identity,
+            locator: locator,
+            preferredID: storedID ?? preferredID
+        )
+        if id != storedID {
+            try? identityStore.bind(
+                id,
+                locator: locator,
+                physicalIdentity: identity,
+                canonicalPath: canonicalPath
+            )
+        }
+        return id
+    }
+
+    private func canonicalRuntimeID(
+        for identity: PhysicalFileIdentity,
+        locator: DocumentLocator,
+        preferredID: DocumentID?
+    ) -> DocumentID {
         if let id = identities[identity] ?? locators[locator] {
             identities[identity] = id
             locators[locator] = id
             return id
         }
-        let id = DocumentID()
+        let id = preferredID.flatMap { candidate in
+            isAvailable(candidate, for: identity, locator: locator) ? candidate : nil
+        } ?? DocumentID()
         identities[identity] = id
         locators[locator] = id
+        return id
+    }
+
+    /// Reserves a stable identity for a discovered path without loading or
+    /// stat-ing its contents on the main actor. `open` later adds the physical
+    /// identity and coalesces aliases across overlapping workspace roots.
+    func documentID(
+        for locator: DocumentLocator,
+        preferredID: DocumentID
+    ) -> DocumentID {
+        if let id = locators[locator] { return id }
+        let storedID = try? identityStore.resolve(
+            DocumentIdentityCandidate(locator: locator, preferredID: preferredID)
+        )
+        // A persisted ID may intentionally be claimed by another locator for
+        // the same physical file (parent + nested workspace roots). Only an
+        // unverified proposal must pass the runtime collision check.
+        let id = storedID
+            ?? (isUnclaimed(preferredID) ? preferredID : DocumentID())
+        locators[locator] = id
+        if id != storedID {
+            try? identityStore.bind(id, locator: locator, physicalIdentity: nil)
+        }
         return id
     }
 
@@ -128,8 +242,28 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         identity: PhysicalFileIdentity,
         locator: DocumentLocator
     ) {
+        updateAliases(
+            for: documentID,
+            identity: identity,
+            locator: locator,
+            canonicalPath: nil
+        )
+    }
+
+    private func updateAliases(
+        for documentID: DocumentID,
+        identity: PhysicalFileIdentity,
+        locator: DocumentLocator,
+        canonicalPath: String?
+    ) {
         identities[identity] = documentID
         locators[locator] = documentID
+        try? identityStore.bind(
+            documentID,
+            locator: locator,
+            physicalIdentity: identity,
+            canonicalPath: canonicalPath
+        )
     }
 
     func updateAliases(for document: Document, in workspace: Workspace) {
@@ -141,6 +275,7 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
         if locators[locator] == documentID {
             locators.removeValue(forKey: locator)
         }
+        try? identityStore.tombstone(locator, documentID: documentID)
     }
 
     func detach(_ documentID: DocumentID, from locator: DocumentLocator) {
@@ -167,5 +302,25 @@ final class DocumentBufferRegistry: DocumentBufferRegistering {
             return document
         }
         return nil
+    }
+
+    private func isAvailable(
+        _ candidate: DocumentID,
+        for identity: PhysicalFileIdentity,
+        locator: DocumentLocator
+    ) -> Bool {
+        guard documents[candidate] == nil else { return false }
+        guard !identities.contains(where: {
+            $0.value == candidate && $0.key != identity
+        }) else { return false }
+        return !locators.contains(where: {
+            $0.value == candidate && $0.key != locator
+        })
+    }
+
+    private func isUnclaimed(_ candidate: DocumentID) -> Bool {
+        documents[candidate] == nil
+            && !identities.values.contains(candidate)
+            && !locators.values.contains(candidate)
     }
 }

@@ -21,6 +21,7 @@
 		21CD26219348D2BA03F66678 /* MarkdownEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31DDB59E4E4182C33DEB7F33 /* MarkdownEditingTests.swift */; };
 		21E6932E666AE9A132A422C9 /* WorkspaceIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A40D0ABAC28CC72BBBB0FDE /* WorkspaceIndexTests.swift */; };
 		23BD4A7ED7D332D9B3D3F7EA /* SourcePreservingMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8566EFD44C7B437E0AD0927 /* SourcePreservingMarkdownParser.swift */; };
+		25970BEDDDDA0331B0610E23 /* DocumentIdentityIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9479EA878945457CFEF7E01 /* DocumentIdentityIntegrationTests.swift */; };
 		32735DE4C2542395166C6CE5 /* MarkdownIncrementalPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F54B83A850CC4078A10343AB /* MarkdownIncrementalPolicy.swift */; };
 		3A01AEAC77ACCCD098CEAC4B /* WorkspaceCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7666498B3DF76879844CF3 /* WorkspaceCatalog.swift */; };
 		3A5F94A9A852E19D40C00EA9 /* Document.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A196F47311421B310ECB36 /* Document.swift */; };
@@ -34,6 +35,7 @@
 		62B0FB0A41C317E74D91C2C2 /* MarkdownIncrementalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEE996CFB7C2DEBDA06D5F88 /* MarkdownIncrementalTests.swift */; };
 		6362210FF8A7E369D307A347 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = D5994C27BCB22D477260E23C /* libsqlite3.tbd */; };
 		6465D3F4B4F1E6A4AFB269D4 /* TypewriterScroller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88078E3D39B2392D1D7192C3 /* TypewriterScroller.swift */; };
+		671260F8D59D0531B44C6E9C /* DocumentIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 990523F0286BDA48946FB779 /* DocumentIdentityStore.swift */; };
 		672903504C43486404095113 /* WorkspaceSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438A5C287432476396F197D0 /* WorkspaceSetupView.swift */; };
 		6D3D1E7525A01345D5DAE986 /* DocumentBufferRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7E1E41547D7184B400BFE2 /* DocumentBufferRegistry.swift */; };
 		6FA4B8F414E3029D10779DD7 /* MarkdownEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB9A8DB7F526522AF6C2288D /* MarkdownEditing.swift */; };
@@ -77,6 +79,7 @@
 		F6E2FFDCABEF71BD602494BB /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F231E037B0C6D9E33330AC /* AppState.swift */; };
 		F8610375304C1F9410CC61C4 /* ClioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6B7D4086EC1BC509AB0F39D /* ClioApp.swift */; };
 		FAD2A9FF20EADCB75DF68D86 /* MarkdownInlineParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F47B1CD2E86D632BED61BC84 /* MarkdownInlineParser.swift */; };
+		FCBF9C7EDDE3D9867A361F5B /* WorkspaceIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -130,7 +133,9 @@
 		95FBD8965B599CB501B83254 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusDimmerTests.swift; sourceTree = "<group>"; };
 		985FAA6974C83B5BD55EAAA2 /* FocusDimmer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusDimmer.swift; sourceTree = "<group>"; };
+		990523F0286BDA48946FB779 /* DocumentIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentityStore.swift; sourceTree = "<group>"; };
 		99FFDC4F6FD0B1903F2D36A5 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIndexCoordinator.swift; sourceTree = "<group>"; };
 		9DAD4C82CA68E85065EE6902 /* everything.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = everything.md; sourceTree = "<group>"; };
 		A713CADC782C968FEF3EB190 /* WorkspaceScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceScanner.swift; sourceTree = "<group>"; };
 		A8566EFD44C7B437E0AD0927 /* SourcePreservingMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePreservingMarkdownParser.swift; sourceTree = "<group>"; };
@@ -138,6 +143,7 @@
 		AE7E353A266B86026DEE626C /* DocumentContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentContracts.swift; sourceTree = "<group>"; };
 		B58080E087A87572DF6CB1B2 /* EditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorCoordinator.swift; sourceTree = "<group>"; };
 		B6A196F47311421B310ECB36 /* Document.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Document.swift; sourceTree = "<group>"; };
+		B9479EA878945457CFEF7E01 /* DocumentIdentityIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentityIntegrationTests.swift; sourceTree = "<group>"; };
 		BB9A8DB7F526522AF6C2288D /* MarkdownEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditing.swift; sourceTree = "<group>"; };
 		CC6B8EE04048FEAE6FD45E1F /* Typography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Typography.swift; sourceTree = "<group>"; };
 		CCC075AEFDED74E31BBF7810 /* ConflictResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictResolver.swift; sourceTree = "<group>"; };
@@ -241,6 +247,7 @@
 				CCC075AEFDED74E31BBF7810 /* ConflictResolver.swift */,
 				B6A196F47311421B310ECB36 /* Document.swift */,
 				2F7E1E41547D7184B400BFE2 /* DocumentBufferRegistry.swift */,
+				990523F0286BDA48946FB779 /* DocumentIdentityStore.swift */,
 				E1DB795B1CBD37874E580388 /* DocumentMover.swift */,
 				64F69C1948D2B708A8A173C3 /* DocumentRevision.swift */,
 				0033457428D3EA40B0EEC891 /* GitIgnoreMatcher.swift */,
@@ -250,6 +257,7 @@
 				99FFDC4F6FD0B1903F2D36A5 /* Workspace.swift */,
 				6A7666498B3DF76879844CF3 /* WorkspaceCatalog.swift */,
 				645B4D1ABF7E41D868B35BA8 /* WorkspaceDiscoverySettings.swift */,
+				9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */,
 				A713CADC782C968FEF3EB190 /* WorkspaceScanner.swift */,
 				7F8E550D4B9A16DD957A2435 /* WorkspaceWatcher.swift */,
 			);
@@ -342,6 +350,7 @@
 				DDD83589B757361BBB1A0C6B /* ContractTests.swift */,
 				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
 				CE03532E7E5B2F8515BCEE74 /* DataSafetyTests.swift */,
+				B9479EA878945457CFEF7E01 /* DocumentIdentityIntegrationTests.swift */,
 				96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */,
 				D37AE6760E23A721CE0A399F /* MarkdownConformanceTests.swift */,
 				31DDB59E4E4182C33DEB7F33 /* MarkdownEditingTests.swift */,
@@ -482,6 +491,7 @@
 				3A5F94A9A852E19D40C00EA9 /* Document.swift in Sources */,
 				6D3D1E7525A01345D5DAE986 /* DocumentBufferRegistry.swift in Sources */,
 				205FD4F4C223A05EEE99E768 /* DocumentContracts.swift in Sources */,
+				671260F8D59D0531B44C6E9C /* DocumentIdentityStore.swift in Sources */,
 				A2B6A71BB47E4934736243DD /* DocumentMover.swift in Sources */,
 				77E296B574D0984F3A6C8C2A /* DocumentRevision.swift in Sources */,
 				3AE0DD1AA78700742E250DBF /* EditorCoordinator.swift in Sources */,
@@ -516,6 +526,7 @@
 				3A01AEAC77ACCCD098CEAC4B /* WorkspaceCatalog.swift in Sources */,
 				02C93EA5D305801DD36D203F /* WorkspaceContracts.swift in Sources */,
 				983206E924F8592610BB1AAA /* WorkspaceDiscoverySettings.swift in Sources */,
+				FCBF9C7EDDE3D9867A361F5B /* WorkspaceIndexCoordinator.swift in Sources */,
 				7A2897B0CAA55A517C16B316 /* WorkspaceScanner.swift in Sources */,
 				672903504C43486404095113 /* WorkspaceSetupView.swift in Sources */,
 				EAC6D854A8907021FB563180 /* WorkspaceWatcher.swift in Sources */,
@@ -530,6 +541,7 @@
 				B7D2D3C32DA0AFB3AD54B71B /* ContractTests.swift in Sources */,
 				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,
 				B0800159F3EA5A2E15AF8150 /* DataSafetyTests.swift in Sources */,
+				25970BEDDDDA0331B0610E23 /* DocumentIdentityIntegrationTests.swift in Sources */,
 				F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */,
 				93E83F01B75FA876E1645B79 /* MarkdownConformanceTests.swift in Sources */,
 				21CD26219348D2BA03F66678 /* MarkdownEditingTests.swift in Sources */,

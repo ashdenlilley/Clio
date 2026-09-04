@@ -7,6 +7,23 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceCatalog {
+    enum CatalogError: LocalizedError, Equatable {
+        case workspaceUnavailable(WorkspaceID)
+        case mismatchedWorkspaceReference
+        case mismatchedWorkspaceIdentity(expected: WorkspaceID, actual: WorkspaceID)
+
+        var errorDescription: String? {
+            switch self {
+            case .workspaceUnavailable:
+                "The folder for this document is no longer available."
+            case .mismatchedWorkspaceReference:
+                "The document reference does not belong to its workspace."
+            case .mismatchedWorkspaceIdentity:
+                "The authorized workspace did not retain its stored identity."
+            }
+        }
+    }
+
     struct AuthorizationFailure: Identifiable, Equatable {
         let id: WorkspaceID
         let folderName: String
@@ -26,7 +43,7 @@ final class WorkspaceCatalog {
     private let bookmarkResolver: @MainActor (Data) throws -> Workspace.BookmarkResolution
 
     @ObservationIgnored
-    private let workspaceFactory: @MainActor (URL) throws -> Workspace
+    private let workspaceFactory: @MainActor (WorkspaceID, URL) throws -> Workspace
 
     @ObservationIgnored
     private var activeWorkspaces: [WorkspaceID: Workspace] = [:]
@@ -35,7 +52,9 @@ final class WorkspaceCatalog {
         defaults: UserDefaults = .standard,
         bookmarkMaker: @escaping @MainActor (URL) throws -> Data = Workspace.makeSecurityScopedBookmark,
         bookmarkResolver: @escaping @MainActor (Data) throws -> Workspace.BookmarkResolution = Workspace.resolveSecurityScopedBookmark,
-        workspaceFactory: @escaping @MainActor (URL) throws -> Workspace = { try Workspace(rootURL: $0) }
+        workspaceFactory: @escaping @MainActor (WorkspaceID, URL) throws -> Workspace = {
+            try Workspace(id: $0, rootURL: $1)
+        }
     ) {
         self.defaults = defaults
         self.bookmarkMaker = bookmarkMaker
@@ -50,6 +69,38 @@ final class WorkspaceCatalog {
 
     func workspace(id: WorkspaceID) -> Workspace? {
         activeWorkspaces[id]
+    }
+
+    /// Resolves discovery identities through the canonical buffer registry.
+    /// The result's proposed ID is adopted only for a file that has no prior
+    /// physical or locator mapping.
+    func openDocument(
+        for file: WorkspaceFile,
+        registry: DocumentBufferRegistry
+    ) throws -> Document {
+        guard let workspace = activeWorkspaces[file.locator.workspaceID] else {
+            throw CatalogError.workspaceUnavailable(file.locator.workspaceID)
+        }
+        guard file.relativePath == file.locator.relativePath else {
+            throw CatalogError.mismatchedWorkspaceReference
+        }
+        let url = try workspace.fileURL(for: file.locator)
+        return try registry.open(url, in: workspace, preferredID: file.documentID)
+    }
+
+    func openDocument(
+        for result: WorkspaceSearchResult,
+        registry: DocumentBufferRegistry
+    ) throws -> Document {
+        guard let workspace = activeWorkspaces[result.workspaceID] else {
+            throw CatalogError.workspaceUnavailable(result.workspaceID)
+        }
+        let locator = try DocumentLocator(
+            workspaceID: result.workspaceID,
+            relativePath: result.relativePath
+        )
+        let url = try workspace.fileURL(for: locator)
+        return try registry.open(url, in: workspace, preferredID: result.documentID)
     }
 
     func descriptor(containing fileURL: URL) -> WorkspaceDescriptor? {
@@ -73,8 +124,9 @@ final class WorkspaceCatalog {
 
         let bookmark = try bookmarkMaker(standardizedURL)
         let resolution = try bookmarkResolver(bookmark)
-        let workspace = try workspaceFactory(resolution.url)
-        let descriptor = WorkspaceDescriptor(rootURL: workspace.rootURL)
+        let workspaceID = WorkspaceID()
+        let workspace = try makeWorkspace(id: workspaceID, rootURL: resolution.url)
+        let descriptor = WorkspaceDescriptor(id: workspaceID, rootURL: workspace.rootURL)
         let refreshedBookmark = resolution.isStale
             ? try bookmarkMaker(resolution.url)
             : bookmark
@@ -98,7 +150,7 @@ final class WorkspaceCatalog {
     func reauthorize(_ id: WorkspaceID, with folderURL: URL) throws {
         let bookmark = try bookmarkMaker(folderURL.standardizedFileURL)
         let resolution = try bookmarkResolver(bookmark)
-        let workspace = try workspaceFactory(resolution.url)
+        let workspace = try makeWorkspace(id: id, rootURL: resolution.url)
         let previous = storedEntries().first { $0.id == id }
         let descriptor = WorkspaceDescriptor(
             id: id,
@@ -123,6 +175,17 @@ final class WorkspaceCatalog {
 }
 
 private extension WorkspaceCatalog {
+    func makeWorkspace(id: WorkspaceID, rootURL: URL) throws -> Workspace {
+        let workspace = try workspaceFactory(id, rootURL)
+        guard workspace.id == id else {
+            throw CatalogError.mismatchedWorkspaceIdentity(
+                expected: id,
+                actual: workspace.id
+            )
+        }
+        return workspace
+    }
+
     struct StoredWorkspace: Codable, Equatable {
         let id: WorkspaceID
         let displayName: String
@@ -149,7 +212,7 @@ private extension WorkspaceCatalog {
         for entry in stored {
             do {
                 let resolution = try bookmarkResolver(entry.bookmark)
-                let workspace = try workspaceFactory(resolution.url)
+                let workspace = try makeWorkspace(id: entry.id, rootURL: resolution.url)
                 let descriptor = WorkspaceDescriptor(
                     id: entry.id,
                     rootURL: workspace.rootURL,
