@@ -144,6 +144,7 @@ private struct WorkspaceTreeSection: View {
                             Label(item.name, systemImage: "doc.text")
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)

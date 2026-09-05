@@ -89,6 +89,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         surface.textView.onKeyEventEnded = { [weak self] in
             self?.isHandlingKeyEvent = false
             self?.isChangingText = false
+            self?.scheduleSettledTypewriterScroll()
         }
         surface.textView.onMarkdownAction = { [weak self, weak textView = surface.textView] action in
             guard let self, let textView else { return false }
@@ -101,6 +102,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
                 in: surface,
                 configuration: self.configuration
             )
+            self.scheduleSettledTypewriterScroll()
         }
         surface.scrollView.contentView.postsBoundsChangedNotifications = true
         boundsObserver = NotificationCenter.default.addObserver(
@@ -146,6 +148,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         if let renderedContentGeneration {
             if contentGeneration != renderedContentGeneration {
                 if contentGeneration.bufferID != renderedContentGeneration.bufferID {
+                    typewriterScroller.suspendUntilNextEdit()
                     surface.textView.undoManager?.removeAllActions()
                     hasRestoredViewport = false
                     lastKnownViewport = nil
@@ -191,13 +194,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
 
         typewriterScroller.resumeAfterEdit()
         focusDimmer.apply(to: textView, configuration: configuration)
-        if let surface {
-            typewriterScroller.scrollCaretToAnchor(
-                in: surface,
-                configuration: configuration,
-                animated: false
-            )
-        }
+        scheduleSettledTypewriterScroll()
         isChangingText = false
         captureViewport()
     }
@@ -207,13 +204,27 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
               let textView = notification.object as? NSTextView else { return }
 
         focusDimmer.apply(to: textView, configuration: configuration)
-        guard let surface else { return }
-        typewriterScroller.scrollCaretToAnchor(
-            in: surface,
-            configuration: configuration,
-            animated: isHandlingKeyEvent && !isChangingText
-        )
+        if isHandlingKeyEvent { scheduleSettledTypewriterScroll() }
         captureViewport()
+    }
+
+    private var settledScrollScheduled = false
+
+    private func scheduleSettledTypewriterScroll() {
+        guard !settledScrollScheduled else { return }
+        settledScrollScheduled = true
+        // textDidChange can precede the final insertion selection and TextKit's
+        // extra-line layout. Reconcile once after the entire native edit event.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.settledScrollScheduled = false
+            guard let surface = self.surface else { return }
+            surface.layoutSubtreeIfNeeded()
+            self.typewriterScroller.scrollCaretToAnchor(
+                in: surface, configuration: self.configuration, animated: false
+            )
+            self.captureViewport()
+        }
     }
 
     func textView(

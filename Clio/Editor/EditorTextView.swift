@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// Owns the TextKit 2 object graph used by `EditorTextView`.
 ///
@@ -27,6 +28,9 @@ final class EditorTextView: NSTextView {
     var onMarkdownAction: ((MarkdownEditorAction) -> Bool)?
 
     private var retainedTextKitStack: AnyObject?
+    private let blockCaret = CALayer()
+    private var isProcessingKeyEvent = false
+    var managesTypingScroll = false
 
     static func makeTextKit2TextView() -> EditorTextView {
         let stack = EditorTextKitStack()
@@ -39,8 +43,9 @@ final class EditorTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        isProcessingKeyEvent = true
         onKeyEventBegan?()
-        defer { onKeyEventEnded?() }
+        defer { isProcessingKeyEvent = false; onKeyEventEnded?() }
         if let action = markdownShortcut(for: event), onMarkdownAction?(action) == true {
             return
         }
@@ -85,14 +90,59 @@ final class EditorTextView: NSTextView {
         super.scrollWheel(with: event)
     }
 
+    override func mouseDown(with event: NSEvent) {
+        // Never move the document under a click/drag while AppKit selects text.
+        onUserScroll?()
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onUserScroll?()
+        super.rightMouseDown(with: event)
+    }
+
+    override func scrollRangeToVisible(_ range: NSRange) {
+        // AppKit's automatic key-event scrolling otherwise jumps before the
+        // typewriter controller can perform its smooth return animation.
+        guard !(managesTypingScroll && isProcessingKeyEvent) else { return }
+        super.scrollRangeToVisible(range)
+    }
+
+    func invalidateBlockCaret() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        blockCaret.isHidden = true
+        CATransaction.commit()
+        needsDisplay = true
+        updateInsertionPointStateAndRestartTimer(true)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { blockCaret.isHidden = true }
+        return resigned
+    }
+
     override func drawInsertionPoint(
         in rect: NSRect,
         color: NSColor,
         turnedOn flag: Bool
     ) {
-        var caretRect = rect
-        caretRect.size.width = 2
-        super.drawInsertionPoint(in: caretRect, color: Palette.caret, turnedOn: flag)
+        // AppKit owns blink timing. A retained overlay owns the wider block:
+        // never paint outside AppKit's narrow caret invalidation rectangle.
+        // Moving/resizing the editor therefore cannot leave painted ghost bars.
+        if blockCaret.superlayer == nil {
+            wantsLayer = true
+            layer?.addSublayer(blockCaret)
+        }
+        let caretFont = font ?? Typography.font()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        blockCaret.frame = NSRect(x: rect.minX, y: rect.minY,
+                                  width: Typography.characterAdvance(for: caretFont), height: rect.height)
+        blockCaret.backgroundColor = insertionPointColor.withAlphaComponent(0.75).cgColor
+        blockCaret.isHidden = !flag || selectedRange().length != 0 || window?.isKeyWindow != true
+        CATransaction.commit()
     }
 
     func applyEditorConfiguration(_ configuration: EditorConfiguration) {
@@ -105,8 +155,10 @@ final class EditorTextView: NSTextView {
         drawsBackground = true
         backgroundColor = Palette.background
         textColor = Palette.foreground
-        insertionPointColor = Palette.caret
-        selectedTextAttributes = [.backgroundColor: Palette.selection]
+        insertionPointColor = configuration.accent.nsColor
+        selectedTextAttributes = [.backgroundColor: configuration.accent.nsColor.withAlphaComponent(0.55)]
+        managesTypingScroll = configuration.isTypewriterScrollingEnabled
+        invalidateBlockCaret()
         focusRingType = .none
 
         isEditable = true

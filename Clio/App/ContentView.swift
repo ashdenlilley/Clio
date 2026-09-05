@@ -171,7 +171,8 @@ struct ContentView: View {
                     isTypewriterScrollingEnabled: appState.isTypewriterModeEnabled,
                     typewriterAnchor: CGFloat(appState.typewriterAnchor),
                     isFocusModeEnabled: appState.isFocusModeEnabled,
-                    focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity)
+                    focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity),
+                    accent: appState.accent
                 ),
                 onTextEdit: { edit in
                     windowSession.noteEditorEdit(edit)
@@ -181,11 +182,12 @@ struct ContentView: View {
                 },
                 minimap: windowSession.minimap
             )
-            .overlay { EditorMinimapOverlay() }
+            .overlay(alignment: .topTrailing) { EditorMinimapOverlay().frame(width: 32) }
 
             StatusLine(
                 relativePath: editorSession.relativePath,
                 wordCountLabel: editorSession.wordCountLabel,
+                wordCount: editorSession.wordCount,
                 fontSize: appState.fontSize
             )
             .modifier(ContextChromeMotion(motion: motion))
@@ -318,9 +320,10 @@ private struct MotionSidebarOverlay: View {
 
 struct ContextChromeMotion: ViewModifier {
     let motion: WindowMotionAdapter
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
         content
-            .opacity(motion.contextProgress)
+            .opacity(motion.contextProgress * (reduceTransparency ? 1 : 0.65))
             .allowsHitTesting(motion.contextProgress > 0.001)
             .accessibilityHidden(motion.contextProgress <= 0.001)
     }
@@ -544,6 +547,7 @@ private struct WorkspaceErrorBanner: View {
 private struct StatusLine: View {
     let relativePath: String
     let wordCountLabel: String
+    let wordCount: Int
     let fontSize: Double
 
     var body: some View {
@@ -555,8 +559,9 @@ private struct StatusLine: View {
 
             Spacer(minLength: 40)
 
-            Text(wordCountLabel)
+            Text("\(wordCountLabel) · Read \(WritingTime.label(words: wordCount, wordsPerMinute: 250)) · Speak \(WritingTime.label(words: wordCount, wordsPerMinute: 140))")
                 .fixedSize()
+                .accessibilityIdentifier("editor.statistics")
         }
         .font(.custom(Typography.family, fixedSize: fontSize * 0.85))
         .foregroundStyle(Color(nsColor: Palette.muted))
@@ -564,7 +569,7 @@ private struct StatusLine: View {
         .frame(height: Metrics.statusHeight)
         .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(relativePath), \(wordCountLabel)")
+        .accessibilityLabel("\(relativePath), \(wordCountLabel), reading time \(WritingTime.label(words: wordCount, wordsPerMinute: 250)), speaking time \(WritingTime.label(words: wordCount, wordsPerMinute: 140))")
     }
 }
 
@@ -592,6 +597,8 @@ private struct WindowChromeProbe: NSViewRepresentable {
 }
 
 private final class WindowProbeView: NSView, NSWindowDelegate {
+    // This is a lifecycle probe, never an input surface (including fullscreen).
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
     weak var windowSession: EditorWindowSession?
     weak var editorSession: EditorSession?
 
@@ -803,16 +810,7 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
 
 extension AppState.AccentPreset {
     var color: Color {
-        switch self {
-        case .clio:
-            Color(nsColor: Palette.accent)
-        case .green:
-            Color(nsColor: Palette.literal)
-        case .amber:
-            Color(nsColor: .systemOrange)
-        case .cyan:
-            Color(nsColor: .systemCyan)
-        }
+        Color(nsColor: nsColor)
     }
 }
 

@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 final class AppState: ClioCommandDispatching {
     enum AccentPreset: String, CaseIterable, Identifiable, Sendable {
         case clio
+        case system
+        case blue, purple, pink, red, orange, yellow, graphite
         case green
         case amber
         case cyan
@@ -16,6 +18,22 @@ final class AppState: ClioCommandDispatching {
 
         var title: String {
             rawValue.capitalized
+        }
+
+        var nsColor: NSColor {
+            switch self {
+            case .clio: Palette.accent
+            case .system: .controlAccentColor
+            case .blue: .systemBlue
+            case .purple: .systemPurple
+            case .pink: .systemPink
+            case .red: .systemRed
+            case .orange, .amber: .systemOrange
+            case .yellow: .systemYellow
+            case .green: .systemGreen
+            case .graphite: .systemGray
+            case .cyan: .systemCyan
+            }
         }
     }
 

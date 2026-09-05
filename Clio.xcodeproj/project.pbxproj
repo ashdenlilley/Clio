@@ -44,6 +44,7 @@
 		485F8D44A53A27E421EB4B27 /* MarkdownSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF899F1015754266E7E750C /* MarkdownSource.swift */; };
 		4CA339FBB514DF4232B8123C /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE367A19CA5B87458595B6EF /* MarkdownParserTests.swift */; };
 		4F8D200FC34C5631B43CCE4D /* LaunchDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE1C19EAC88802C684AB629 /* LaunchDiagnostics.swift */; };
+		5325C08B78BE3D458C14EE2C /* WritingTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA261BECED368C2FC630D14 /* WritingTime.swift */; };
 		5403D9FEC2130E342EF759EF /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = 2606EAA75DBB43ED79C5DFA6 /* Fonts */; };
 		54F836C09DD8A891BAD18A8A /* blocks.md in Resources */ = {isa = PBXBuildFile; fileRef = 16AEB59F52D99D15598D4EAE /* blocks.md */; };
 		571D88FCA75FADB36D974942 /* TestAppStateFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AE91225EAE96FF1C5BCCFF /* TestAppStateFactory.swift */; };
@@ -137,6 +138,7 @@
 		F8610375304C1F9410CC61C4 /* ClioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6B7D4086EC1BC509AB0F39D /* ClioApp.swift */; };
 		FAD2A9FF20EADCB75DF68D86 /* MarkdownInlineParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F47B1CD2E86D632BED61BC84 /* MarkdownInlineParser.swift */; };
 		FCBF9C7EDDE3D9867A361F5B /* WorkspaceIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */; };
+		FE76CDDFE4122BEC2B83DFE0 /* WritingWorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5364CE1384CC5228DAC880 /* WritingWorkspaceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -185,6 +187,7 @@
 		2A40D0ABAC28CC72BBBB0FDE /* WorkspaceIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIndexTests.swift; sourceTree = "<group>"; };
 		2B4A27027A03B8AB582271EC /* MarkdownBackgroundWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBackgroundWork.swift; sourceTree = "<group>"; };
 		2B9446C2F8F8D25C96C739A8 /* MarkdownCodeTokenizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownCodeTokenizer.swift; sourceTree = "<group>"; };
+		2F5364CE1384CC5228DAC880 /* WritingWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingWorkspaceTests.swift; sourceTree = "<group>"; };
 		2F710F7CDE141F9CF769FD50 /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
 		2F7E1E41547D7184B400BFE2 /* DocumentBufferRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentBufferRegistry.swift; sourceTree = "<group>"; };
 		31DDB59E4E4182C33DEB7F33 /* MarkdownEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditingTests.swift; sourceTree = "<group>"; };
@@ -221,6 +224,7 @@
 		7F8E550D4B9A16DD957A2435 /* WorkspaceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWatcher.swift; sourceTree = "<group>"; };
 		8127C419A012069C4D455A73 /* LaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchConfiguration.swift; sourceTree = "<group>"; };
 		88078E3D39B2392D1D7192C3 /* TypewriterScroller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypewriterScroller.swift; sourceTree = "<group>"; };
+		8CA261BECED368C2FC630D14 /* WritingTime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingTime.swift; sourceTree = "<group>"; };
 		8CD255F76358AFDC256DB68E /* TransientSurfaceMotionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransientSurfaceMotionController.swift; sourceTree = "<group>"; };
 		8F0880260E073580D21D7E6C /* EditorPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPerformanceTests.swift; sourceTree = "<group>"; };
 		8FB455DC14BE8709DADAFB33 /* ConflictPreviewBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictPreviewBuilder.swift; sourceTree = "<group>"; };
@@ -448,6 +452,7 @@
 				FF023D80672733CAD05C10C4 /* MarkdownHighlightingMode.swift */,
 				120F7CB4CA6F19253E8A4F3C /* MarkdownTextKitHighlighter.swift */,
 				88078E3D39B2392D1D7192C3 /* TypewriterScroller.swift */,
+				8CA261BECED368C2FC630D14 /* WritingTime.swift */,
 			);
 			path = Editor;
 			sourceTree = "<group>";
@@ -571,6 +576,7 @@
 				2A40D0ABAC28CC72BBBB0FDE /* WorkspaceIndexTests.swift */,
 				4735E45E61E12035230D7397 /* WorkspacePerformanceContractTests.swift */,
 				0B183BFD720535FFD3B725B2 /* WorkspaceTests.swift */,
+				2F5364CE1384CC5228DAC880 /* WritingWorkspaceTests.swift */,
 			);
 			path = ClioTests;
 			sourceTree = "<group>";
@@ -874,6 +880,7 @@
 				672903504C43486404095113 /* WorkspaceSetupView.swift in Sources */,
 				220626EA1190A34AA57A0839 /* WorkspaceSidebar.swift in Sources */,
 				EAC6D854A8907021FB563180 /* WorkspaceWatcher.swift in Sources */,
+				5325C08B78BE3D458C14EE2C /* WritingTime.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -910,6 +917,7 @@
 				21E6932E666AE9A132A422C9 /* WorkspaceIndexTests.swift in Sources */,
 				ECD5F42B095EA0555EB7403C /* WorkspacePerformanceContractTests.swift in Sources */,
 				070E32D7009F6D1CA2143235 /* WorkspaceTests.swift in Sources */,
+				FE76CDDFE4122BEC2B83DFE0 /* WritingWorkspaceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1125,7 +1133,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx14*]" = AppIcon.icon;
@@ -1134,7 +1142,7 @@
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = olympus.clio.mac;
 				PRODUCT_NAME = Clio;
 				SDKROOT = macosx;
@@ -1211,7 +1219,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Clio/Support/Clio.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx14*]" = AppIcon.icon;
@@ -1220,7 +1228,7 @@
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = olympus.clio.mac;
 				PRODUCT_NAME = Clio;

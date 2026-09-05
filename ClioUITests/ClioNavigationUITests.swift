@@ -148,6 +148,40 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         XCTAssertTrue(minimap.waitForExistence(timeout: 3))
     }
 
+    func testFullscreenMouseSelectionContextMenuAndReturnToWindow() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.typeText("Alpha beta gamma\nSecond line")
+        // Hide sidebar without moving the caret; test the writing canvas itself.
+        app.buttons["sidebar.toggle"].click()
+        let window = app.windows.firstMatch
+        let originalFrame = window.frame
+        app.typeKey("f", modifierFlags: [.control, .command])
+        XCTAssertTrue(waitUntil(timeout: 8) { window.frame.height > originalFrame.height + 20 })
+        // A coordinate drag exercises hit testing, not accessibility select-all.
+        // The current typing line is at the configured 45% vertical anchor.
+        let viewport = app.descendants(matching: .any)["editor.surface.no-focus-ring"]
+        let start = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        editor.rightClick()
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.menuItems["Copy"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Fullscreen block caret and native selection"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.typeKey("f", modifierFlags: [.control, .command])
+        XCTAssertTrue(waitUntil(timeout: 8) { abs(window.frame.height - originalFrame.height) < 20 })
+        editor.click()
+        editor.rightClick()
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(editor.value as? String, "Alpha beta gamma\nSecond line")
+    }
+
     private func launch(scenario: String) {
         app = XCUIApplication()
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"

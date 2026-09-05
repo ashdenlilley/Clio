@@ -79,9 +79,9 @@ struct EditorMinimapOverlay: View {
                 let active = max(0, strokes.lastIndex(where: { $0.offset <= model.visibleOffset }) ?? 0)
                 Canvas { context, size in
                     for (index, stroke) in strokes.enumerated() {
-                        let width = 4 + stroke.width * 20
+                        let width = 2 + stroke.width * 10
                         let rect = CGRect(x: size.width - width - 8, y: CGFloat(index) * 8 + 5,
-                                          width: width, height: index == active ? 3 : 2)
+                                          width: width, height: index == active ? 1.5 : 1)
                         context.fill(Path(roundedRect: rect, cornerRadius: 1),
                                      with: .color(index == active ? appState.accent.color.opacity(0.8) : Color(nsColor: Palette.muted).opacity(0.7)))
                     }

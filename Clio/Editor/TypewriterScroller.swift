@@ -5,12 +5,24 @@ import QuartzCore
 /// ordinary manual scrolling until the writer types again.
 final class TypewriterScroller {
     private var isSuspendedByUserScroll = false
+    private var shouldEaseReturn = false
+    private var returnTimer: Timer?
+    private var returnStartedAt: CFTimeInterval = 0
+    private var returnStartY: CGFloat = 0
+    private var returnTargetY: CGFloat = 0
+    static let returnDuration: CFTimeInterval = 2
+
+    deinit { returnTimer?.invalidate() }
 
     func suspendUntilNextEdit() {
         isSuspendedByUserScroll = true
+        shouldEaseReturn = false
+        returnTimer?.invalidate()
+        returnTimer = nil
     }
 
     func resumeAfterEdit() {
+        if isSuspendedByUserScroll { shouldEaseReturn = true }
         isSuspendedByUserScroll = false
     }
 
@@ -20,6 +32,9 @@ final class TypewriterScroller {
     ) {
         let scrollView = surface.scrollView
         guard configuration.isTypewriterScrollingEnabled else {
+            returnTimer?.invalidate()
+            returnTimer = nil
+            shouldEaseReturn = false
             let zeroInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
             if !Self.nearlyEqual(scrollView.contentInsets, zeroInsets) {
                 scrollView.contentInsets = zeroInsets
@@ -77,7 +92,37 @@ final class TypewriterScroller {
         let targetY = min(max(requestedY, minimumY), maximumY)
         let target = NSPoint(x: clipView.bounds.origin.x, y: targetY)
 
+        if returnTimer != nil {
+            // Continued typing retargets the existing return, not a fresh two
+            // seconds per keystroke. Manual scroll cancels the timer immediately.
+            returnTargetY = targetY
+            return
+        }
+
+        let easeReturn = shouldEaseReturn
+        shouldEaseReturn = false
         guard abs(clipView.bounds.origin.y - targetY) > 0.5 else { return }
+
+        if easeReturn && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            returnStartedAt = CACurrentMediaTime()
+            returnStartY = clipView.bounds.minY
+            returnTargetY = targetY
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self, weak scrollView] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let scrollView else { return }
+                    let progress = min(1, (CACurrentMediaTime() - self.returnStartedAt) / Self.returnDuration)
+                    let eased = progress * progress * (3 - 2 * progress)
+                    let clip = scrollView.contentView
+                    clip.scroll(to: NSPoint(x: clip.bounds.minX,
+                        y: self.returnStartY + (self.returnTargetY - self.returnStartY) * eased))
+                    scrollView.reflectScrolledClipView(clip)
+                    if progress >= 1 { self.returnTimer?.invalidate(); self.returnTimer = nil }
+                }
+            }
+            returnTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            return
+        }
 
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             NSAnimationContext.runAnimationGroup { context in

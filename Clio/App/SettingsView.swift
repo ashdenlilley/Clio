@@ -35,7 +35,9 @@ struct SettingsView: View {
 
             Section("Focus") {
                 Toggle("Focus mode", isOn: $appState.isFocusModeEnabled)
+                    .help("Dims text outside the active paragraph or Markdown block; does not hide controls or move the viewport.")
                 Toggle("Typewriter scrolling", isOn: $appState.isTypewriterModeEnabled)
+                    .help("Keeps the typing line at the chosen position. Manual scrolling releases it; typing returns smoothly over two seconds.")
                 Toggle("Fade chrome while typing", isOn: $appState.isChromeFadeEnabled)
 
                 SliderRow(
@@ -71,7 +73,7 @@ struct SettingsView: View {
                         .tag(accent)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
             }
 
             Section("Workspace") {

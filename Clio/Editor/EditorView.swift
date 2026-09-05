@@ -16,6 +16,7 @@ struct EditorConfiguration: Equatable {
     var typewriterAnchor: CGFloat
     var isFocusModeEnabled: Bool
     var focusDimmingOpacity: CGFloat
+    var accent: AppState.AccentPreset
 
     init(
         fontSize: CGFloat = Typography.baseSize,
@@ -25,7 +26,8 @@ struct EditorConfiguration: Equatable {
         isTypewriterScrollingEnabled: Bool = true,
         typewriterAnchor: CGFloat = 0.45,
         isFocusModeEnabled: Bool = true,
-        focusDimmingOpacity: CGFloat = 0.28
+        focusDimmingOpacity: CGFloat = 0.28,
+        accent: AppState.AccentPreset = .clio
     ) {
         self.fontSize = fontSize
         self.measure = measure
@@ -35,6 +37,7 @@ struct EditorConfiguration: Equatable {
         self.typewriterAnchor = typewriterAnchor
         self.isFocusModeEnabled = isFocusModeEnabled
         self.focusDimmingOpacity = focusDimmingOpacity
+        self.accent = accent
     }
 
     var resolvedFontSize: CGFloat { min(max(fontSize, 12), 20) }
@@ -191,6 +194,7 @@ final class EditorContainerView: NSView {
         // to the far edge of the full editor viewport.
         let inset = max(Metrics.horizontalPadding, (viewportSize.width - preferredTextWidth) / 2)
         if abs(textView.textContainerInset.width - inset) > 0.5 {
+            textView.invalidateBlockCaret()
             textView.textContainerInset = NSSize(width: inset, height: Metrics.verticalPadding)
         }
         textView.minSize = NSSize(width: 0, height: viewportSize.height)
@@ -205,6 +209,7 @@ final class EditorContainerView: NSView {
 
         guard viewportSize != lastViewportSize else { return }
         lastViewportSize = viewportSize
+        textView.invalidateBlockCaret()
         onViewportSizeChanged?()
     }
 
