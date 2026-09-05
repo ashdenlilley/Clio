@@ -21,6 +21,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 TEAM = "REDACTED00"
+CLOUD_TEAM = "00000000-0000-0000-0000-000000000000"
 REPO = "ashdenlilley/Clio"
 ASC = "https://api.appstoreconnect.apple.com"
 GH = "https://api.github.com"
@@ -29,6 +30,11 @@ GH = "https://api.github.com"
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def validate_teams(environment):
+    require(environment.get("CI_TEAM_ID") == CLOUD_TEAM, "wrong App Store Connect Cloud team")
+    require(environment.get("DEVELOPER_TEAM_ID") == TEAM, "wrong Developer ID signing team")
 
 
 def run(*args, input_data=None):
@@ -231,7 +237,7 @@ def main():
     e = os.environ
     require(e.get("CI_XCODE_CLOUD") == "TRUE" and e.get("CI_XCODEBUILD_ACTION") == "archive"
             and e.get("CI_XCODEBUILD_EXIT_CODE") == "0", "requires successful Cloud archive")
-    require(e.get("CI_TEAM_ID") == TEAM and e.get("DEVELOPER_TEAM_ID") == TEAM, "wrong team")
+    validate_teams(e)
     tag, commit = e.get("CI_TAG", ""), e.get("CI_COMMIT", "")
     require(re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag), "invalid release tag")
     require(e.get("CI_GIT_REF") == "refs/tags/"+tag and not e.get("CI_PULL_REQUEST_NUMBER"), "not a tag build")

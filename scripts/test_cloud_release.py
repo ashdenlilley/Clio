@@ -27,6 +27,16 @@ def actions():
 
 
 class Gates(unittest.TestCase):
+    def test_distinct_cloud_and_signing_teams(self):
+        r.validate_teams({"CI_TEAM_ID": r.CLOUD_TEAM, "DEVELOPER_TEAM_ID": r.TEAM})
+
+    def test_swapped_or_missing_teams_rejected(self):
+        for environment in ({}, {"CI_TEAM_ID": r.TEAM, "DEVELOPER_TEAM_ID": r.TEAM},
+                            {"CI_TEAM_ID": r.CLOUD_TEAM, "DEVELOPER_TEAM_ID": r.CLOUD_TEAM},
+                            {"CI_TEAM_ID": "another-team", "DEVELOPER_TEAM_ID": r.TEAM}):
+            with self.assertRaises(RuntimeError):
+                r.validate_teams(environment)
+
     def test_success(self):
         self.assertTrue(r.successful_run(build(), "a"*40, "current"))
         self.assertTrue(r.valid_actions(actions()))
