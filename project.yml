@@ -77,6 +77,9 @@ targets:
         SUPPORTS_MACCATALYST: NO
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
       configs:
+        Release:
+          ONLY_ACTIVE_ARCH: NO
+          ARCHS: "arm64 x86_64"
         Debug:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
