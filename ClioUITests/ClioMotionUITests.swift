@@ -11,6 +11,7 @@ final class ClioMotionUITests: XCTestCase {
         app.launchEnvironment["CLIO_UI_TEST_SCENARIO"] = "restoration"
         if ProcessInfo.processInfo.environment["CLIO_RUN_MOTION_TRACE"] == "1" {
             app.launchEnvironment["CLIO_UI_TEST_MOTION_TRACE"] = "1"
+            print("MOTION_METRICS_IDENTIFIER=\(app.launchEnvironment["CLIO_UI_TEST_ID"]!)")
         }
         app.launch()
     }

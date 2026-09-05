@@ -9,10 +9,20 @@ final class WindowMotionAdapter: NSObject {
     let chrome: ChromeMotionController
     let surfaces: TransientSurfaceMotionController
     private(set) var revision: UInt64 = 0
+    private(set) var hasActiveSurfaces = false
+    private var sidebarRevision: UInt64 = 0
+    private var contextRevision: UInt64 = 0
+    private var nativeRevision: UInt64 = 0
+    private var surfaceRevision: UInt64 = 0
+    private var preferencesRevision: UInt64 = 0
     @ObservationIgnored private let clock: MotionClock
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var displayLink: CADisplayLink?
     @ObservationIgnored private var displayTarget: WeakMotionDisplayTarget?
+    @ObservationIgnored private var displayLinkGeneration: UInt64 = 0
+    @ObservationIgnored var frameSample: ((UInt64, TimeInterval, TimeInterval, TimeInterval?) -> Void)?
+    @ObservationIgnored private var driverStartedAt: TimeInterval = 0
+    @ObservationIgnored private var awaitingFirstFrame = false
     @ObservationIgnored private var timerGeneration: UInt64 = 0
     @ObservationIgnored weak var window: NSWindow?
     @ObservationIgnored private var responders: [UUID: WeakMotionResponder] = [:]
@@ -33,11 +43,11 @@ final class WindowMotionAdapter: NSObject {
         super.init()
     }
 
-    var sidebarProgress: Double { _ = revision; return chrome.sidebar.presentation }
-    var contextProgress: Double { _ = revision; return chrome.context.presentation }
-    var titlebarProgress: Double { _ = revision; return chrome.titlebar.presentation }
-    var surfaceState: TransientSurfaceMotionController { _ = revision; return surfaces }
-    var preferences: MotionPreferences { _ = revision; return chrome.preferences }
+    var sidebarProgress: Double { _ = sidebarRevision; return chrome.sidebar.presentation }
+    var contextProgress: Double { _ = contextRevision; return chrome.context.presentation }
+    var titlebarProgress: Double { _ = nativeRevision; return chrome.titlebar.presentation }
+    var surfaceState: TransientSurfaceMotionController { _ = surfaceRevision; return surfaces }
+    var preferences: MotionPreferences { _ = preferencesRevision; return chrome.preferences }
     var isDrivingFrames: Bool { displayLink != nil || (timer != nil && (chrome.hasActiveTransitions || surfaces.hasActiveTransitions)) }
 
     func update(_ action: (ChromeMotionController) -> Void) {
@@ -136,9 +146,20 @@ final class WindowMotionAdapter: NSObject {
         sidebarIntentChanged?(chrome.isSidebarIntendedVisible)
         let presentation = MotionAdapterPresentation(chrome: chrome, surfaces: surfaces)
         if presentation != lastPresentation {
-            lastPresentation = presentation
             revision &+= 1
-            applyNativeChrome?()
+            if presentation.sidebar != lastPresentation?.sidebar { sidebarRevision &+= 1 }
+            if presentation.context != lastPresentation?.context { contextRevision &+= 1 }
+            if presentation.surfaceValues != lastPresentation?.surfaceValues
+                || presentation.active != lastPresentation?.active
+                || presentation.visible != lastPresentation?.visible { surfaceRevision &+= 1 }
+            if presentation.preferences != lastPresentation?.preferences { preferencesRevision &+= 1 }
+            if hasActiveSurfaces != !presentation.active.isEmpty { hasActiveSurfaces = !presentation.active.isEmpty }
+            let nativeChanged = presentation.native != lastPresentation?.native
+            lastPresentation = presentation
+            if nativeChanged {
+                nativeRevision &+= 1
+                applyNativeChrome?()
+            }
         }
         scheduleNextFrameOrDeadline()
         if surfaces.visualSurfaceStack.isEmpty { responders.removeAll() }
@@ -155,6 +176,25 @@ final class WindowMotionAdapter: NSObject {
         window = nil
     }
 
+    static func frameRateRange(maximumFPS: Int, lowPower: Bool) -> CAFrameRateRange {
+        let maximum = Float(max(1, lowPower ? min(60, maximumFPS) : maximumFPS))
+        return CAFrameRateRange(minimum: min(30, maximum), maximum: maximum, preferred: maximum)
+    }
+
+    fileprivate func displayFrame() {
+        if let frameSample {
+            let start = clock.now
+            let generation = displayLinkGeneration
+            let firstFrameLatency = awaitingFirstFrame ? start - driverStartedAt : nil
+            awaitingFirstFrame = false
+            ClioSignpost.interval("MotionFrame") { refresh() }
+            frameSample(generation, start, clock.now - start, firstFrameLatency)
+        } else {
+            awaitingFirstFrame = false
+            ClioSignpost.interval("MotionFrame") { refresh() }
+        }
+    }
+
     private func scheduleNextFrameOrDeadline() {
         timerGeneration &+= 1
         timer?.invalidate()
@@ -165,6 +205,13 @@ final class WindowMotionAdapter: NSObject {
                 if displayLink == nil {
                     let target = WeakMotionDisplayTarget(self)
                     let link = window.displayLink(target: target, selector: #selector(WeakMotionDisplayTarget.frame(_:)))
+                    link.preferredFrameRateRange = Self.frameRateRange(
+                        maximumFPS: window.screen?.maximumFramesPerSecond ?? 60,
+                        lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled
+                    )
+                    displayLinkGeneration &+= 1
+                    driverStartedAt = clock.now
+                    awaitingFirstFrame = true
                     displayTarget = target
                     displayLink = link
                     link.add(to: .main, forMode: .common)
@@ -197,15 +244,21 @@ final class WindowMotionAdapter: NSObject {
 }
 
 private struct MotionAdapterPresentation: Equatable {
-    let values: [Double]
+    let sidebar: [Double]
+    let context: Double
+    let native: [Double]
+    let surfaceValues: [Double]
     let active: [TransientSurface]
     let visible: [TransientSurface]
     let preferences: MotionPreferences
     init(chrome: ChromeMotionController, surfaces: TransientSurfaceMotionController) {
-        values = [chrome.sidebar.presentation, chrome.sidebar.target, chrome.context.presentation,
-                  chrome.titlebar.presentation, chrome.pointer.presentation, chrome.pointer.target,
-                  surfaces.palette.presentation, surfaces.settings.presentation, surfaces.conflict.presentation,
-                  surfaces.overlay.presentation, surfaces.conflictBanner.presentation]
+        sidebar = [chrome.sidebar.presentation, chrome.sidebar.target]
+        context = chrome.context.presentation
+        native = [chrome.titlebar.presentation, chrome.pointer.presentation, chrome.pointer.target,
+                  chrome.isSidebarIntendedVisible ? 1 : 0]
+        surfaceValues = [surfaces.palette.presentation, surfaces.settings.presentation,
+                         surfaces.conflict.presentation, surfaces.overlay.presentation,
+                         surfaces.conflictBanner.presentation]
         active = surfaces.activeSurfaceStack
         visible = surfaces.visualSurfaceStack
         preferences = chrome.preferences
@@ -216,7 +269,7 @@ private struct MotionAdapterPresentation: Equatable {
     weak var adapter: WindowMotionAdapter?
     init(_ adapter: WindowMotionAdapter) { self.adapter = adapter }
     @objc func frame(_ link: CADisplayLink) {
-        ClioSignpost.interval("MotionFrame") { adapter?.refresh() }
+        adapter?.displayFrame()
     }
 }
 

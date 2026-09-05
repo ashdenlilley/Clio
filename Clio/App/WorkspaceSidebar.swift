@@ -91,9 +91,7 @@ struct WorkspaceSidebar: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color(nsColor: Palette.muted))
                     .accessibilityLabel("Close \(tab.displayName)")
-                    .opacity(windowSession.motion.contextProgress)
-                    .allowsHitTesting(windowSession.motion.contextProgress > 0.001)
-                    .accessibilityHidden(windowSession.motion.contextProgress <= 0.001)
+                    .modifier(ContextChromeMotion(motion: windowSession.motion))
                 }
                 .font(.custom(Typography.family, fixedSize: 12))
                 .foregroundStyle(tab.id == windowSession.activeTabID
