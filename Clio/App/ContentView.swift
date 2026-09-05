@@ -804,6 +804,8 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
 extension AppState.AccentPreset {
     var color: Color {
         switch self {
+        case .clio:
+            Color(nsColor: Palette.accent)
         case .green:
             Color(nsColor: Palette.literal)
         case .amber:

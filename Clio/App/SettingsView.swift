@@ -60,7 +60,7 @@ struct SettingsView: View {
             }
 
             Section("Appearance") {
-                Picker("Literal accent", selection: $appState.accent) {
+                Picker("Accent colour", selection: $appState.accent) {
                     ForEach(AppState.AccentPreset.allCases) { accent in
                         Label {
                             Text(accent.title)

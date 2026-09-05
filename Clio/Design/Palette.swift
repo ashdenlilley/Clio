@@ -23,9 +23,10 @@ enum Palette {
     static let meta = NSColor.systemPurple
 
     // Interaction
+    static let accent = NSColor(clioHex: 0x398AB0)
     static let selection = NSColor(clioHex: 0x1F2937)
     static let matchHighlight = NSColor(clioHex: 0x12291C)
-    static let caret = literal
+    static let caret = accent
 }
 
 private extension NSColor {

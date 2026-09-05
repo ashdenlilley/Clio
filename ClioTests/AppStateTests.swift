@@ -16,7 +16,16 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(state.isFocusModeEnabled)
         XCTAssertTrue(state.isChromeFadeEnabled)
         XCTAssertFalse(EditorSession().isFullScreenEnabled)
-        XCTAssertEqual(state.accent, .green)
+        XCTAssertEqual(state.accent, .clio)
+    }
+
+    func testClioAccentUsesRequestedSRGBComponents() throws {
+        let color = try XCTUnwrap(Palette.accent.usingColorSpace(.sRGB))
+        XCTAssertEqual(color.redComponent, 57.0 / 255, accuracy: 0.000001)
+        XCTAssertEqual(color.greenComponent, 138.0 / 255, accuracy: 0.000001)
+        XCTAssertEqual(color.blueComponent, 176.0 / 255, accuracy: 0.000001)
+        XCTAssertEqual(color.alphaComponent, 1)
+        XCTAssertEqual(Palette.caret, Palette.accent)
     }
 
     func testPreferencesRoundTripThroughDefaults() {

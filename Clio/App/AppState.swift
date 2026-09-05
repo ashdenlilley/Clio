@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @Observable
 final class AppState: ClioCommandDispatching {
     enum AccentPreset: String, CaseIterable, Identifiable, Sendable {
+        case clio
         case green
         case amber
         case cyan
@@ -55,7 +56,7 @@ final class AppState: ClioCommandDispatching {
         didSet { defaults.set(isSpellCheckingEnabled, forKey: Keys.spellChecking) }
     }
 
-    var accent: AccentPreset = .green {
+    var accent: AccentPreset = .clio {
         didSet { defaults.set(accent.rawValue, forKey: Keys.accent) }
     }
 
