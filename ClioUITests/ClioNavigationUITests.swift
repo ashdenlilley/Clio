@@ -41,6 +41,40 @@ final class ClioNavigationUITests: XCTestCase {
         XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["sidebar"].exists })
     }
 
+    func testSlashInsideProseUsesCenteredPaletteAndEscapePreservesText() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.typeText("Some text/")
+        let palette = app.descendants(matching: .any)["command.palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitUntil { abs(palette.frame.midX - self.app.windows.firstMatch.frame.midX) < 10 })
+        app.textFields["palette.query"].typeText("literal")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(waitUntil { editor.value as? String == "Some text/literal" })
+        app.typeText("!")
+        XCTAssertEqual(editor.value as? String, "Some text/literal!")
+    }
+
+    func testEmptyLineSlashUsesCompactAnchoredPalette() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        let editorFrame = editor.frame
+        editor.typeText("/")
+        let palette = app.descendants(matching: .any)["command.palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitUntil { palette.frame.width <= 421 })
+        XCTAssertGreaterThan(palette.frame.minY, editorFrame.minY)
+        XCTAssertLessThanOrEqual(palette.frame.maxY, app.windows.firstMatch.frame.maxY)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Caret-anchored slash palette"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(waitUntil { editor.value as? String == "/" })
+    }
+
     func testNewDocumentAndNewWindowFollowNativeShortcuts() {
         launch(scenario: "blank")
 

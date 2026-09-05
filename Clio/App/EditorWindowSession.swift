@@ -56,6 +56,8 @@ final class EditorWindowSession: Identifiable {
     var paletteMode = CommandPaletteMode.commands
     var paletteQuery = ""
     var paletteSource = ClioCommandSource.palette
+    private(set) var paletteAnchor: CGRect?
+    @ObservationIgnored private var restoreSlashLiteral: (@MainActor (String) -> Void)?
     var workspaceFilter: WorkspaceID?
     var searchResults: [WorkspaceSearchResult] = []
     var paletteErrorMessage: String?
@@ -265,8 +267,10 @@ final class EditorWindowSession: Identifiable {
         motion.update { $0.noteTyping() }
     }
 
-    func presentInlineSlashPalette() {
+    func presentInlineSlashPalette(_ presentation: SlashCommandPresentation = .init(anchor: nil)) {
         presentPalette(source: .inlineSlash, query: "/")
+        paletteAnchor = presentation.anchor
+        restoreSlashLiteral = presentation.restoreLiteral
     }
 
     func toggleSidebar() {
@@ -318,6 +322,9 @@ final class EditorWindowSession: Identifiable {
         query: String = "",
         mode: CommandPaletteMode = .commands
     ) {
+        if isPalettePresented { dismissPalette() }
+        paletteAnchor = nil
+        restoreSlashLiteral = nil
         paletteSource = source
         paletteMode = mode
         paletteQuery = query
@@ -331,10 +338,17 @@ final class EditorWindowSession: Identifiable {
         }
     }
 
-    func dismissPalette() {
+    func dismissPalette(preservingLiteral: Bool = true) {
+        let restore = restoreSlashLiteral
+        restoreSlashLiteral = nil
         searchTask?.cancel()
         isPalettePresented = false
         motion.synchronizeSurface(.palette, presented: false, viewport: activeTab?.viewportState ?? .zero)
+        // Restore the pre-palette responder/selection first, then insert the
+        // cancelled query so its final caret is not reset to the old position.
+        if preservingLiteral, let restore {
+            restore(paletteQuery.hasPrefix("/") ? paletteQuery : "/" + paletteQuery)
+        }
         paletteErrorMessage = nil
         isSearching = false
     }
@@ -356,7 +370,7 @@ final class EditorWindowSession: Identifiable {
     }
 
     func chooseSearchResult(_ result: WorkspaceSearchResult) {
-        dismissPalette()
+        dismissPalette(preservingLiteral: false)
         appState?.openSearchResult(result, from: self)
     }
 
@@ -418,7 +432,7 @@ final class EditorWindowSession: Identifiable {
             tabID: activeTabID,
             source: paletteSource
         )
-        dismissPalette()
+        dismissPalette(preservingLiteral: false)
         Task { @MainActor in
             await appState.perform(
                 invocation,

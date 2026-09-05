@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+struct SlashCommandPresentation {
+    /// Caret rectangle in top-left-oriented window content coordinates.
+    var anchor: CGRect?
+    var restoreLiteral: @MainActor (String) -> Void = { _ in }
+}
+
 struct EditorConfiguration: Equatable {
     var fontSize: CGFloat
     var measure: Int
@@ -44,7 +50,7 @@ struct EditorView: NSViewRepresentable {
     private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
-    private var onSlashCommand: (@MainActor () -> Void)?
+    private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
 
     init(
         text: String,
@@ -52,7 +58,7 @@ struct EditorView: NSViewRepresentable {
         viewport: Binding<EditorViewportState>? = nil,
         configuration: EditorConfiguration = EditorConfiguration(),
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor () -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
     ) {
         self.text = text
         self.contentGeneration = contentGeneration
@@ -104,14 +110,13 @@ final class EditorContainerView: NSView {
 
     var onViewportSizeChanged: (() -> Void)?
 
-    private let preferredWidthConstraint: NSLayoutConstraint
+    private var preferredTextWidth: CGFloat = 0
     private var lastViewportSize = NSSize.zero
     private var hasRequestedInitialFocus = false
 
     init(textView: EditorTextView) {
         self.textView = textView
         scrollView = NSScrollView(frame: .zero)
-        preferredWidthConstraint = scrollView.widthAnchor.constraint(equalToConstant: 0)
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -145,17 +150,11 @@ final class EditorContainerView: NSView {
         )
 
         addSubview(scrollView)
-        preferredWidthConstraint.priority = .init(999)
-        let fillWhenNarrowConstraint = scrollView.widthAnchor.constraint(equalTo: widthAnchor)
-        fillWhenNarrowConstraint.priority = .defaultHigh
-
         NSLayoutConstraint.activate([
-            scrollView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scrollView.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor),
-            preferredWidthConstraint,
-            fillWhenNarrowConstraint
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 
@@ -168,6 +167,12 @@ final class EditorContainerView: NSView {
         super.layout()
 
         let viewportSize = scrollView.contentSize
+        // Only the text column is constrained; the native scrollbar belongs
+        // to the far edge of the full editor viewport.
+        let inset = max(Metrics.horizontalPadding, (viewportSize.width - preferredTextWidth) / 2)
+        if abs(textView.textContainerInset.width - inset) > 0.5 {
+            textView.textContainerInset = NSSize(width: inset, height: Metrics.verticalPadding)
+        }
         textView.minSize = NSSize(width: 0, height: viewportSize.height)
         if abs(textView.frame.width - viewportSize.width) > 0.5 {
             textView.setFrameSize(
@@ -202,9 +207,7 @@ final class EditorContainerView: NSView {
         let font = Typography.font(size: configuration.resolvedFontSize)
         let textWidth = Typography.characterAdvance(for: font)
             * CGFloat(configuration.resolvedMeasure)
-        preferredWidthConstraint.constant = ceil(
-            textWidth + (Metrics.horizontalPadding * 2)
-        )
+        preferredTextWidth = ceil(textWidth)
         needsLayout = true
     }
 }

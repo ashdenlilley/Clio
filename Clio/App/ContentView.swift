@@ -176,8 +176,8 @@ struct ContentView: View {
                 onTextEdit: { edit in
                     windowSession.noteEditorEdit(edit)
                 },
-                onSlashCommand: {
-                    windowSession.presentInlineSlashPalette()
+                onSlashCommand: { presentation in
+                    windowSession.presentInlineSlashPalette(presentation)
                 }
             )
 
@@ -223,7 +223,7 @@ struct ContentView: View {
                 }
             }
             if state.overlay.presentation > 0 {
-                Color.black.opacity((reduceTransparency ? 0.85 : 0.38) * state.overlay.presentation)
+                Color.black.opacity((windowSession.paletteAnchor != nil && state.activeSurfaceStack.last == .palette ? 0.001 : (reduceTransparency ? 0.85 : 0.38)) * state.overlay.presentation)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         if state.activeSurfaceStack.last == .palette { windowSession.dismissPalette() }
@@ -233,7 +233,7 @@ struct ContentView: View {
                     .accessibilityHidden(true)
             }
             ForEach(state.visualSurfaceStack, id: \.self) { surface in
-                surfaceView(surface, availableSize: geometry.size)
+                surfaceView(surface, availableSize: geometry.size, origin: geometry.frame(in: .global).origin)
                     .allowsHitTesting(state.activeSurfaceStack.last == surface)
                     .accessibilityHidden(state.activeSurfaceStack.last != surface)
                     .accessibilityAddTraits(.isModal)
@@ -243,15 +243,20 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder private func surfaceView(_ surface: TransientSurface, availableSize: CGSize) -> some View {
+    @ViewBuilder private func surfaceView(_ surface: TransientSurface, availableSize: CGSize, origin: CGPoint) -> some View {
         let state = motion.surfaceState
         switch surface {
         case .palette:
-            VStack {
+            if let anchor = windowSession.paletteAnchor {
+                let frame = CommandPalettePlacement.frame(below: anchor.offsetBy(dx: -origin.x, dy: -origin.y), in: availableSize)
+                CommandPaletteView(maximumWidth: frame.width, maximumResultsHeight: max(1, frame.height - 64))
+                    .frame(height: frame.height)
+                    .modifier(SurfacePresentation(progress: state.palette.presentation, y: -6, scale: 0.985, reduceMotion: reduceMotion))
+                    .frame(width: availableSize.width, height: availableSize.height, alignment: .topLeading)
+                    .offset(x: frame.minX, y: frame.minY)
+            } else {
                 CommandPaletteView(maximumWidth: min(620, availableSize.width - 32), maximumResultsHeight: min(360, max(100, availableSize.height - 140)))
                     .modifier(SurfacePresentation(progress: state.palette.presentation, y: -6, scale: 0.985, reduceMotion: reduceMotion))
-                    .padding(.top, 58)
-                Spacer(minLength: 0)
             }
         case .settings:
             VStack(spacing: 0) {

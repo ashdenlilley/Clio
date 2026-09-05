@@ -62,6 +62,13 @@ final class TypewriterScroller {
         let requestedY = caretRect.midY
             - (viewportHeight * configuration.resolvedTypewriterAnchor)
         let minimumY = -scrollView.contentInsets.top
+        // Layout of the extra final line can precede NSTextView's frame-size
+        // update. Reserve its actual extent before clamping the scroll target;
+        // otherwise repeated Return presses hit yesterday's document bottom.
+        let requiredHeight = caretRect.maxY + surface.textView.textContainerInset.height
+        if requiredHeight > surface.textView.frame.height {
+            surface.textView.setFrameSize(NSSize(width: surface.textView.frame.width, height: requiredHeight))
+        }
         let documentHeight = surface.textView.bounds.height
         let maximumY = max(
             minimumY,

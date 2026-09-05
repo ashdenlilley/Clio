@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+enum CommandPalettePlacement {
+    static func frame(below anchor: CGRect, in size: CGSize) -> CGRect {
+        let width = min(420, max(1, size.width - 32))
+        let x = min(max(16, anchor.minX), max(16, size.width - width - 16))
+        let below = anchor.maxY + 8
+        let belowSpace = size.height - 16 - below
+        let placeBelow = belowSpace >= 160
+        let availableHeight = placeBelow ? belowSpace : anchor.minY - 24
+        let height = min(400, max(1, min(size.height - 32, availableHeight)))
+        let preferredY = placeBelow ? below : anchor.minY - height - 8
+        let y = min(max(16, preferredY), max(16, size.height - height - 16))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
 struct CommandPaletteView: View {
     var maximumWidth: CGFloat = 620
     var maximumResultsHeight: CGFloat = 360

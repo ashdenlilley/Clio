@@ -309,26 +309,62 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertEqual(window.activeTab?.draftText, "First line\n")
     }
 
-    func testSlashInsideProseRemainsPlainText() {
+    func testSlashInsideProseOpensCenteredPaletteAndCancellationRestoresLiteral() {
         let window = EditorWindowSession(request: .newDocument())
         window.activeTab?.draftText = "path"
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             EditorCoordinator.isInlineSlashTrigger(
                 in: "path",
                 range: NSRange(location: 4, length: 0),
                 replacement: "/"
             )
         )
-        window.noteEditorChange(
-            to: "path/",
-            edit: EditorTextEdit(
-                replacedRange: UTF16Range(location: 4, length: 0),
-                replacement: "/"
-            )
-        )
-
+        var restored = ""
+        window.presentInlineSlashPalette(.init(anchor: nil, restoreLiteral: { restored = $0 }))
+        XCTAssertTrue(window.isPalettePresented)
+        XCTAssertNil(window.paletteAnchor)
+        window.updatePaletteQuery("/unknown")
+        window.dismissPalette()
+        XCTAssertEqual(restored, "/unknown")
         XCTAssertFalse(window.isPalettePresented)
+    }
+
+    func testEmptyLineSlashAnchorAndKeyboardPaletteReset() {
+        let window = EditorWindowSession(request: .newDocument())
+        let anchor = CGRect(x: 100, y: 200, width: 1, height: 20)
+        window.presentInlineSlashPalette(.init(anchor: anchor))
+        XCTAssertEqual(window.paletteAnchor, anchor)
+        window.dismissPalette(preservingLiteral: false)
+        window.presentPalette()
+        XCTAssertNil(window.paletteAnchor)
+        XCTAssertTrue(EditorCoordinator.isEmptySlashLine(in: "First\n  ", range: NSRange(location: 8, length: 0)))
+        XCTAssertFalse(EditorCoordinator.isEmptySlashLine(in: "text", range: NSRange(location: 0, length: 0)))
+        XCTAssertFalse(EditorCoordinator.isEmptySlashLine(in: "🙂 text", range: NSRange(location: 3, length: 0)))
+    }
+
+    func testAcceptedSlashDoesNotInsertCommandIntoSource() {
+        let window = EditorWindowSession(request: .newDocument())
+        var restored = false
+        window.presentInlineSlashPalette(.init(anchor: nil, restoreLiteral: { _ in restored = true }))
+        window.dismissPalette(preservingLiteral: false)
+        window.dismissPalette()
+        XCTAssertFalse(restored)
+    }
+
+    func testInlinePalettePlacementFitsWindowAndFlipsAboveBottomCaret() {
+        let size = CGSize(width: 900, height: 800)
+        let below = CommandPalettePlacement.frame(below: CGRect(x: 200, y: 100, width: 1, height: 20), in: size)
+        XCTAssertEqual(below.minX, 200)
+        XCTAssertEqual(below.minY, 128)
+        let compact = CommandPalettePlacement.frame(below: CGRect(x: 200, y: 400, width: 1, height: 20), in: size)
+        XCTAssertEqual(compact.minY, 428)
+        XCTAssertEqual(compact.maxY, size.height - 16)
+        let above = CommandPalettePlacement.frame(below: CGRect(x: 880, y: 700, width: 1, height: 20), in: size)
+        XCTAssertEqual(above.maxY, 692)
+        XCTAssertLessThanOrEqual(above.maxX, size.width - 16)
+        XCTAssertTrue(EditorCoordinator.isInlineSlashTrigger(in: "text", range: NSRange(location: 1, length: 2), replacement: "/"))
+        XCTAssertFalse(EditorCoordinator.isInlineSlashTrigger(in: "text", range: NSRange(location: 1, length: 9), replacement: "/"))
     }
 
     func testCommandPaletteExposesEveryContractCommand() {
@@ -402,7 +438,7 @@ final class NavigationSessionTests: XCTestCase {
                 hasMarkedText: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             EditorCoordinator.isInlineSlashTrigger(
                 in: "text",
                 range: NSRange(location: 2, length: 0),

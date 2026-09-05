@@ -6,7 +6,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var viewport: Binding<EditorViewportState>?
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
-    private var onSlashCommand: (@MainActor () -> Void)?
+    private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
+    private var isRestoringLiteralSlash = false
     private weak var surface: EditorContainerView?
 
     private let typewriterScroller = TypewriterScroller()
@@ -38,7 +39,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         configuration: EditorConfiguration,
         viewport: Binding<EditorViewportState>? = nil,
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor () -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
     ) {
         self.viewport = viewport
         self.configuration = configuration
@@ -97,7 +98,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         configuration: EditorConfiguration,
         viewport: Binding<EditorViewportState>? = nil,
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor () -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
     ) {
         self.onTextEdit = onTextEdit
         self.viewport = viewport
@@ -199,7 +200,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         replacementString: String?
     ) -> Bool {
         let replacement = replacementString ?? ""
-        if Self.isInlineSlashTrigger(
+        if onSlashCommand != nil, !isRestoringLiteralSlash, Self.isInlineSlashTrigger(
             in: textView.string,
             range: affectedCharRange,
             replacement: replacement,
@@ -207,8 +208,22 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         ) {
             pendingMarkdownEdit = nil
             isChangingText = false
+            var anchor: CGRect?
+            if Self.isEmptySlashLine(in: textView.string, range: affectedCharRange),
+               let window = textView.window, let content = window.contentView {
+                let screenRect = textView.firstRect(forCharacterRange: affectedCharRange, actualRange: nil)
+                let rect = content.convert(window.convertFromScreen(screenRect), from: nil)
+                anchor = CGRect(x: rect.minX, y: content.bounds.maxY - rect.maxY,
+                                width: max(1, rect.width), height: rect.height)
+            }
+            let presentation = SlashCommandPresentation(anchor: anchor) { [weak self, weak textView] literal in
+                guard let self, let textView else { return }
+                self.isRestoringLiteralSlash = true
+                defer { self.isRestoringLiteralSlash = false }
+                textView.insertText(literal, replacementRange: affectedCharRange)
+            }
             DispatchQueue.main.async { [weak self] in
-                self?.onSlashCommand?()
+                self?.onSlashCommand?(presentation)
             }
             return false
         }
@@ -230,12 +245,18 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     ) -> Bool {
         guard !hasMarkedText,
               replacement == "/",
-              range.length == 0 else { return false }
+              range.length >= 0 else { return false }
         let source = source as NSString
-        guard range.location >= 0, range.location <= source.length else { return false }
-        guard range.location > 0 else { return true }
-        let preceding = source.character(at: range.location - 1)
-        return preceding == 0x0A || preceding == 0x0D
+        guard range.location >= 0, range.location <= source.length,
+              range.length <= source.length - range.location else { return false }
+        return true
+    }
+
+    static func isEmptySlashLine(in source: String, range: NSRange) -> Bool {
+        let source = source as NSString
+        guard range.length == 0, range.location >= 0, range.location <= source.length else { return false }
+        let line = source.lineRange(for: range)
+        return source.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func replaceEditorText(with newText: String, in textView: EditorTextView) {

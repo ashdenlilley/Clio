@@ -4,6 +4,48 @@ import XCTest
 
 final class EditorPerformanceTests: XCTestCase {
     @MainActor
+    func testFullWidthScrollbarRetainsCenteredWritingMeasure() {
+        let surface = EditorContainerView(textView: EditorTextView.makeTextKit2TextView())
+        surface.frame = NSRect(x: 0, y: 0, width: 1400, height: 800)
+        let configuration = EditorConfiguration()
+        surface.apply(configuration: configuration)
+        surface.layoutSubtreeIfNeeded()
+        XCTAssertEqual(surface.scrollView.frame.minX, 0, accuracy: 0.5)
+        XCTAssertEqual(surface.scrollView.frame.maxX, surface.bounds.maxX, accuracy: 0.5)
+        let width = surface.textView.bounds.width - 2 * surface.textView.textContainerInset.width
+        let expected = ceil(Typography.characterAdvance(for: Typography.font(size: configuration.resolvedFontSize)) * CGFloat(configuration.resolvedMeasure))
+        XCTAssertEqual(width, expected, accuracy: 1)
+        surface.frame.size.width = 480
+        surface.layoutSubtreeIfNeeded()
+        XCTAssertEqual(surface.scrollView.frame.maxX, 480, accuracy: 0.5)
+        XCTAssertEqual(surface.textView.textContainerInset.width, Metrics.horizontalPadding, accuracy: 0.5)
+    }
+
+    @MainActor
+    func testEveryTrailingNewlineRemainsAtTypewriterAnchor() throws {
+        let textView = EditorTextView.makeTextKit2TextView()
+        let surface = EditorContainerView(textView: textView)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        let configuration = EditorConfiguration(isFocusModeEnabled: false)
+        surface.apply(configuration: configuration)
+        surface.layoutSubtreeIfNeeded()
+        let scroller = TypewriterScroller()
+        for line in 0..<40 {
+            textView.insertText("\n", replacementRange: NSRange(location: textView.string.utf16.count, length: 0))
+            scroller.resumeAfterEdit()
+            scroller.scrollCaretToAnchor(in: surface, configuration: configuration, animated: false)
+            let screen = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+            let caret = textView.convert(window.convertFromScreen(screen), from: nil)
+            let clip = surface.scrollView.contentView
+            XCTAssertEqual(caret.midY - clip.bounds.minY, clip.bounds.height * configuration.resolvedTypewriterAnchor, accuracy: 2, "Trailing newline \(line + 1)")
+        }
+        XCTAssertEqual(textView.string, String(repeating: "\n", count: 40))
+    }
+
+    @MainActor
     func testRevisionAwareSynchronizationDoesNotReplaceBufferAfterLocalEdit() {
         var model = "alpha"
         var revision: UInt64 = 0
