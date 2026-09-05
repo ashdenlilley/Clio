@@ -79,7 +79,8 @@ final class MarkdownTextKitHighlighter {
             ),
             spans: lastUpdate.spans,
             applicationSpans: lastUpdate.spans,
-            parsedUTF16Length: lastUpdate.parsedUTF16Length
+            parsedUTF16Length: lastUpdate.parsedUTF16Length,
+            minimap: lastUpdate.minimap
         ), to: textView, configuration: configuration)
     }
 

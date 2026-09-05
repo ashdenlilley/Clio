@@ -117,6 +117,37 @@ final class ClioNavigationUITests: XCTestCase {
         )
     }
 
+    func testMinimapStartsTopRightAndNavigationKeepsTypingPosition() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        let minimap = app.descendants(matching: .any)["editor.minimap"]
+        XCTAssertFalse(minimap.exists)
+        editor.typeText("One\nSecond line\nThird line")
+        XCTAssertTrue(minimap.waitForExistence(timeout: 3))
+        XCTAssertLessThan(minimap.frame.height, 60)
+        XCTAssertLessThan(abs(minimap.frame.maxX - app.windows.firstMatch.frame.maxX), 24)
+        minimap.click()
+        app.typeText("!")
+        XCTAssertEqual(editor.value as? String, "One\nSecond line\nThird line!")
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Top-right line minimap"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
+    func testMinimapFadesWithWritingChromeAndPointerRestoresIt() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.typeText("A line of writing")
+        let minimap = app.descendants(matching: .any)["editor.minimap"]
+        XCTAssertTrue(minimap.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitUntil(timeout: 8) { !minimap.exists })
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.1)).hover()
+        XCTAssertTrue(minimap.waitForExistence(timeout: 3))
+    }
+
     private func launch(scenario: String) {
         app = XCUIApplication()
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"

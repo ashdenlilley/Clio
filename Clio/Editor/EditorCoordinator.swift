@@ -8,6 +8,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
     private var isRestoringLiteralSlash = false
+    private let minimap: EditorMinimapModel?
     private weak var surface: EditorContainerView?
 
     private let typewriterScroller = TypewriterScroller()
@@ -39,12 +40,14 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         configuration: EditorConfiguration,
         viewport: Binding<EditorViewportState>? = nil,
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
+        minimap: EditorMinimapModel? = nil
     ) {
         self.viewport = viewport
         self.configuration = configuration
         self.onTextEdit = onTextEdit
         self.onSlashCommand = onSlashCommand
+        self.minimap = minimap
     }
 
     deinit {
@@ -57,6 +60,24 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
 
     func attach(to surface: EditorContainerView) {
         self.surface = surface
+        minimap?.navigate = { [weak self, weak surface] offset in
+            guard let self, let surface else { return }
+            self.typewriterScroller.suspendUntilNextEdit()
+            let range = NSRange(location: min(max(0, offset), surface.textView.string.utf16.count), length: 0)
+            surface.textView.scrollRangeToVisible(range)
+            if let window = surface.textView.window {
+                let screen = surface.textView.firstRect(forCharacterRange: range, actualRange: nil)
+                let rect = surface.textView.convert(window.convertFromScreen(screen), from: nil)
+                let scroll = surface.scrollView
+                let clip = scroll.contentView
+                let minimum = -scroll.contentInsets.top
+                let maximum = max(minimum, surface.textView.bounds.height - clip.bounds.height + scroll.contentInsets.bottom)
+                clip.scroll(to: NSPoint(x: clip.bounds.minX, y: min(maximum, max(minimum, rect.minY - 8))))
+                scroll.reflectScrolledClipView(clip)
+            }
+            self.captureViewport()
+            self.minimap?.visibleOffset = range.location
+        }
         surface.textView.delegate = self
         surface.textView.onUserScroll = { [weak self] in
             self?.typewriterScroller.suspendUntilNextEdit()
@@ -75,6 +96,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
         surface.onViewportSizeChanged = { [weak self, weak surface] in
             guard let self, let surface else { return }
+            self.minimap?.reservesNativeScroller = surface.reservesNativeScroller
             self.typewriterScroller.updateViewportInsets(
                 in: surface,
                 configuration: self.configuration
@@ -295,6 +317,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     }
 
     private func scheduleMarkdownReplacement(source: String) {
+        minimap?.snapshot = .empty
         markdownTask?.cancel()
         markdownEditTask?.cancel()
         markdownEditTask = nil
@@ -398,6 +421,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             return
         }
         isApplyingHighlight = true
+        minimap?.snapshot = update.minimap
         markdownHighlighter.apply(
             update,
             to: surface.textView,
@@ -409,6 +433,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
 
     private func clearMarkdownHighlighting(requestSequence: UInt64) {
         guard markdownRequestSequence == requestSequence, let surface else { return }
+        minimap?.snapshot = .empty
         isApplyingHighlight = true
         markdownHighlighter.clear(
             in: surface.textView,
@@ -460,8 +485,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private func captureViewport() {
         guard !isApplyingViewport,
               !isApplyingExternalUpdate,
-              let surface,
-              let viewport else { return }
+              let surface else { return }
         let textView = surface.textView
         let length = (textView.string as NSString).length
         let selection = textView.selectedRange()
@@ -474,6 +498,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             max(0, textView.characterIndexForInsertion(at: insertionPoint)),
             length
         )
+        minimap?.visibleOffset = topOffset
+        guard let viewport else { return }
         let font = textView.font
             ?? Typography.font(size: configuration.resolvedFontSize)
         let lineHeight = max(

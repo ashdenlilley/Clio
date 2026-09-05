@@ -51,6 +51,7 @@ struct EditorView: NSViewRepresentable {
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
+    private var minimap: EditorMinimapModel?
 
     init(
         text: String,
@@ -58,7 +59,8 @@ struct EditorView: NSViewRepresentable {
         viewport: Binding<EditorViewportState>? = nil,
         configuration: EditorConfiguration = EditorConfiguration(),
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
+        minimap: EditorMinimapModel? = nil
     ) {
         self.text = text
         self.contentGeneration = contentGeneration
@@ -66,6 +68,7 @@ struct EditorView: NSViewRepresentable {
         self.configuration = configuration
         self.onTextEdit = onTextEdit
         self.onSlashCommand = onSlashCommand
+        self.minimap = minimap
     }
 
     func makeCoordinator() -> EditorCoordinator {
@@ -73,7 +76,8 @@ struct EditorView: NSViewRepresentable {
             configuration: configuration,
             viewport: viewport,
             onTextEdit: onTextEdit,
-            onSlashCommand: onSlashCommand
+            onSlashCommand: onSlashCommand,
+            minimap: minimap
         )
     }
 
@@ -113,6 +117,8 @@ final class EditorContainerView: NSView {
     private var preferredTextWidth: CGFloat = 0
     private var lastViewportSize = NSSize.zero
     private var hasRequestedInitialFocus = false
+    private var scrollerStyleObserver: NSObjectProtocol?
+    var reservesNativeScroller: Bool { NSScroller.preferredScrollerStyle == .legacy }
 
     init(textView: EditorTextView) {
         self.textView = textView
@@ -134,9 +140,9 @@ final class EditorContainerView: NSView {
         scrollView.contentView.drawsBackground = true
         scrollView.contentView.backgroundColor = Palette.background
         scrollView.hasHorizontalScroller = false
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = reservesNativeScroller
         scrollView.autohidesScrollers = true
-        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerStyle = reservesNativeScroller ? .legacy : .overlay
         scrollView.horizontalScrollElasticity = .none
         scrollView.verticalScrollElasticity = .automatic
         scrollView.automaticallyAdjustsContentInsets = false
@@ -156,6 +162,18 @@ final class EditorContainerView: NSView {
             scrollView.topAnchor.constraint(equalTo: topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        scrollerStyleObserver = NotificationCenter.default.addObserver(
+            forName: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.needsLayout = true
+                self?.onViewportSizeChanged?()
+            }
+        }
+    }
+
+    deinit {
+        if let scrollerStyleObserver { NotificationCenter.default.removeObserver(scrollerStyleObserver) }
     }
 
     @available(*, unavailable)
@@ -166,6 +184,8 @@ final class EditorContainerView: NSView {
     override func layout() {
         super.layout()
 
+        scrollView.hasVerticalScroller = reservesNativeScroller
+        scrollView.scrollerStyle = reservesNativeScroller ? .legacy : .overlay
         let viewportSize = scrollView.contentSize
         // Only the text column is constrained; the native scrollbar belongs
         // to the far edge of the full editor viewport.

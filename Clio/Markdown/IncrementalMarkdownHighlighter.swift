@@ -10,6 +10,7 @@ struct MarkdownHighlightUpdate: Equatable, Sendable {
     /// the main actor for a single-block edit.
     let applicationSpans: [MarkdownSpan]
     let parsedUTF16Length: Int
+    let minimap: LineMinimapSnapshot
 }
 
 /// Keeps highlighting incremental without making an incremental AST a data
@@ -81,7 +82,8 @@ actor IncrementalMarkdownHighlighter {
                 invalidatedRange: UTF16Range(location: 0, length: newText.length),
                 spans: [],
                 applicationSpans: [],
-                parsedUTF16Length: 0
+                parsedUTF16Length: 0,
+                minimap: .empty
             )
         }
 
@@ -119,7 +121,8 @@ actor IncrementalMarkdownHighlighter {
                 invalidatedRange: UTF16Range(location: 0, length: newText.length),
                 spans: spans,
                 applicationSpans: spans,
-                parsedUTF16Length: parsedLength
+                parsedUTF16Length: parsedLength,
+                minimap: .make(from: newText)
             )
         }
 
@@ -195,7 +198,8 @@ actor IncrementalMarkdownHighlighter {
             invalidatedRange: fragmentRange,
             spans: retained,
             applicationSpans: applicationSpans,
-            parsedUTF16Length: fragmentRange.length
+            parsedUTF16Length: fragmentRange.length,
+            minimap: .make(from: newText)
         )
     }
 

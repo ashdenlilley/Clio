@@ -178,8 +178,10 @@ struct ContentView: View {
                 },
                 onSlashCommand: { presentation in
                     windowSession.presentInlineSlashPalette(presentation)
-                }
+                },
+                minimap: windowSession.minimap
             )
+            .overlay { EditorMinimapOverlay() }
 
             StatusLine(
                 relativePath: editorSession.relativePath,

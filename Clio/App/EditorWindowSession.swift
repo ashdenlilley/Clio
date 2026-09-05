@@ -48,6 +48,7 @@ final class EditorWindowSession: Identifiable {
     var isSidebarVisible: Bool
     var isSidebarPinned: Bool
     let motion: WindowMotionAdapter
+    let minimap = EditorMinimapModel()
     var isSettingsPresented = false
     var isFullScreenEnabled: Bool
     private(set) var isSidebarInteractionActive = false
