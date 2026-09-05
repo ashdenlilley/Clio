@@ -39,13 +39,7 @@ struct ContentView: View {
             if let editorSession = windowSession.activeTab, editorSession.isReady {
                 editorPane(editorSession)
                 .overlay(alignment: .leading) {
-                    if motion.sidebarProgress > 0 || windowSession.isSidebarVisible {
-                        WorkspaceSidebar()
-                            .offset(x: reduceMotion ? 0 : -252 * (1 - motion.sidebarProgress))
-                            .opacity(reduceMotion ? motion.sidebarProgress : 1)
-                            .allowsHitTesting(motion.chrome.sidebarAllowsHitTesting)
-                            .accessibilityHidden(!motion.chrome.sidebarAllowsHitTesting)
-                    }
+                    MotionSidebarOverlay()
                 }
                 .clipped()
                 .task(id: editorSession.contentRevision) {
@@ -81,8 +75,8 @@ struct ContentView: View {
                 WorkspaceSetupView()
             }
           }
-          .allowsHitTesting(motion.surfaceState.activeSurfaces.isEmpty)
-          .accessibilityHidden(!motion.surfaceState.activeSurfaces.isEmpty)
+          .allowsHitTesting(!motion.hasActiveSurfaces)
+          .accessibilityHidden(motion.hasActiveSurfaces)
           transientSurfaces
         }
         .frame(
@@ -193,9 +187,7 @@ struct ContentView: View {
                 fontSize: appState.fontSize,
                 accent: appState.accent
             )
-            .opacity(motion.contextProgress)
-            .allowsHitTesting(motion.contextProgress > 0.001)
-            .accessibilityHidden(motion.contextProgress <= 0.001)
+            .modifier(ContextChromeMotion(motion: motion))
         }
         .background(Color(nsColor: Palette.background))
     }
@@ -299,6 +291,32 @@ struct ContentView: View {
               let editor = findEditorTextView(in: contentView) else { return }
             window.makeFirstResponder(editor)
         }
+    }
+}
+
+/// Observe sidebar frames below the editor's structural identity boundary.
+private struct MotionSidebarOverlay: View {
+    @Environment(EditorWindowSession.self) private var session
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        let motion = session.motion
+        if motion.sidebarProgress > 0 || session.isSidebarVisible {
+            WorkspaceSidebar()
+                .offset(x: reduceMotion ? 0 : -252 * (1 - motion.sidebarProgress))
+                .opacity(reduceMotion ? motion.sidebarProgress : 1)
+                .allowsHitTesting(motion.chrome.sidebarAllowsHitTesting)
+                .accessibilityHidden(!motion.chrome.sidebarAllowsHitTesting)
+        }
+    }
+}
+
+struct ContextChromeMotion: ViewModifier {
+    let motion: WindowMotionAdapter
+    func body(content: Content) -> some View {
+        content
+            .opacity(motion.contextProgress)
+            .allowsHitTesting(motion.contextProgress > 0.001)
+            .accessibilityHidden(motion.contextProgress <= 0.001)
     }
 }
 
@@ -763,12 +781,15 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         guard let window, let session = windowSession else { return }
         let progress = session.motion.chrome.titlebar.presentation
         for button in [window.standardWindowButton(.closeButton), window.standardWindowButton(.miniaturizeButton), window.standardWindowButton(.zoomButton), sidebarButton].compactMap({ $0 }) {
-            button.alphaValue = progress
-            button.isEnabled = progress > 0.001
-            button.isHidden = progress <= 0.001
+            if button.alphaValue != progress { button.alphaValue = progress }
+            if button.isEnabled != (progress > 0.001) { button.isEnabled = progress > 0.001 }
+            if button.isHidden != (progress <= 0.001) { button.isHidden = progress <= 0.001 }
         }
-        sidebarButton?.toolTip = session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
-        sidebarButton?.setAccessibilityLabel(session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        let label = session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+        if sidebarButton?.toolTip != label {
+            sidebarButton?.toolTip = label
+            sidebarButton?.setAccessibilityLabel(label)
+        }
         if session.motion.chrome.pointer.target == 0,
            session.motion.chrome.pointer.presentation <= 0.001, window.isKeyWindow {
             if !pointerIsHidden { NSCursor.hide(); pointerIsHidden = true }

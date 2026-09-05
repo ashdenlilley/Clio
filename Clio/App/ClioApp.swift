@@ -60,6 +60,19 @@ private struct EditorWindowRoot: View {
                 let environment = ProcessInfo.processInfo.environment
                 guard environment["CLIO_UI_TESTING"] == "1",
                       environment["CLIO_UI_TEST_MOTION_TRACE"] == "1" else { return }
+                var frameGaps: [Double] = []
+                var frameWork: [Double] = []
+                var firstFrameLatencies: [Double] = []
+                var previousFrame: (UInt64, TimeInterval)?
+                windowSession.motion.frameSample = { generation, time, duration, firstFrameLatency in
+                    if let firstFrameLatency { firstFrameLatencies.append(firstFrameLatency * 1_000) }
+                    if let previousFrame, previousFrame.0 == generation {
+                        frameGaps.append((time - previousFrame.1) * 1_000)
+                    }
+                    previousFrame = (generation, time)
+                    frameWork.append(duration * 1_000)
+                }
+                defer { windowSession.motion.frameSample = nil }
                 do {
                     try await Task.sleep(for: .seconds(2))
                     for _ in 0..<40 {
@@ -70,6 +83,24 @@ private struct EditorWindowRoot: View {
                         windowSession.toggleSidebar()
                         try await Task.sleep(for: .milliseconds(350))
                     }
+                    let identifier = environment["CLIO_UI_TEST_ID"] ?? "unknown"
+                    let screenFPS = windowSession.motion.window?.screen?.maximumFramesPerSecond ?? 60
+                    let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+                    let range = WindowMotionAdapter.frameRateRange(maximumFPS: screenFPS, lowPower: lowPower)
+                    let metrics: [String: Any] = [
+                        "frameCount": frameWork.count,
+                        "frameGapsMS": frameGaps,
+                        "frameWorkMS": frameWork,
+                        "firstFrameLatenciesMS": firstFrameLatencies,
+                        "maximumScreenFPS": screenFPS,
+                        "preferredFPS": range.preferred,
+                        "minimumFPS": range.minimum,
+                        "maximumFPS": range.maximum,
+                        "lowPowerMode": lowPower
+                    ]
+                    let data = try JSONSerialization.data(withJSONObject: metrics, options: [.sortedKeys])
+                    try data.write(to: FileManager.default.temporaryDirectory
+                        .appendingPathComponent("ClioMotionMetrics-\(identifier).json"), options: .atomic)
                 } catch { /* Window closure cancels the fixture. */ }
             }
             .onDisappear {

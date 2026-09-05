@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import XCTest
 @testable import Clio
 
@@ -6,7 +7,69 @@ private final class AdapterClock: MotionClock {
     var now: TimeInterval = 0
 }
 
+private final class MotionObservationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+    func mark() { lock.lock(); changed = true; lock.unlock() }
+    var wasChanged: Bool { lock.lock(); defer { lock.unlock() }; return changed }
+}
+
 @MainActor final class WindowMotionAdapterTests: XCTestCase {
+    func testDisplayLinkRequestsNativeCadenceWithAdaptiveLowPowerRange() {
+        let native = WindowMotionAdapter.frameRateRange(maximumFPS: 120, lowPower: false)
+        XCTAssertEqual(native.minimum, 30)
+        XCTAssertEqual(native.maximum, 120)
+        XCTAssertEqual(native.preferred, 120)
+        let lowPower = WindowMotionAdapter.frameRateRange(maximumFPS: 120, lowPower: true)
+        XCTAssertEqual(lowPower.minimum, 30)
+        XCTAssertEqual(lowPower.maximum, 60)
+        XCTAssertEqual(lowPower.preferred, 60)
+    }
+
+    func testSidebarFramesDoNotInvalidateEditorChromeSurfacesOrRewriteNativeControls() {
+        let clock = AdapterClock()
+        let adapter = WindowMotionAdapter(sidebarVisible: false, clock: clock)
+        defer { adapter.stop() }
+        adapter.refresh()
+        let sidebar = MotionObservationProbe()
+        let unrelated = MotionObservationProbe()
+        withObservationTracking { _ = adapter.sidebarProgress } onChange: { sidebar.mark() }
+        withObservationTracking {
+            _ = adapter.contextProgress
+            _ = adapter.surfaceState
+            _ = adapter.hasActiveSurfaces
+            _ = adapter.preferences
+        } onChange: { unrelated.mark() }
+        var nativeUpdates = 0
+        adapter.applyNativeChrome = { nativeUpdates += 1 }
+        adapter.update { $0.toggleSidebar() }
+        for _ in 0..<60 { clock.now += 0.005; adapter.refresh() }
+        XCTAssertTrue(sidebar.wasChanged)
+        XCTAssertFalse(unrelated.wasChanged)
+        XCTAssertEqual(nativeUpdates, 1, "Only the changed toggle intent updates native accessibility, not each frame")
+        adapter.synchronizeSurface(.palette, presented: true, viewport: .zero)
+        XCTAssertTrue(unrelated.wasChanged)
+        XCTAssertTrue(adapter.hasActiveSurfaces)
+    }
+
+    func testSurfaceFramesDoNotInvalidateSidebarOrContextObservers() {
+        let clock = AdapterClock()
+        let adapter = WindowMotionAdapter(clock: clock)
+        defer { adapter.stop() }
+        adapter.synchronizeSurface(.palette, presented: true, viewport: .zero)
+        let unrelated = MotionObservationProbe()
+        let surface = MotionObservationProbe()
+        withObservationTracking {
+            _ = adapter.sidebarProgress
+            _ = adapter.contextProgress
+            _ = adapter.hasActiveSurfaces
+        } onChange: { unrelated.mark() }
+        withObservationTracking { _ = adapter.surfaceState } onChange: { surface.mark() }
+        for _ in 0..<40 { clock.now += 0.005; adapter.refresh() }
+        XCTAssertTrue(surface.wasChanged)
+        XCTAssertFalse(unrelated.wasChanged)
+    }
+
     func testNativeDisplayLinkAdvancesVisibleWindowAndStopsAtRest() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["CLIO_RUN_NATIVE_MOTION_TESTS"] == "1",
                           "Native display-link gate runs separately on an unlocked desktop in the ad-hoc signed rendering host.")
