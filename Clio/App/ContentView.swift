@@ -184,8 +184,7 @@ struct ContentView: View {
             StatusLine(
                 relativePath: editorSession.relativePath,
                 wordCountLabel: editorSession.wordCountLabel,
-                fontSize: appState.fontSize,
-                accent: appState.accent
+                fontSize: appState.fontSize
             )
             .modifier(ContextChromeMotion(motion: motion))
         }
@@ -544,7 +543,6 @@ private struct StatusLine: View {
     let relativePath: String
     let wordCountLabel: String
     let fontSize: Double
-    let accent: AppState.AccentPreset
 
     var body: some View {
         HStack(spacing: 16) {
@@ -557,11 +555,6 @@ private struct StatusLine: View {
 
             Text(wordCountLabel)
                 .fixedSize()
-        }
-        .overlay {
-            Text("❯")
-                .foregroundStyle(accent.color)
-                .accessibilityHidden(true)
         }
         .font(.custom(Typography.family, fixedSize: fontSize * 0.85))
         .foregroundStyle(Color(nsColor: Palette.muted))
