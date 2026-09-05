@@ -1,12 +1,14 @@
 import XCTest
 
-final class ClioMotionUITests: XCTestCase {
+final class ClioMotionUITests: ClioDiagnosticTestCase {
     private var app: XCUIApplication!
 
     override func setUp() {
+        super.setUp()
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
+        app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
         app.launchEnvironment["CLIO_UI_TEST_SCENARIO"] = "restoration"
         if ProcessInfo.processInfo.environment["CLIO_RUN_MOTION_TRACE"] == "1" {

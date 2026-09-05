@@ -52,7 +52,9 @@ private struct EditorWindowRoot: View {
             .focusedSceneValue(\.editorSession, windowSession.activeTab)
             .focusedSceneValue(\.documentExportPresentation, windowSession.exportPresentation)
             .onAppear {
+                ClioLaunchDiagnostics.mark("editor-window-appeared")
                 windowSession.connect(to: appState)
+                ClioLaunchDiagnostics.mark("editor-session-connected")
             }
             .task {
                 // Opt-in profiling fixture: no AX queries or screenshot work
@@ -125,10 +127,24 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     let initialWindowRequest: EditorWindowRequest
 
     override init() {
+        ClioLaunchDiagnostics.mark("application-delegate-init")
         let configuration = ClioLaunchConfiguration.current()
+        ClioLaunchDiagnostics.mark("launch-configuration-ready")
         appState = configuration.appState
         initialWindowRequest = configuration.initialWindowRequest
         super.init()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        ClioLaunchDiagnostics.mark("application-will-finish-launching")
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        ClioLaunchDiagnostics.mark("application-did-finish-launching")
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        ClioLaunchDiagnostics.mark("application-became-active")
     }
 
     init(appState: AppState) {

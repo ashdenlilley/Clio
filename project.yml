@@ -161,6 +161,20 @@ targets:
           CODE_SIGN_IDENTITY: "-"
 
 schemes:
+  ClioLaunchDiagnostics:
+    build:
+      targets:
+        Clio: [test]
+        ClioUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      preferredScreenCaptureFormat: screenshots
+      targets:
+        - name: ClioUITests
+          parallelizable: false
+          selectedTests:
+            - ClioLaunchUITests/testLaunchReachesForegroundAndEditor
   Clio:
     build:
       targets:

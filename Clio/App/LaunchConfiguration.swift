@@ -16,8 +16,10 @@ struct ClioLaunchConfiguration {
         }
 
         do {
+            ClioLaunchDiagnostics.mark("isolated-storage-start")
             return try uiTestConfiguration(environment: environment)
         } catch {
+            ClioLaunchDiagnostics.mark("isolated-storage-failed")
             preconditionFailure("Unable to prepare isolated test storage: \(error)")
         }
     }
@@ -38,12 +40,14 @@ private extension ClioLaunchConfiguration {
             at: rootURL,
             withIntermediateDirectories: true
         )
+        ClioLaunchDiagnostics.mark("isolated-directory-ready")
         let seedURL = rootURL.appendingPathComponent("seed.md")
         let seedText = "Alpha beta gamma\nSecond line\n"
         try seedText.write(to: seedURL, atomically: true, encoding: .utf8)
         let journal = CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".crash-recovery"))
         let identities = DocumentIdentityStore(storageURL: rootURL.appendingPathComponent(".identities.json"))
         let index = try SQLiteSearchIndex(databaseURL: rootURL.appendingPathComponent(".index.sqlite"), identityStore: identities)
+        ClioLaunchDiagnostics.mark("isolated-index-ready")
 
         let catalog = WorkspaceCatalog(
             defaults: defaults,
@@ -67,6 +71,7 @@ private extension ClioLaunchConfiguration {
             }
         )
         let descriptor = try catalog.addAuthorizedFolder(rootURL)
+        ClioLaunchDiagnostics.mark("isolated-workspace-authorized")
         let appState = AppState(
             defaults: defaults,
             recoveryStore: RecoveryStore(rootURL: rootURL.appendingPathComponent(".document-recovery")),
@@ -78,6 +83,7 @@ private extension ClioLaunchConfiguration {
             exportRecoveryCatalog: ExportRecoveryCatalog(rootURL: rootURL.appendingPathComponent(".export-recovery"))
         )
 
+        ClioLaunchDiagnostics.mark("isolated-app-state-ready")
         switch environment["CLIO_UI_TEST_SCENARIO"] {
         case "blank":
             return Self(

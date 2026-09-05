@@ -1,6 +1,6 @@
 import XCTest
 
-final class ClioNavigationUITests: XCTestCase {
+final class ClioNavigationUITests: ClioDiagnosticTestCase {
     private var app: XCUIApplication!
 
     override func tearDown() {
@@ -151,6 +151,7 @@ final class ClioNavigationUITests: XCTestCase {
     private func launch(scenario: String) {
         app = XCUIApplication()
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
+        app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
         app.launchEnvironment["CLIO_UI_TEST_SCENARIO"] = scenario
         app.launch()
