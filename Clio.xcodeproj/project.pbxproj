@@ -57,6 +57,7 @@
 		6C46080DCB3CC903499BE2CA /* ExactFileAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C85018D60A31300C0D1BC25B /* ExactFileAccessTests.swift */; };
 		6D3D1E7525A01345D5DAE986 /* DocumentBufferRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7E1E41547D7184B400BFE2 /* DocumentBufferRegistry.swift */; };
 		6FA4B8F414E3029D10779DD7 /* MarkdownEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB9A8DB7F526522AF6C2288D /* MarkdownEditing.swift */; };
+		71B30C2444B205ADBF4A6F88 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A3B7D30D6E143FEA49D242B6 /* AppIcon.icon */; };
 		729013C11EF015BD21B455F9 /* ExportRecoveryCheckpointStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7FE18284C58BCC7AB935172 /* ExportRecoveryCheckpointStoreTests.swift */; };
 		77E296B574D0984F3A6C8C2A /* DocumentRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F69C1948D2B708A8A173C3 /* DocumentRevision.swift */; };
 		78731B2EF1742FD0E6C633E4 /* Autosaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 410AAD26C2D6CBAEE8AF89B1 /* Autosaver.swift */; };
@@ -215,6 +216,7 @@
 		99FFDC4F6FD0B1903F2D36A5 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIndexCoordinator.swift; sourceTree = "<group>"; };
 		9DAD4C82CA68E85065EE6902 /* everything.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = everything.md; sourceTree = "<group>"; };
+		A3B7D30D6E143FEA49D242B6 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		A713CADC782C968FEF3EB190 /* WorkspaceScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceScanner.swift; sourceTree = "<group>"; };
 		A8566EFD44C7B437E0AD0927 /* SourcePreservingMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePreservingMarkdownParser.swift; sourceTree = "<group>"; };
 		AB46E7A30B4CA904356B105D /* malformed-unicode.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "malformed-unicode.md"; sourceTree = "<group>"; };
@@ -317,6 +319,7 @@
 		45CB4BC46EBD92F16CE07506 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A3B7D30D6E143FEA49D242B6 /* AppIcon.icon */,
 				F6FB207DBDE7F4475EBCD9A6 /* Assets.xcassets */,
 				2606EAA75DBB43ED79C5DFA6 /* Fonts */,
 				C366C43526FD379EDE442E52 /* THIRD-PARTY-NOTICES.md */,
@@ -663,6 +666,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				71B30C2444B205ADBF4A6F88 /* AppIcon.icon in Resources */,
 				F3091E3352448BE08252D0FA /* Assets.xcassets in Resources */,
 				5403D9FEC2130E342EF759EF /* Fonts in Resources */,
 				1806ACFF4396116ED71A46C6 /* THIRD-PARTY-NOTICES.md in Resources */,
@@ -969,6 +973,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx14*]" = AppIcon.icon;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx15*]" = AppIcon.icon;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
@@ -1051,6 +1057,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx14*]" = AppIcon.icon;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx15*]" = AppIcon.icon;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
