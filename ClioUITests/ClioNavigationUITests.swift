@@ -89,6 +89,11 @@ final class ClioNavigationUITests: XCTestCase {
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
         app.launchEnvironment["CLIO_UI_TEST_SCENARIO"] = scenario
         app.launch()
+        // The pointer survives termination/relaunch. On macOS 15 it can rest
+        // on the newly positioned green window button and open the system
+        // arrangement menu, which intercepts otherwise correctly focused typing.
+        // Hover only: do not click, acquire editor focus, or move its saved caret.
+        app.windows.firstMatch.hover()
     }
 
     private func waitUntil(
