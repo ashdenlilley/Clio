@@ -83,6 +83,26 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
+  ClioCrashProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ClioCrashProbe/main.swift
+      - path: ClioCrashProbe/CrashTestDriver.swift
+      - path: Clio/Workspace/CrashRecoveryJournal.swift
+      - path: Clio/Workspace/AtomicWriteTransaction.swift
+      - path: Clio/Workspace/DocumentRevision.swift
+      - path: Clio/Contracts/DocumentContracts.swift
+      - path: Clio/Contracts/PerformanceContract.swift
+    settings:
+      base:
+        PRODUCT_NAME: ClioCrashProbe
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: ClioCrashProbe/ClioCrashProbe.entitlements
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
   ClioTests:
     type: bundle.unit-test
     platform: macOS
@@ -91,9 +111,27 @@ targets:
       - path: ClioTests
     dependencies:
       - target: Clio
+      - target: ClioCrashProbe
+        link: false
+    postBuildScripts:
+      - name: Copy test-only crash probe
+        script: |
+          mkdir -p "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          /bin/cp -p "${BUILT_PRODUCTS_DIR}/ClioCrashProbe" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ClioCrashProbe"
+          if [ "${CODE_SIGNING_ALLOWED}" != "NO" ]; then
+            /usr/bin/codesign --force --sign - --entitlements "${SRCROOT}/ClioCrashProbe/ClioCrashProbe.entitlements" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ClioCrashProbe"
+          fi
+        inputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/ClioCrashProbe"
+          - "$(SRCROOT)/ClioCrashProbe/ClioCrashProbe.entitlements"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac.tests
+        # Test-only copying/re-signing needs temporary codesign files. App
+        # Sandbox in the host and inheritance in the helper remain enabled.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         PRODUCT_NAME: ClioTests
         GENERATE_INFOPLIST_FILE: YES
         BUNDLE_LOADER: "$(TEST_HOST)"

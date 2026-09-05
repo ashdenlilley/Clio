@@ -50,7 +50,8 @@ if [[ -n "${CLIO_TEST_RESULT_PATH:-}" ]]; then
     set -- -resultBundlePath "${UNIT_RESULT_PATH}"
 fi
 
-# The real SIGKILL recovery subprocess runs under the unsigned unit host.
+# Unit tests retain their unsigned local host; the real SIGKILL subprocess now
+# uses a test-only helper and also supports a signed sandboxed Cloud host.
 # UI automation and the real display-link test require an ad-hoc-signed runner;
 # run them separately from the unsigned suite and serially
 # so the two hosts cannot steal focus or terminate each other's application.

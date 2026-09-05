@@ -2,8 +2,7 @@
   import Darwin
   import Foundation
 
-  /// Subprocess-only durability probe used by tests. It is unreachable without
-  /// an explicit test environment variable and is not compiled into Release.
+  /// Test-helper-only durability probe; never compiled into the app target.
   enum CrashTestDriver {
     private static let modeKey = "CLIO_CRASH_TEST_MODE"
     private static let rootKey = "CLIO_CRASH_TEST_ROOT"

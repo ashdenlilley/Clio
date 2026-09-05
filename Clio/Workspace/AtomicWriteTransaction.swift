@@ -180,11 +180,11 @@ enum AtomicWriteTransactions {
       let temporaryIsAbsent = isAbsent(manifest.temporaryURL)
       let destinationIsExpected =
         manifest.expectedRevision.map { expected in
-          destination.map { Workspace.sameContent($0.revision, expected) } ?? false
+          destination.map { DocumentRevisionReader.sameContent($0.revision, expected) } ?? false
         } ?? isAbsent(manifest.destinationURL)
       let temporaryIsExpected =
         manifest.expectedRevision.map { expected in
-          temporary.map { Workspace.sameContent($0.revision, expected) } ?? false
+          temporary.map { DocumentRevisionReader.sameContent($0.revision, expected) } ?? false
         } ?? false
 
       if let temporary, temporaryIsCandidate || temporaryIsExpected {
@@ -278,10 +278,10 @@ enum AtomicWriteTransactions {
       } ?? false
       let temporaryIsAbsent = isAbsent(manifest.temporaryURL)
       let destinationIsExpected = manifest.expectedRevision.map { expected in
-        destination.map { Workspace.sameContent($0, expected) } ?? false
+        destination.map { DocumentRevisionReader.sameContent($0, expected) } ?? false
       } ?? isAbsent(manifest.destinationURL)
       let temporaryIsExpected = manifest.expectedRevision.map { expected in
-        temporary.map { Workspace.sameContent($0, expected) } ?? false
+        temporary.map { DocumentRevisionReader.sameContent($0, expected) } ?? false
       } ?? false
 
       let artifact: AtomicExportRecoveryArtifact?

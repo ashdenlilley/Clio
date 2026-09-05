@@ -125,9 +125,6 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     let initialWindowRequest: EditorWindowRequest
 
     override init() {
-        #if DEBUG
-        CrashTestDriver.runIfRequested()
-        #endif
         let configuration = ClioLaunchConfiguration.current()
         appState = configuration.appState
         initialWindowRequest = configuration.initialWindowRequest

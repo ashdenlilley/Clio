@@ -3,6 +3,9 @@ import Darwin
 import Foundation
 
 enum DocumentRevisionReader {
+    static func sameContent(_ lhs: DiskRevision, _ rhs: DiskRevision) -> Bool {
+        lhs.byteCount == rhs.byteCount && lhs.contentDigest == rhs.contentDigest
+    }
     static let maximumDocumentByteCount = Int64(
         PerformanceContract.safeLargeFileByteLimit
     )
@@ -360,17 +363,17 @@ struct AtomicFileWriter: AtomicFileWriting {
             byteCount: Int64(data.count),
             contentDigest: DocumentRevisionReader.digest(data)
         )
-        let destinationStillContainsLocal = Workspace.sameContent(installed, localRevision)
+        let destinationStillContainsLocal = DocumentRevisionReader.sameContent(installed, localRevision)
         try phaseHook?(.validated)
 
-        if Workspace.sameContent(displaced, revision), destinationStillContainsLocal {
+        if DocumentRevisionReader.sameContent(displaced, revision), destinationStillContainsLocal {
             try syncParent(of: destinationURL)
             try phaseHook?(.parentSynced)
             try AtomicWriteTransactions.finish(transaction, removeTemporary: true)
             return .replaced
         }
 
-        if !Workspace.sameContent(displaced, revision), destinationStillContainsLocal {
+        if !DocumentRevisionReader.sameContent(displaced, revision), destinationStillContainsLocal {
             let restoreResult = temporaryURL.withUnsafeFileSystemRepresentation { sourcePath in
                 destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
                     renamex_np(sourcePath, destinationPath, UInt32(RENAME_SWAP))

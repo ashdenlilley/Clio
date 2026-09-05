@@ -607,17 +607,42 @@ extension CrashSafetyTests {
   }
 
   fileprivate func runCrashSubprocess(mode: String, rootURL: URL) throws {
-    let executable = try XCTUnwrap(Bundle.main.executableURL)
+    let executable = try XCTUnwrap(
+      Bundle(for: CrashSafetyTests.self).url(forResource: "ClioCrashProbe", withExtension: nil)
+    )
     let process = Process()
     process.executableURL = executable
-    var environment = ProcessInfo.processInfo.environment
+    // Do not inject XCTest/DYLD libraries or Cloud release secrets into the probe.
+    var environment: [String: String] = [:]
     environment["CLIO_CRASH_TEST_MODE"] = mode
     environment["CLIO_CRASH_TEST_ROOT"] = rootURL.path
     process.environment = environment
     process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
+    let diagnosticURL = rootURL.deletingLastPathComponent()
+      .appendingPathComponent("probe-\(UUID().uuidString).stderr")
+    FileManager.default.createFile(atPath: diagnosticURL.path, contents: nil)
+    let diagnostic = try FileHandle(forWritingTo: diagnosticURL)
+    defer {
+      try? diagnostic.close()
+      try? FileManager.default.removeItem(at: diagnosticURL)
+    }
+    process.standardError = diagnostic
     try process.run()
+    let deadline = Date().addingTimeInterval(15)
+    while process.isRunning && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    let timedOut = process.isRunning
+    if timedOut { kill(process.processIdentifier, SIGKILL) }
     process.waitUntilExit()
+    XCTAssertFalse(timedOut, "Crash probe timed out before its intentional SIGKILL")
+    if timedOut || process.terminationStatus != SIGKILL {
+      let data = (try? Data(contentsOf: diagnosticURL)) ?? Data()
+      let attachment = XCTAttachment(string: String(decoding: data.prefix(16_384), as: UTF8.self))
+      attachment.name = "Crash probe stderr (\(mode))"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
     XCTAssertEqual(process.terminationReason, .uncaughtSignal)
     XCTAssertEqual(process.terminationStatus, SIGKILL)
   }

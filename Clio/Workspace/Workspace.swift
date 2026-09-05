@@ -1233,7 +1233,7 @@ extension Workspace {
     }
 
     nonisolated static func sameContent(_ lhs: DiskRevision, _ rhs: DiskRevision) -> Bool {
-        lhs.byteCount == rhs.byteCount && lhs.contentDigest == rhs.contentDigest
+        DocumentRevisionReader.sameContent(lhs, rhs)
     }
 
     nonisolated static func sameTarget(_ lhs: URL?, _ rhs: URL?) -> Bool {
