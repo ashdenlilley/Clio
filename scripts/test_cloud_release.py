@@ -191,6 +191,83 @@ class AdvisoryResults(unittest.TestCase):
         self.assertIsNone(report["cloudBuildURL"])
 
 
+class CheckoutPreflight(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)/"source"
+        self.root.mkdir()
+        self.environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        self.git("init", "--template=")
+        self.git("-c", "user.name=Clio Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture")
+        self.commit = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.root), *args], check=True,
+                              capture_output=True, text=True, env=self.environment).stdout
+
+    def preflight(self, commit=None, root=None):
+        environment = dict(self.environment, CI_TAG="v0.1.1", CI_COMMIT=commit or self.commit)
+        # Parameters, not interpolated shell source: paths may contain spaces.
+        return subprocess.run([
+            "/bin/bash", "-c",
+            'set -euo pipefail; source "$1"; source "$2"; clio_validate_release_checkout "$3"',
+            "checkout-test", str(r.ROOT/"scripts/release-common.sh"),
+            str(r.ROOT/"scripts/cloud-release-preflight.sh"), str(root or self.root),
+        ], capture_output=True, text=True, env=environment)
+
+    def test_detached_checkout_without_tag_succeeds(self):
+        self.git("checkout", "--detach", self.commit)
+        result = self.preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("remote GitHub tag verification remains mandatory", result.stdout)
+
+    def test_actual_shallow_no_tags_checkout_succeeds(self):
+        checkout = Path(self.temporary.name)/"Cloud checkout"
+        self.git("clone", "--depth=1", "--no-tags", self.root.as_uri(), str(checkout))
+        result = self.preflight(root=checkout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no local tag ref", result.stdout)
+
+    def test_lightweight_tag_matches(self):
+        self.git("tag", "v0.1.1")
+        self.assertEqual(self.preflight().returncode, 0)
+
+    def test_annotated_tag_is_peeled(self):
+        self.git("-c", "user.name=Clio Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "tag.gpgsign=false", "tag", "-a", "v0.1.1", "-m", "fixture")
+        self.assertEqual(self.preflight().returncode, 0)
+
+    def test_wrong_head_still_fails_without_local_tag(self):
+        result = self.preflight(commit="0"*40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checkout does not match", result.stderr)
+
+    def test_existing_mismatched_tag_still_fails(self):
+        self.git("tag", "v0.1.1")
+        self.git("-c", "user.name=Clio Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "newer")
+        result = self.preflight(commit=self.git("rev-parse", "HEAD").strip())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("local release tag does not match", result.stderr)
+
+    def test_noncommit_tag_still_fails(self):
+        self.git("tag", "v0.1.1", self.git("rev-parse", "HEAD^{tree}").strip())
+        result = self.preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not resolve to a commit", result.stderr)
+
+    def test_missing_repository_fails(self):
+        result = self.preflight(root=Path(self.temporary.name)/"missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot resolve release checkout HEAD", result.stderr)
+
+
 class PostActionHook(unittest.TestCase):
     def hook(self, action, code, cloud="TRUE"):
         # Mirror a test worker that has the hook but no repository/scripts tree.

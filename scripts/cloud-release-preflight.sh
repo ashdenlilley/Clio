@@ -27,3 +27,25 @@ clio_validate_release_environment() {
         && "${NOTARY_PRIVATE_KEY}" == *"-----END PRIVATE KEY-----"* ]] \
         || clio_die "NOTARY_PRIVATE_KEY must contain raw PEM .p8 text"
 }
+
+clio_validate_release_checkout() {
+    local repository_path="$1"
+    local checkout_commit local_tag_commit
+    checkout_commit="$(git -C "${repository_path}" rev-parse --verify HEAD 2>/dev/null)" \
+        || clio_die "cannot resolve release checkout HEAD"
+    [[ "${checkout_commit}" == "${CI_COMMIT}" ]] \
+        || clio_die "release checkout does not match CI_COMMIT"
+
+    # Cloud can supply a detached checkout without the triggering tag ref.
+    # A present tag must still match. An absent tag is NOT proof of provenance:
+    # cloud-release.py always verifies the remote GitHub tag before importing
+    # signing credentials, then again before creating/publishing the release.
+    if git -C "${repository_path}" show-ref --verify --quiet "refs/tags/${CI_TAG}"; then
+        local_tag_commit="$(git -C "${repository_path}" rev-parse --verify "refs/tags/${CI_TAG}^{commit}" 2>/dev/null)" \
+            || clio_die "local release tag does not resolve to a commit"
+        [[ "${local_tag_commit}" == "${CI_COMMIT}" ]] \
+            || clio_die "local release tag does not match CI_COMMIT"
+    else
+        echo "Cloud checkout has no local tag ref; remote GitHub tag verification remains mandatory before signing/publication."
+    fi
+}

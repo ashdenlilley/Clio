@@ -29,10 +29,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 "${ROOT}/scripts/test_cloud_release.p
 
 if clio_is_release_tag; then
     clio_validate_release_environment
-    [[ "$(git -C "${ROOT}" rev-parse HEAD)" == "${CI_COMMIT}" ]] \
-        || clio_die "release checkout does not match CI_COMMIT"
-    [[ "$(git -C "${ROOT}" rev-parse "refs/tags/${CI_TAG}^{commit}")" == "${CI_COMMIT}" ]] \
-        || clio_die "release tag does not resolve to CI_COMMIT"
+    clio_validate_release_checkout "${ROOT}"
     echo "Clio internal release input preflight passed; Xcode tests are advisory. Archive, signing and artifact verification remain required."
 else
     echo "Clio CI dependency preflight passed; this is not a release tag."
