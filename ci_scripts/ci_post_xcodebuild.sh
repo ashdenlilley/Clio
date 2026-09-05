@@ -11,11 +11,18 @@ if [[ "${CI_XCODEBUILD_ACTION:-}" == "test-without-building" ]]; then
         --predicate 'subsystem == "olympus.clio.mac.launch"' --info 2>/dev/null \
         || echo "Launch-stage log unavailable on this worker; inspect XCTest attachments."
 fi
+if [[ "${CI_XCODEBUILD_ACTION:-}" != "archive" ]]; then
+    # The original Xcode action retains its actual result. Do not add a second
+    # failed custom-script error or require release tooling on test workers.
+    if [[ "${CI_XCODEBUILD_EXIT_CODE:-1}" != "0" ]]; then
+        echo "warning: Xcode action reported errors; results are advisory for internal DMG releases. Inspect this action's tests/logs."
+    fi
+    exit 0
+fi
 if [[ "${CI_XCODEBUILD_EXIT_CODE:-1}" != "0" ]]; then
     echo "Xcode action failed; release processing will not run." >&2
     exit 1
 fi
-[[ "${CI_XCODEBUILD_ACTION:-}" == "archive" ]] || exit 0
 [[ -n "${CI_TAG:-}" && -z "${CI_PULL_REQUEST_NUMBER:-}" ]] || exit 0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT}/scripts/release-common.sh"

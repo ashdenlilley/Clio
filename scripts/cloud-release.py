@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Xcode Cloud only: export, notarize and publish an immutable tag's DMG.
+"""Xcode Cloud only: export, notarize and publish an internal tag's DMG.
 
 No third-party Python packages. Secrets are never logged. Failed uploads are
 left unpublished for diagnosis; existing releases are never overwritten.
+Xcode test results are advisory, not release gates. Signing/integrity still gate.
 """
 import base64
 import hashlib
@@ -87,7 +88,7 @@ class API:
                         input_data=payload)
         return (payload+b"."+b64(raw_ecdsa(signature))).decode()
 
-    def request(self, url, method="GET", data=None, binary=False, missing_ok=False):
+    def request(self, url, method="GET", data=None, binary=False, missing_ok=False, timeout=120):
         parsed = urllib.parse.urlsplit(url)
         require(parsed.scheme == "https" and parsed.netloc in
                 ("api.appstoreconnect.apple.com", "api.github.com", "uploads.github.com"),
@@ -103,62 +104,66 @@ class API:
             headers["Content-Type"] = "application/octet-stream" if binary else "application/json"
         try:
             with self.opener.open(urllib.request.Request(url, data=payload, headers=headers,
-                                                        method=method), timeout=120) as response:
+                                                        method=method), timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             if missing_ok and error.code == 404:
                 return None
             raise RuntimeError(f"{parsed.netloc} {method} failed (HTTP {error.code}); check API permissions") from None
 
-    def apple_pages(self, path):
-        url = ASC+path
-        for _ in range(10):
-            require(url.startswith(ASC+"/v1/"), "unexpected Apple pagination URL")
-            page = self.request(url)
-            yield from page["data"]
-            url = page.get("links", {}).get("next")
-            if not url:
-                return
-        raise RuntimeError("API pagination limit reached; refusing incomplete CI evidence")
 
+def advisory_test_report(api, commit):
+    """A bounded, best-effort snapshot of this build, never a success attestation.
 
-def successful_run(build, commit, current_id):
-    a = build.get("attributes", {})
-    return (build.get("id") != current_id and a.get("executionProgress") == "COMPLETE"
-            and a.get("completionStatus") == "SUCCEEDED"
-            and a.get("isPullRequestBuild") is False
-            and a.get("sourceCommit", {}).get("commitSha") == commit)
-
-
-def valid_actions(actions):
-    if not actions:
-        return False
-    types = set()
-    for action in actions:
-        a = action.get("attributes", {})
-        if a.get("executionProgress") != "COMPLETE" or a.get("completionStatus") != "SUCCEEDED":
-            return False
-        kind = a.get("actionType")
-        if kind == "TEST" and a.get("isRequiredToPass") is not True:
-            return False
-        counts = a.get("issueCounts", {}) or {}
-        if any(counts.get(k, 0) != 0 for k in ("errors", "testFailures", "analyzerWarnings")):
-            return False
-        types.add(kind)
-    return {"TEST", "ANALYZE", "ARCHIVE"}.issubset(types)
-
-
-def evidence(api, commit):
-    workflow = os.environ["CI_WORKFLOW_ID"]
-    require(re.fullmatch(r"[A-Za-z0-9-]+", workflow), "invalid workflow ID")
-    for build in api.apple_pages(f"/v1/ciWorkflows/{workflow}/buildRuns?limit=100"):
-        if successful_run(build, commit, os.environ["CI_BUILD_ID"]):
-            build_id = build["id"]
-            require(re.fullmatch(r"[A-Za-z0-9-]+", build_id), "invalid build ID")
-            actions = list(api.apple_pages(f"/v1/ciBuildRuns/{build_id}/actions?limit=100"))
-            if valid_actions(actions):
-                return {"build": build, "actions": actions, "workflowID": workflow}
-    raise RuntimeError("No completed successful non-PR Cloud run with required Test, Analyze and Archive for this exact commit. Run branch CI before tagging.")
+    Archive hooks can finish before sibling tests. Never wait for the containing
+    build, substitute an older commit's green result, or hide unavailable data.
+    """
+    build_id = os.environ.get("CI_BUILD_ID", "")
+    valid_id = bool(re.fullmatch(r"[A-Za-z0-9-]+", build_id))
+    report = {
+        "policy": "internal-advisory", "blocksRelease": False, "commit": commit,
+        "cloudBuildID": build_id if valid_id else None,
+        "cloudBuildURL": (f"[private-link-removed]"
+                          f"/apps/0000000000/ci/builds/{build_id}") if valid_id else None,
+        "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "testStatus": "unavailable", "actions": [],
+        "note": "Packaging-time snapshot only. Final test results and notifications remain in Xcode Cloud and GitHub checks. Internal release does not certify tests passed.",
+    }
+    try:
+        require(valid_id, "missing Cloud build metadata")
+        # One bounded request; pagination/incomplete data is reported, not trusted
+        # as a pass. Test reporting must not hold up signing on an API outage.
+        page = api.request(f"{ASC}/v1/ciBuildRuns/{build_id}/actions?limit=100", timeout=15)
+        for action in page["data"]:
+            a = action.get("attributes", {})
+            if a.get("actionType") not in ("TEST", "ANALYZE"):
+                continue
+            counts = a.get("issueCounts") or {}
+            report["actions"].append({
+                "type": a["actionType"],
+                "progress": a.get("executionProgress"),
+                "status": a.get("completionStatus"),
+                "requiredToPass": a.get("isRequiredToPass"),
+                "issueCounts": {k: counts.get(k, 0) for k in ("errors", "testFailures", "analyzerWarnings")},
+            })
+        tests = [a for a in report["actions"] if a["type"] == "TEST"]
+        if any(a["status"] in ("FAILED", "ERRORED") or any(a["issueCounts"].values()) for a in tests):
+            report["testStatus"] = "failed"
+        elif page.get("links", {}).get("next") or not tests:
+            report["testStatus"] = "unavailable"
+        elif any(a["progress"] != "COMPLETE" for a in tests):
+            report["testStatus"] = "pending"
+        elif all(a["status"] == "SUCCEEDED" for a in tests):
+            report["testStatus"] = "passed"
+        else:
+            report["testStatus"] = "incomplete"
+    except Exception:
+        # Report lookup is deliberately advisory; never echo API bodies, URLs
+        # from exceptions, or credential-bearing subprocess diagnostics.
+        report["testStatus"] = "unavailable"
+        report["note"] += " Cloud status lookup was unavailable or incomplete."
+    print(f"Internal release: Xcode test status {report['testStatus']} (advisory)", flush=True)
+    return report
 
 
 def verify_tag(api, tag, commit):
@@ -207,15 +212,24 @@ def notarize(path, key, output):
     require(result.get("status") == "Accepted", "Apple did not accept notarization")
 
 
-def publish(api, tag, commit, output):
+def publish(api, tag, commit, output, report):
     base = f"{GH}/repos/{REPO}/releases"
     verify_tag(api, tag, commit)
     require(api.request(base+"/tags/"+tag, missing_ok=True) is None, "release already exists; refusing overwrite")
     # Transactional staging only: automatically publish after every asset verifies.
     # A failure leaves a draft for diagnosis, never a public partial release.
+    body = (f"Internal testing build — not a public-quality release.\n\n"
+            f"Developer ID signed and notarized universal macOS DMG.\n\nSource: `{commit}`\n\n"
+            f"Xcode test status at packaging: **{report['testStatus']}** (advisory, not a release gate). "
+            "Failed, pending or unavailable tests do not prevent this internal cut. "
+            "Signing/notarization does not establish application correctness.\n\n"
+            "See ci-test-status.json, notarization logs and SHA256SUMS. "
+            "Test results may finish after upload; the snapshot is not updated automatically.")
+    if report.get("cloudBuildURL"):
+        body += f"\n\n[Final Xcode Cloud results]({report['cloudBuildURL']})"
     release = api.request(base, "POST", {"tag_name": tag, "target_commitish": commit,
-        "name": "Clio "+tag[1:], "draft": True, "prerelease": False,
-        "body": f"Developer ID signed and notarized universal macOS DMG.\n\nSource: `{commit}`\n\nSee attached CI evidence, notarization logs and SHA256SUMS."})
+        "name": "Clio "+tag[1:]+" — Internal testing", "draft": True,
+        "prerelease": True, "make_latest": "false", "body": body})
     release_id = release["id"]
     require(isinstance(release_id, int), "invalid GitHub release ID")
     print(f"Uploading verified assets to release {release_id}", flush=True)
@@ -228,8 +242,10 @@ def publish(api, tag, commit, output):
                 and asset.get("digest") == "sha256:"+hashlib.sha256(data).hexdigest(),
                 "GitHub uploaded asset verification failed; draft retained")
     verify_tag(api, tag, commit)
-    final = api.request(base+f"/{release_id}", "PATCH", {"draft": False})
-    require(final.get("draft") is False, "GitHub did not confirm publication")
+    final = api.request(base+f"/{release_id}", "PATCH",
+                        {"draft": False, "prerelease": True, "make_latest": "false"})
+    require(final.get("draft") is False and final.get("prerelease") is True,
+            "GitHub did not confirm internal prerelease publication")
     print(f"Published https://github.com/{REPO}/releases/tag/{tag}", flush=True)
 
 
@@ -252,11 +268,10 @@ def main():
         key.write_text(e["NOTARY_PRIVATE_KEY"])
         cert.write_bytes(base64.b64decode("".join(e["DEVELOPER_ID_CERT_P12"].split()), validate=True))
         api = API(key)
-        proof = evidence(api, commit)  # No remote writes before successful CI proof.
         verify_tag(api, tag, commit)
         require(api.request(f"{GH}/repos/{REPO}/releases/tags/{tag}", missing_ok=True) is None,
                 "release already exists; refusing overwrite")
-        print("Exact-commit Cloud CI gate passed", flush=True)
+        print("Internal release: successful archive and exact tag verified; Xcode tests are advisory", flush=True)
         password = secrets.token_hex(32)
         old_keychains = run("/usr/bin/security", "list-keychains", "-d", "user").decode()
         import shlex
@@ -322,13 +337,15 @@ def main():
                         and os.readlink(mount/"Applications") == "/Applications", "DMG install link missing")
             finally:
                 run("/usr/bin/hdiutil", "detach", mount)
-            (output/"ci-evidence.json").write_text(json.dumps(proof, indent=2))
+            report = advisory_test_report(api, commit)
+            (output/"ci-test-status.json").write_text(json.dumps(report, indent=2))
             manifest = {"commit": commit, "tag": tag, "team": TEAM, "bundleID": "olympus.clio.mac",
                 "version": tag[1:], "build": info["CFBundleVersion"], "cloudBuildID": e["CI_BUILD_ID"],
-                "validatedCloudBuildID": proof["build"]["id"], "architectures": ["arm64", "x86_64"],
+                "releaseChannel": "internal", "testPolicy": "advisory", "testStatus": report["testStatus"],
+                "cloudBuildURL": report["cloudBuildURL"], "architectures": ["arm64", "x86_64"],
                 "xcode": run("/usr/bin/xcodebuild", "-version").decode().strip(),
                 "verification": "Developer ID, runtime, sandbox, universal, app and DMG notarization/stapling, codesign, hdiutil, mounted app, spctl",
-                "limitations": "Does not replace a fresh-download installation test on a clean supported Mac."}
+                "limitations": "Internal testing only. Test failures do not block publication. Does not replace a fresh-download installation test on a clean supported Mac."}
             (output/"manifest.json").write_text(json.dumps(manifest, indent=2))
             lock = ROOT/"Clio.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
             (output/"Package.resolved").write_bytes(lock.read_bytes())
@@ -351,7 +368,7 @@ def main():
                 finally:
                     run("/usr/bin/security", "delete-keychain", keychain)
         # Cleanup is a gate too: no publication if signing-keychain cleanup fails.
-        publish(api, tag, commit, output)
+        publish(api, tag, commit, output, report)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ if clio_is_release_tag; then
         || clio_die "release checkout does not match CI_COMMIT"
     [[ "$(git -C "${ROOT}" rev-parse "refs/tags/${CI_TAG}^{commit}")" == "${CI_COMMIT}" ]] \
         || clio_die "release tag does not resolve to CI_COMMIT"
-    echo "Clio release input preflight passed; publication requires independent CI evidence."
+    echo "Clio internal release input preflight passed; Xcode tests are advisory. Archive, signing and artifact verification remain required."
 else
     echo "Clio CI dependency preflight passed; this is not a release tag."
 fi
