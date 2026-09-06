@@ -12,7 +12,9 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("cloud-release.py"))
 r = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(r)
+with patch.dict(os.environ, {"DEVELOPER_TEAM_ID": "TESTTEAM01",
+                             "EXPECTED_CLOUD_TEAM_ID": "00000000-0000-0000-0000-000000000000"}):
+    spec.loader.exec_module(r)
 
 
 def actions():
@@ -23,6 +25,39 @@ def actions():
 
 
 class Gates(unittest.TestCase):
+    def test_public_report_omits_all_internal_metadata(self):
+        report = r.public_test_report({"testStatus": "failed", "capturedAt": "now",
+            "cloudBuildID": "private", "cloudBuildURL": "private", "team": "private",
+            "actions": [{"private": "response"}], "note": "private"})
+        self.assertEqual(set(report), {"policy", "blocksRelease", "testStatus", "capturedAt", "note"})
+        self.assertNotIn("private", str(report))
+        self.assertEqual(report["testStatus"], "failed")
+
+    def test_upload_allowlist_excludes_notarization_records(self):
+        names = r.public_asset_names("v0.1.2")
+        self.assertIn("Clio-0.1.2.dmg", names)
+        self.assertEqual(len(names), 6)
+        self.assertFalse(any("notary" in name for name in names))
+
+    def test_private_asset_rejected_before_creating_release(self):
+        class Fake:
+            def request(self, url, method="GET", **kwargs):
+                if "/git/ref/" in url:
+                    return {"object": {"type": "commit", "sha": "a"*40}}
+                if kwargs.get("missing_ok"):
+                    return None
+                raise AssertionError("No writes allowed for private assets")
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder/"Clio-app-notary-log.json").write_text("private fixture")
+            with self.assertRaisesRegex(RuntimeError, "private or unexpected release asset"):
+                r.publish(Fake(), "v0.1.2", "a"*40, folder, {"testStatus": "pending"})
+
+    def test_missing_cloud_configuration_fails_closed(self):
+        with patch.object(r, "CLOUD_TEAM", ""):
+            with self.assertRaisesRegex(RuntimeError, "configure EXPECTED_CLOUD_TEAM_ID"):
+                r.validate_teams({"CI_TEAM_ID": "", "DEVELOPER_TEAM_ID": r.TEAM})
+
     def test_distinct_cloud_and_signing_teams(self):
         r.validate_teams({"CI_TEAM_ID": r.CLOUD_TEAM, "DEVELOPER_TEAM_ID": r.TEAM})
 
@@ -69,7 +104,7 @@ class Gates(unittest.TestCase):
                 return {"id": 42}
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            (folder/"fixture.txt").write_text("fixture")
+            (folder/"Clio-0.1.0.dmg").write_text("fixture")
             for status in ("passed", "failed", "pending", "unavailable", "incomplete"):
                 api = Fake()
                 with contextlib.redirect_stdout(io.StringIO()):

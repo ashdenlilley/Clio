@@ -15,10 +15,12 @@ clio_is_release_tag() {
 clio_validate_release_environment() {
     local variable_name
     for variable_name in DEVELOPER_ID_CERT_P12 DEVELOPER_ID_CERT_PASSWORD \
-        DEVELOPER_TEAM_ID NOTARY_ISSUER_ID NOTARY_KEY_ID NOTARY_PRIVATE_KEY GITHUB_TOKEN; do
+        DEVELOPER_TEAM_ID EXPECTED_CLOUD_TEAM_ID NOTARY_ISSUER_ID NOTARY_KEY_ID NOTARY_PRIVATE_KEY GITHUB_TOKEN; do
         [[ -n "${!variable_name:-}" ]] || clio_die "missing release variable: ${variable_name}"
     done
-    [[ "${DEVELOPER_TEAM_ID}" == "REDACTED00" ]] || clio_die "unexpected release signing team"
+    [[ "${DEVELOPER_TEAM_ID}" =~ ^[A-Z0-9]{10}$ ]] || clio_die "invalid release signing team format"
+    [[ "${EXPECTED_CLOUD_TEAM_ID}" =~ ^[A-Fa-f0-9-]{36}$ ]] || clio_die "invalid expected Cloud team format"
+    [[ "${CI_TEAM_ID:-}" == "${EXPECTED_CLOUD_TEAM_ID}" ]] || clio_die "unexpected Cloud team; check restricted CI configuration"
     [[ "${CI_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || clio_die "invalid CI_COMMIT"
     # This validates encoding only, not the certificate identity or password.
     printf '%s' "${DEVELOPER_ID_CERT_P12}" | /usr/bin/base64 -D >/dev/null 2>&1 \

@@ -680,18 +680,18 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					1EFC903199B1E422F418531B = {
-						DevelopmentTeam = REDACTED00;
+						DevelopmentTeam = "$(DEVELOPER_TEAM_ID)";
 					};
 					53AC5D0BE1CAE9C5CFF650F4 = {
-						DevelopmentTeam = REDACTED00;
+						DevelopmentTeam = "$(DEVELOPER_TEAM_ID)";
 						ProvisioningStyle = Manual;
 					};
 					7E850D3042C8CEC48DC8A783 = {
-						DevelopmentTeam = REDACTED00;
+						DevelopmentTeam = "$(DEVELOPER_TEAM_ID)";
 						TestTargetID = 9463A50ACA7319BF58C292E5;
 					};
 					9463A50ACA7319BF58C292E5 = {
-						DevelopmentTeam = REDACTED00;
+						DevelopmentTeam = "$(DEVELOPER_TEAM_ID)";
 					};
 				};
 			};
@@ -978,7 +978,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = REDACTED00;
+				DEVELOPMENT_TEAM = "$(DEVELOPER_TEAM_ID)";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1044,7 +1044,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = REDACTED00;
+				DEVELOPMENT_TEAM = "$(DEVELOPER_TEAM_ID)";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;

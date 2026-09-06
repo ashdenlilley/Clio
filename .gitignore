@@ -12,3 +12,25 @@ xcuserdata/
 
 # Locally produced release artifacts are checksummed and archived outside Git.
 artifacts/
+
+# Maintainer-only material and sensitive signing/account inputs
+.private/
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+*.xcresult
+*.xcresult.zip
+*.xcarchive/
+*.dmg
+__pycache__/
+*.pyc

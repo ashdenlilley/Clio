@@ -21,8 +21,8 @@ import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-TEAM = "REDACTED00"
-CLOUD_TEAM = "00000000-0000-0000-0000-000000000000"
+TEAM = os.environ.get("DEVELOPER_TEAM_ID", "")
+CLOUD_TEAM = os.environ.get("EXPECTED_CLOUD_TEAM_ID", "")
 REPO = "ashdenlilley/Clio"
 ASC = "https://api.appstoreconnect.apple.com"
 GH = "https://api.github.com"
@@ -34,6 +34,8 @@ def require(condition, message):
 
 
 def validate_teams(environment):
+    require(bool(re.fullmatch(r"[A-Z0-9]{10}", TEAM)), "configure DEVELOPER_TEAM_ID in restricted CI settings")
+    require(bool(re.fullmatch(r"[A-Fa-f0-9-]{36}", CLOUD_TEAM)), "configure EXPECTED_CLOUD_TEAM_ID in restricted CI settings")
     require(environment.get("CI_TEAM_ID") == CLOUD_TEAM, "wrong App Store Connect Cloud team")
     require(environment.get("DEVELOPER_TEAM_ID") == TEAM, "wrong Developer ID signing team")
 
@@ -123,8 +125,7 @@ def advisory_test_report(api, commit):
     report = {
         "policy": "internal-advisory", "blocksRelease": False, "commit": commit,
         "cloudBuildID": build_id if valid_id else None,
-        "cloudBuildURL": (f"[private-link-removed]"
-                          f"/apps/0000000000/ci/builds/{build_id}") if valid_id else None,
+        "cloudBuildURL": None,
         "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "testStatus": "unavailable", "actions": [],
         "note": "Packaging-time snapshot only. Final test results and notifications remain in Xcode Cloud and GitHub checks. Internal release does not certify tests passed.",
@@ -216,6 +217,9 @@ def publish(api, tag, commit, output, report):
     base = f"{GH}/repos/{REPO}/releases"
     verify_tag(api, tag, commit)
     require(api.request(base+"/tags/"+tag, missing_ok=True) is None, "release already exists; refusing overwrite")
+    for path in output.iterdir():
+        require(path.is_file() and not path.is_symlink(), "unexpected release asset")
+        require(path.name in public_asset_names(tag), "private or unexpected release asset; refusing upload")
     # Transactional staging only: automatically publish after every asset verifies.
     # A failure leaves a draft for diagnosis, never a public partial release.
     body = (f"Internal testing build — not a public-quality release.\n\n"
@@ -223,10 +227,8 @@ def publish(api, tag, commit, output, report):
             f"Xcode test status at packaging: **{report['testStatus']}** (advisory, not a release gate). "
             "Failed, pending or unavailable tests do not prevent this internal cut. "
             "Signing/notarization does not establish application correctness.\n\n"
-            "See ci-test-status.json, notarization logs and SHA256SUMS. "
+            "See ci-test-status.json and SHA256SUMS. "
             "Test results may finish after upload; the snapshot is not updated automatically.")
-    if report.get("cloudBuildURL"):
-        body += f"\n\n[Final Xcode Cloud results]({report['cloudBuildURL']})"
     release = api.request(base, "POST", {"tag_name": tag, "target_commitish": commit,
         "name": "Clio "+tag[1:]+" — Internal testing", "draft": True,
         "prerelease": True, "make_latest": "false", "body": body})
@@ -235,6 +237,7 @@ def publish(api, tag, commit, output, report):
     print(f"Uploading verified assets to release {release_id}", flush=True)
     for path in sorted(output.iterdir()):
         require(path.is_file() and not path.is_symlink(), "unexpected release asset")
+        require(path.name in public_asset_names(tag), "private or unexpected release asset; refusing upload")
         data = path.read_bytes()
         asset = api.request(f"https://uploads.github.com/repos/{REPO}/releases/{release_id}/assets?name="
                             + urllib.parse.quote(path.name), "POST", data, binary=True)
@@ -247,6 +250,18 @@ def publish(api, tag, commit, output, report):
     require(final.get("draft") is False and final.get("prerelease") is True,
             "GitHub did not confirm internal prerelease publication")
     print(f"Published https://github.com/{REPO}/releases/tag/{tag}", flush=True)
+
+
+def public_asset_names(tag):
+    return {f"Clio-{tag[1:]}.dmg", "Clio.app.dSYM.zip", "SHA256SUMS",
+            "manifest.json", "ci-test-status.json", "Package.resolved"}
+
+
+def public_test_report(report):
+    # Explicit projection, never serialize a full internal API response.
+    return {"policy": "internal-advisory", "blocksRelease": False,
+            "testStatus": report["testStatus"], "capturedAt": report.get("capturedAt"),
+            "note": "Packaging-time snapshot; tests may finish later. Not an assurance of correctness."}
 
 
 def main():
@@ -302,9 +317,11 @@ def main():
             info = verify_app(app, tag[1:])
             output = work/"assets"
             output.mkdir()
+            notary_records = work/"private-notary-records"
+            notary_records.mkdir()
             appzip = work/"Clio-app.zip"
             run("/usr/bin/ditto", "-c", "-k", "--keepParent", app, appzip)
-            notarize(appzip, key, output)
+            notarize(appzip, key, notary_records)
             run("/usr/bin/xcrun", "stapler", "staple", app)
             run("/usr/bin/xcrun", "stapler", "validate", app)
             run("/usr/sbin/spctl", "--assess", "--type", "execute", app)
@@ -320,7 +337,7 @@ def main():
             run("/usr/bin/hdiutil", "create", "-volname", "Clio "+tag[1:], "-srcfolder", staging,
                 "-fs", "HFS+", "-format", "UDZO", "-imagekey", "zlib-level=9", dmg)
             run("/usr/bin/codesign", "--sign", identity, "--keychain", keychain, "--timestamp", dmg)
-            notarize(dmg, key, output)
+            notarize(dmg, key, notary_records)
             run("/usr/bin/xcrun", "stapler", "staple", dmg)
             run("/usr/bin/xcrun", "stapler", "validate", dmg)
             run("/usr/bin/codesign", "--verify", "--strict", dmg)
@@ -338,11 +355,11 @@ def main():
             finally:
                 run("/usr/bin/hdiutil", "detach", mount)
             report = advisory_test_report(api, commit)
-            (output/"ci-test-status.json").write_text(json.dumps(report, indent=2))
-            manifest = {"commit": commit, "tag": tag, "team": TEAM, "bundleID": "olympus.clio.mac",
-                "version": tag[1:], "build": info["CFBundleVersion"], "cloudBuildID": e["CI_BUILD_ID"],
+            (output/"ci-test-status.json").write_text(json.dumps(public_test_report(report), indent=2))
+            manifest = {"commit": commit, "tag": tag, "bundleID": "olympus.clio.mac",
+                "version": tag[1:], "build": info["CFBundleVersion"],
                 "releaseChannel": "internal", "testPolicy": "advisory", "testStatus": report["testStatus"],
-                "cloudBuildURL": report["cloudBuildURL"], "architectures": ["arm64", "x86_64"],
+                "architectures": ["arm64", "x86_64"],
                 "xcode": run("/usr/bin/xcodebuild", "-version").decode().strip(),
                 "verification": "Developer ID, runtime, sandbox, universal, app and DMG notarization/stapling, codesign, hdiutil, mounted app, spctl",
                 "limitations": "Internal testing only. Test failures do not block publication. Does not replace a fresh-download installation test on a clean supported Mac."}
