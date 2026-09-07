@@ -53,3 +53,31 @@ ClioMac build `04ea2171-7dd2-428d-80a8-b0365155a53f` completed Analyze and Archi
 - `ClioShutdownUITests.testFullscreenMultiwindowQuitSavesAndRelaunches`: the state marker existed but its accessibility label was empty. Expose the completed fullscreen state explicitly and assert that field; do not weaken the fullscreen requirement.
 
 The successful non-tag archive does not establish notarization, packaged bridge startup, or DMG verification. The follow-up fixes need a fresh ClioMac run and shutdown diagnostics before closing these findings.
+
+### Cloud follow-up: repair commit `040ba19`
+
+Xcode's ClioMac build **39**, started 7 September 2026 at 11:53 PM on
+`fix/mcp-review-repairs`, shows successful Analyze and Archive actions. Its Test
+action on macOS 26.6.2 ran 468 tests: **462 passed, 2 failed, 4 skipped**. Tests
+remain advisory; the successful overall build is not a passing test result.
+
+The two remaining failures shown in the Test summary are:
+
+- `ClioNavigationUITests.testFullscreenMouseSelectionContextMenuAndReturnToWindow`:
+  “The coordinate drag must create a copyable selection.” The Copy command is
+  now found, but is disabled. Inspect the failure screenshot and selected range
+  before deciding whether editor hit testing, drag coordinates, or the subsequent
+  right-click caused the failure.
+- `ClioShutdownUITests.testFullscreenMultiwindowQuitSavesAndRelaunches`:
+  “The selected editor must finish transitioning to fullscreen.” The activity
+  trace reaches the new window, passes the `windowed` value check, sends
+  Control-Command-F, then times out waiting for `fullscreen` during quit cycle 0
+  (`ClioDiagnosticTestCase.swift:156`). It does not establish fullscreen quit or
+  relaunch correctness. Inspect the screenshot and window targeting before
+  changing the transition assertion.
+
+The previously reported path-scope and slash-parser failures are absent from
+this build's two-failure summary. Individual test evidence, the separate shutdown
+diagnostics run, and signed packaged bridge acceptance remain to be collected.
+Xcode became unavailable to UI inspection while opening the failure attachments;
+no screenshot-based diagnosis or runtime repair is claimed by this follow-up.
