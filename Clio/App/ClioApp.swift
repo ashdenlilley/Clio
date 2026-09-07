@@ -8,7 +8,7 @@ struct ClioApp: App {
     private var applicationDelegate
 
     var body: some Scene {
-        editorScene
+        editorWindows
         MenuBarExtra("Clio", systemImage: "doc.text") {
             let service = applicationDelegate.appState.mcpService
             Text(service.status).onAppear { service.refreshLoginStatus() }
@@ -22,14 +22,6 @@ struct ClioApp: App {
             }
             Divider()
             Button("Quit Clio") { NSApp.terminate(nil) }
-        }
-    }
-
-    @SceneBuilder private var editorScene: some Scene {
-        if #available(macOS 15.0, *) {
-            editorWindows.defaultLaunchBehavior(.suppressed)
-        } else {
-            editorWindows
         }
     }
 
@@ -122,7 +114,7 @@ private struct EditorWindowRoot: View {
                         "frameWorkMS": frameWork,
                         "firstFrameLatenciesMS": firstFrameLatencies,
                         "maximumScreenFPS": screenFPS,
-                        "preferredFPS": range.preferred,
+                        "preferredFPS": range.preferred ?? range.maximum,
                         "minimumFPS": range.minimum,
                         "maximumFPS": range.maximum,
                         "lowPowerMode": lowPower
@@ -177,15 +169,6 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
         if loginLaunch {
             // Hide any restored windows as well; do not close or discard them.
             for window in NSApp.windows where isClioEditorWindow(window) { window.orderOut(nil) }
-        } else if #available(macOS 15.0, *) {
-            Task { @MainActor [weak self] in
-                for _ in 0..<20 {
-                    await Task.yield()
-                    self?.openEditorForMCP()
-                    if self?.appState.mcpWindows.isEmpty == false { break }
-                    try? await Task.sleep(for: .milliseconds(100))
-                }
-            }
         }
     }
 

@@ -1290,7 +1290,7 @@ private extension AppState {
         return WorkspaceSelection(descriptor: descriptor, workspace: workspace)
     }
 
-    func workspace(for id: WorkspaceID) -> Workspace? {
+    internal func workspace(for id: WorkspaceID) -> Workspace? {
         if let catalogWorkspace = workspaceCatalog.workspace(id: id) {
             return catalogWorkspace
         }

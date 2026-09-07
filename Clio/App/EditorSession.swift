@@ -23,7 +23,6 @@ enum EditorSynchronizationError: LocalizedError {
 
 struct EditorWindowRequest: Codable, Hashable, Sendable {
     let id: UUID
-    @ObservationIgnored weak var mcpTextView: NSTextView?
     var openingMode: EditorOpeningMode
     var relativePath: String?
     var isFullScreen: Bool
@@ -53,6 +52,7 @@ struct EditorWindowRequest: Codable, Hashable, Sendable {
 @MainActor
 @Observable
 final class EditorSession: Identifiable {
+    @ObservationIgnored weak var mcpTextView: NSTextView?
     enum SessionError: LocalizedError {
         case parentFolderAuthorizationRequired
 
