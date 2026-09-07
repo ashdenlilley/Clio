@@ -117,14 +117,14 @@ final class MCPTools {
                         try access.validate(grant, workspaceID: workspaceID)
                         try validateDiscoveryDocument(document, workspace: workspace)
                         return (document.text, reader.revision(for: document),
-                                try document.fileURL.map { try workspace.relativePath(for: $0) } ?? document.filename)
+                                discoveryRelativePath(document, workspace: workspace))
                     }
                     let matched = name == "list_documents" ? true : try await liveSearch.matches(
                         text: snapshot.0, relativePath: snapshot.2, query: query)
                     try access.validate(grant, workspaceID: workspaceID)
                     try validateDiscoveryDocument(document, workspace: workspace)
                     guard reader.revision(for: document) == snapshot.1,
-                          try discoveryRelativePath(document, workspace: workspace) == snapshot.2 else {
+                          discoveryRelativePath(document, workspace: workspace) == snapshot.2 else {
                         throw MCPAccessError.staleRevision
                     }
                     liveSnapshots[id] = (snapshot.1, snapshot.2)
@@ -147,7 +147,7 @@ final class MCPTools {
                     try validateDiscoveryDocument(document, workspace: workspace)
                     if name == "search_documents", let snapshot = liveSnapshots[id] {
                         guard reader.revision(for: document) == snapshot.revision,
-                              try discoveryRelativePath(document, workspace: workspace) == snapshot.relativePath else {
+                              discoveryRelativePath(document, workspace: workspace) == snapshot.relativePath else {
                             throw MCPAccessError.staleRevision
                         }
                     }
@@ -348,8 +348,8 @@ final class MCPTools {
         guard document.utf8ByteCount <= 1_048_576 else { throw MCPAccessError.oversizedRequest }
     }
 
-    private func discoveryRelativePath(_ document: Document, workspace: Workspace) throws -> String {
-        try document.fileURL.map { try workspace.relativePath(for: $0) } ?? document.filename
+    private func discoveryRelativePath(_ document: Document, workspace: Workspace) -> String {
+        document.fileURL.map { workspace.relativePath(for: $0) } ?? document.filename
     }
 
     private func editor(for doc: Document, workspace: Workspace, grant: MCPClientGrant) async throws -> EditorSession {

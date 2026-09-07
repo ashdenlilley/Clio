@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Transport-independent policy. No listener is started by this module.
@@ -141,12 +142,54 @@ struct MCPTextReplacement: Codable, Equatable {
 /// authorized Workspace API and revalidate at the operation's commit boundary.
 enum MCPWorkspaceBoundary {
     static func validate(_ file: URL, beneath root: URL) throws {
-        guard file.isFileURL, root.isFileURL else { throw MCPAccessError.outsideWorkspace }
-        let base = root.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        let target = file.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        guard target.count > base.count, Array(target.prefix(base.count)) == base else {
+        guard file.isFileURL, root.isFileURL,
+              !file.path.utf8.contains(0), !root.path.utf8.contains(0),
+              !file.pathComponents.contains("..") else { throw MCPAccessError.outsideWorkspace }
+        let canonicalRoot = try existingCanonicalPath(root.path)
+        let base = URL(fileURLWithPath: canonicalRoot).pathComponents
+        var rootStatus = stat()
+        guard lstat(canonicalRoot, &rootStatus) == 0,
+              (rootStatus.st_mode & S_IFMT) == S_IFDIR else {
             throw MCPAccessError.outsideWorkspace
         }
+        func isWithinRoot(_ path: URL, includingRoot: Bool = false) -> Bool {
+            let components = path.pathComponents
+            return components.count >= base.count + (includingRoot ? 0 : 1)
+                && Array(components.prefix(base.count)) == base
+        }
+
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in file.pathComponents.dropFirst() where component != "." {
+            let candidate = current.appendingPathComponent(component)
+            var status = stat()
+            if lstat(candidate.path, &status) != 0 {
+                // A missing leaf (or entire new directory tail) is valid only
+                // after every existing ancestor has been checked. Do not treat
+                // permission errors or ENOTDIR as a nonexistent destination.
+                guard errno == ENOENT, isWithinRoot(candidate) else {
+                    throw MCPAccessError.outsideWorkspace
+                }
+                return
+            }
+            if (status.st_mode & S_IFMT) == S_IFLNK {
+                // Root aliases such as /var -> /private/var are valid. Within
+                // the approved root, follow Workspace's no-symlink policy even
+                // when a link currently points to another in-root directory.
+                guard !isWithinRoot(current, includingRoot: true) else {
+                    throw MCPAccessError.outsideWorkspace
+                }
+                current = URL(fileURLWithPath: try existingCanonicalPath(candidate.path))
+            } else {
+                current = candidate
+            }
+        }
+        guard isWithinRoot(current) else { throw MCPAccessError.outsideWorkspace }
+    }
+
+    private static func existingCanonicalPath(_ path: String) throws -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &buffer) != nil else { throw MCPAccessError.outsideWorkspace }
+        return String(cString: buffer)
     }
 }
 

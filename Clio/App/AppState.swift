@@ -167,6 +167,16 @@ final class AppState: ClioCommandDispatching {
     var mcpWindows: [EditorWindowSession] { editorWindows }
     var mcpSessions: [EditorSession] { editorSessions }
 
+    func workspace(for id: WorkspaceID) -> Workspace? {
+        if let catalogWorkspace = workspaceCatalog.workspace(id: id) {
+            return catalogWorkspace
+        }
+        if legacyWorkspaceDescriptor?.id == id {
+            return workspace
+        }
+        return nil
+    }
+
     func makeMCPExportCoordinator() -> DocumentExportCoordinator {
         DocumentExportCoordinator(recoveryCheckpointStore: exportRecoveryCheckpointStore)
     }
@@ -1305,16 +1315,6 @@ private extension AppState {
         guard let descriptor = workspaceDescriptors.first,
               let workspace = workspace(for: descriptor.id) else { return nil }
         return WorkspaceSelection(descriptor: descriptor, workspace: workspace)
-    }
-
-    internal func workspace(for id: WorkspaceID) -> Workspace? {
-        if let catalogWorkspace = workspaceCatalog.workspace(id: id) {
-            return catalogWorkspace
-        }
-        if legacyWorkspaceDescriptor?.id == id {
-            return workspace
-        }
-        return nil
     }
 
     func descriptor(containingRoot rootURL: URL) -> WorkspaceDescriptor? {

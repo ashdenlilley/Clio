@@ -419,8 +419,14 @@ final class NavigationSessionTests: XCTestCase {
                 arguments: ["two words", "one two"]
             )
         )
-        XCTAssertThrowsError(try ClioCommandParser.parse("/export docx")) {
-            XCTAssertEqual($0 as? ClioCommandParseError, .invalidExportFormat("docx"))
+        for format in ["pdf", "html", "docx", "txt"] {
+            XCTAssertEqual(
+                try ClioCommandParser.parse("/export \(format)"),
+                ClioCommandInvocation(command: .export, arguments: [format])
+            )
+        }
+        XCTAssertThrowsError(try ClioCommandParser.parse("/export rtf")) {
+            XCTAssertEqual($0 as? ClioCommandParseError, .invalidExportFormat("rtf"))
         }
         XCTAssertThrowsError(try ClioCommandParser.parse("/search 'unfinished")) {
             XCTAssertEqual($0 as? ClioCommandParseError, .unterminatedQuote)

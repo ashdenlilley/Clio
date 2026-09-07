@@ -116,6 +116,58 @@ final class MCPAccessTests: XCTestCase {
         XCTAssertThrowsError(try MCPWorkspaceBoundary.validate(scope.appendingPathComponent("../no.md"), beneath: scope))
     }
 
+    func testPathScopeChecksExistingAncestorsBeforeAcceptingMissingTail() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = root.appendingPathComponent("scope", isDirectory: true)
+        let other = root.appendingPathComponent("scope-other", isDirectory: true)
+        let nested = scope.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let existing = nested.appendingPathComponent("existing.md")
+        try Data("safe".utf8).write(to: existing)
+
+        for target in [existing, scope.appendingPathComponent("new.md"),
+                       nested.appendingPathComponent("missing/subdirectory/new.md")] {
+            XCTAssertNoThrow(try MCPWorkspaceBoundary.validate(target, beneath: scope))
+        }
+        let escape = scope.appendingPathComponent("escape")
+        let internalLink = scope.appendingPathComponent("internal")
+        let dangling = scope.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(at: escape, withDestinationURL: other)
+        try FileManager.default.createSymbolicLink(at: internalLink, withDestinationURL: nested)
+        try FileManager.default.createSymbolicLink(at: dangling, withDestinationURL: other.appendingPathComponent("absent"))
+        for target in [escape, escape.appendingPathComponent("missing/deep/new.md"),
+                       internalLink, internalLink.appendingPathComponent("existing.md"),
+                       internalLink.appendingPathComponent("new.md"), dangling,
+                       dangling.appendingPathComponent("new.md"),
+                       existing.appendingPathComponent("new.md"),
+                       other.appendingPathComponent("missing/new.md"),
+                       scope.appendingPathComponent("missing/../../scope-other/new.md")] {
+            XCTAssertThrowsError(try MCPWorkspaceBoundary.validate(target, beneath: scope), target.path) {
+                XCTAssertEqual($0 as? MCPAccessError, .outsideWorkspace)
+            }
+        }
+        XCTAssertThrowsError(try MCPWorkspaceBoundary.validate(scope.appendingPathComponent("new.md"),
+            beneath: scope.appendingPathComponent("absent-root")))
+    }
+
+    func testPathScopeAcceptsApprovedRootAliasAndCanonicalSpelling() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = root.appendingPathComponent("scope", isDirectory: true)
+        let alias = root.appendingPathComponent("approved-alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: scope)
+        for approvedRoot in [scope, alias] {
+            for spelling in [scope, alias, scope.resolvingSymlinksInPath()] {
+                XCTAssertNoThrow(try MCPWorkspaceBoundary.validate(
+                    spelling.appendingPathComponent("missing/deep/new.md"), beneath: approvedRoot))
+            }
+            XCTAssertThrowsError(try MCPWorkspaceBoundary.validate(alias, beneath: approvedRoot))
+        }
+    }
+
     func testLiveReadReturnsUnsavedTextAndRejectsStalePagination() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -102,6 +102,8 @@ struct ContentView: View {
                 Text(windowSession.isFullScreenEnabled ? "fullscreen" : "windowed")
                     .font(.system(size: 8))
                     .accessibilityIdentifier("diagnostics.window.fullscreen")
+                    .accessibilityLabel(Text("Window fullscreen state"))
+                    .accessibilityValue(Text(windowSession.isFullScreenEnabled ? "fullscreen" : "windowed"))
                     .allowsHitTesting(false)
             }
         }

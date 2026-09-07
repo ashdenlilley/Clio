@@ -1019,27 +1019,6 @@ private extension SQLiteSearchIndex {
         }
     }
 
-    nonisolated internal static func queryTerms(_ query: String) -> [String] {
-        query
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" })
-            .prefix(16)
-            .map { String($0.prefix(128)) }
-            .filter { !$0.isEmpty }
-    }
-
-    nonisolated internal static func ftsQuery(_ terms: [String]) -> String? {
-        guard !terms.isEmpty else { return nil }
-        return terms.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
-            .joined(separator: " AND ")
-    }
-
-    nonisolated internal static func escapedLike(_ input: String) -> String {
-        input
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
-    }
-
     static func firstMatchRange(in excerpt: String, terms: [String]) -> UTF16Range? {
         let source = excerpt as NSString
         let matches = terms.compactMap { term -> NSRange? in
@@ -1051,6 +1030,30 @@ private extension SQLiteSearchIndex {
         }
         guard let match = matches.min(by: { $0.location < $1.location }) else { return nil }
         return UTF16Range(location: match.location, length: match.length)
+    }
+}
+
+// Internal, nonisolated query construction shared by disk and live indexes.
+extension SQLiteSearchIndex {
+    nonisolated static func queryTerms(_ query: String) -> [String] {
+        query
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" })
+            .prefix(16)
+            .map { String($0.prefix(128)) }
+            .filter { !$0.isEmpty }
+    }
+
+    nonisolated static func ftsQuery(_ terms: [String]) -> String? {
+        guard !terms.isEmpty else { return nil }
+        return terms.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
+            .joined(separator: " AND ")
+    }
+
+    nonisolated static func escapedLike(_ input: String) -> String {
+        input
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
     }
 }
 

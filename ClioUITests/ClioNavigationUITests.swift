@@ -166,16 +166,22 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
 
     func testFullscreenMouseSelectionContextMenuAndReturnToWindow() {
         launch(scenario: "blank")
-        let editor = app.textViews["editor.text"]
+        let editorWindows = app.windows.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "diagnostics.editor-window.")
+        )
+        XCTAssertTrue(editorWindows.element.waitForExistence(timeout: 5))
+        XCTAssertEqual(editorWindows.count, 1, "This fixture must launch one identifiable editor window")
+        // Retain a query by stable session identity, not front-to-back order.
+        let window = app.windows[editorWindows.element.identifier]
+        let editor = window.textViews["editor.text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.typeText("Alpha beta gamma\nSecond line")
         // Hide sidebar without moving the caret; test the writing canvas itself.
-        app.buttons["sidebar.toggle"].click()
-        let window = app.windows.firstMatch
-        let originalFrame = window.frame
+        window.buttons["sidebar.toggle"].click()
+        assertFullscreenState(false, for: window, timeout: 3)
         assertTypingLineSupportsMouseSelection(editor)
-        app.typeKey("f", modifierFlags: [.control, .command])
-        XCTAssertTrue(waitUntil(timeout: 8) { window.frame.height > originalFrame.height + 20 })
+        window.typeKey("f", modifierFlags: [.control, .command])
+        assertFullscreenState(true, for: window)
         assertTypingLineSupportsMouseSelection(editor)
         // A coordinate drag exercises hit testing, not accessibility select-all.
         // The current typing line is at the configured 45% vertical anchor.
@@ -184,19 +190,18 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         let end = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
         start.press(forDuration: 0.1, thenDragTo: end)
         editor.rightClick()
-        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.menuItems["Copy"].isEnabled)
+        assertEditorCopyContextMenu(editor)
         app.typeKey(.escape, modifierFlags: [])
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Fullscreen block caret and native selection"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        app.typeKey("f", modifierFlags: [.control, .command])
-        XCTAssertTrue(waitUntil(timeout: 8) { abs(window.frame.height - originalFrame.height) < 20 })
+        window.typeKey("f", modifierFlags: [.control, .command])
+        assertFullscreenState(false, for: window)
         assertTypingLineSupportsMouseSelection(editor)
         editor.click()
         editor.rightClick()
-        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
+        assertEditorCopyContextMenu(editor, requiringSelection: false)
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(editor.value as? String, "Alpha beta gamma\nSecond line")
     }
@@ -209,8 +214,7 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         start.click()
         start.press(forDuration: 0.1, thenDragTo: end)
         editor.rightClick()
-        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.menuItems["Copy"].isEnabled)
+        assertEditorCopyContextMenu(editor)
         app.typeKey(.escape, modifierFlags: [])
         app.typeText("REPLACED")
         XCTAssertTrue(waitUntil { (editor.value as? String)?.contains("REPLACED") == true })
@@ -225,6 +229,24 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         XCTAssertTrue(waitUntil { editor.value as? String == original })
         let settleStarted = Date()
         XCTAssertTrue(waitUntil(timeout: 3) { Date().timeIntervalSince(settleStarted) >= 2.2 })
+    }
+
+    private func assertEditorCopyContextMenu(
+        _ editor: XCUIElement,
+        requiringSelection: Bool = true,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        // The app's Edit menu also contains Copy. Only the native text view's
+        // context menu proves this right-click exercised editor hit testing.
+        let copyItems = editor.menus.menuItems.matching(identifier: "Copy")
+        XCTAssertTrue(copyItems.element.waitForExistence(timeout: 3), file: file, line: line)
+        XCTAssertEqual(copyItems.count, 1, "The editor context menu must contain exactly one Copy command",
+                       file: file, line: line)
+        if requiringSelection {
+            XCTAssertTrue(copyItems.element.isEnabled, "The coordinate drag must create a copyable selection",
+                          file: file, line: line)
+        }
     }
 
     private func launch(scenario: String) {

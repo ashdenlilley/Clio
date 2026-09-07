@@ -42,3 +42,14 @@ All app compilation, signing, runtime tests, notarization, and DMG verification 
 - Runtime observations from the original review remain baseline evidence until replaced by results from the repaired commit.
 
 Record follow-up results here using commit/build identifiers, exact failing test names and artifact references. Only mark a finding verified when its corresponding regression or acceptance check actually passes.
+
+### Cloud follow-up: repair commit `84b9f65`
+
+ClioMac build `04ea2171-7dd2-428d-80a8-b0365155a53f` completed Analyze and Archive successfully. The test action reported zero build errors and four test failures; its neutral status reflects the advisory policy, not passing tests:
+
+- `MCPAccessTests.testPathScopeBlocksSymlinkAndSiblingPrefixEscape`: the missing destination `scope/escape/no.md` was incorrectly accepted when `escape` symlinked outside the approved root. This is a real boundary defect, requiring production hardening and another Cloud regression run.
+- `NavigationSessionTests.testSlashCommandParserPreservesExportArgumentsAndQuotedValues`: stale assertion rejected DOCX after DOCX became supported. Check all supported formats positively and retain an unsupported-format rejection.
+- `ClioNavigationUITests.testFullscreenMouseSelectionContextMenuAndReturnToWindow`: application-wide Copy lookup matched both the Edit menu and the text-view context menu. Scope to the editor's context menu, preserving the enabled/selection assertions.
+- `ClioShutdownUITests.testFullscreenMultiwindowQuitSavesAndRelaunches`: the state marker existed but its accessibility label was empty. Expose the completed fullscreen state explicitly and assert that field; do not weaken the fullscreen requirement.
+
+The successful non-tag archive does not establish notarization, packaged bridge startup, or DMG verification. The follow-up fixes need a fresh ClioMac run and shutdown diagnostics before closing these findings.

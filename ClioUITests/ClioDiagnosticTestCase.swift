@@ -10,6 +10,27 @@ class ClioDiagnosticTestCase: XCTestCase {
         continueAfterFailure = false
     }
 
+    func assertFullscreenState(
+        _ fullscreen: Bool,
+        for window: XCUIElement,
+        timeout: TimeInterval = 10,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let state = window.staticTexts["diagnostics.window.fullscreen"]
+        XCTAssertTrue(state.waitForExistence(timeout: 3), file: file, line: line)
+        // macOS static text exposes its content as AXValue, not necessarily
+        // AXLabel. The app explicitly publishes this value after AppKit's
+        // didEnter/didExit notifications, independently of window geometry.
+        let expected = fullscreen ? "fullscreen" : "windowed"
+        let completed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", expected),
+            object: state
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: timeout), .completed,
+                       "The selected editor must finish transitioning to \(expected)", file: file, line: line)
+    }
+
     override func record(_ issue: XCTIssue) {
         // Record once before teardown terminates Clio. Avoid querying the app's
         // AX tree here: it may be the service that's stalled during launch.
@@ -130,17 +151,9 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
         let targetEditor = targetWindow.textViews["editor.text"]
         XCTAssertTrue(targetEditor.waitForExistence(timeout: 5))
         targetEditor.click()
-        let fullscreenState = targetWindow.staticTexts["diagnostics.window.fullscreen"]
-        XCTAssertTrue(fullscreenState.waitForExistence(timeout: 3))
-        XCTAssertEqual(fullscreenState.label, "windowed")
+        assertFullscreenState(false, for: targetWindow, timeout: 3)
         targetWindow.typeKey("f", modifierFlags: [.command, .control])
-
-        let entered = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "fullscreen"),
-            object: fullscreenState
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 10), .completed,
-                       "The selected editor must finish entering fullscreen before quitting")
+        assertFullscreenState(true, for: targetWindow)
         // The target's own completed-state marker proves which window entered.
         // Do not query older windows now: they may be in a different Space.
     }
