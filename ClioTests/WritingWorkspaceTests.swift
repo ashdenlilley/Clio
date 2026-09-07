@@ -4,6 +4,28 @@ import XCTest
 
 final class WritingWorkspaceTests: XCTestCase {
     @MainActor
+    func testEditorTeardownDisconnectsCallbacksAndIsIdempotent() async throws {
+        let config = EditorConfiguration()
+        let view = EditorTextView.makeTextKit2TextView()
+        let surface = EditorContainerView(textView: view)
+        let coordinator = EditorCoordinator(configuration: config, onTextEdit: { _ in XCTFail("Detached editor published an edit") })
+        coordinator.attach(to: surface)
+        let wasEditable = view.isEditable
+        coordinator.detach()
+        coordinator.detach()
+        surface.prepareForRemoval()
+        surface.prepareForRemoval()
+        XCTAssertNil(view.delegate)
+        XCTAssertNil(view.onUserScroll)
+        XCTAssertNil(view.onKeyEventBegan)
+        XCTAssertNil(view.onKeyEventEnded)
+        XCTAssertNil(view.onMarkdownAction)
+        XCTAssertNil(surface.onViewportSizeChanged)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(view.isEditable, wasEditable)
+    }
+
+    @MainActor
     func testSelectedFontChangesDisplayWithoutChangingMarkdownOrSelection() throws {
         let name = try XCTUnwrap(NSFont(name: "Helvetica", size: 16)).fontName
         let view = EditorTextView.makeTextKit2TextView()

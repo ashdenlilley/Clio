@@ -112,6 +112,11 @@ struct EditorView: NSViewRepresentable {
             onSlashCommand: onSlashCommand
         )
     }
+
+    static func dismantleNSView(_ nsView: EditorContainerView, coordinator: EditorCoordinator) {
+        coordinator.detach()
+        nsView.prepareForRemoval()
+    }
 }
 
 final class EditorContainerView: NSView {
@@ -123,6 +128,7 @@ final class EditorContainerView: NSView {
     private var preferredTextWidth: CGFloat = 0
     private var lastViewportSize = NSSize.zero
     private var hasRequestedInitialFocus = false
+    private var isPreparedForRemoval = false
     private var scrollerStyleObserver: NSObjectProtocol?
     var reservesNativeScroller: Bool { NSScroller.preferredScrollerStyle == .legacy }
 
@@ -182,6 +188,18 @@ final class EditorContainerView: NSView {
         if let scrollerStyleObserver { NotificationCenter.default.removeObserver(scrollerStyleObserver) }
     }
 
+    func prepareForRemoval() {
+        guard !isPreparedForRemoval else { return }
+        isPreparedForRemoval = true
+        onViewportSizeChanged = nil
+        if let scrollerStyleObserver {
+            NotificationCenter.default.removeObserver(scrollerStyleObserver)
+            self.scrollerStyleObserver = nil
+        }
+        // Do not change editable/selectable/rich-text flags during teardown:
+        // those setters can enqueue AppKit drag-registration work.
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("EditorContainerView is created programmatically")
@@ -218,10 +236,10 @@ final class EditorContainerView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, !hasRequestedInitialFocus else { return }
+        guard window != nil, !hasRequestedInitialFocus, !isPreparedForRemoval else { return }
         hasRequestedInitialFocus = true
         DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.window else { return }
+            guard let self, !self.isPreparedForRemoval, let window = self.window else { return }
             // A palette or another text field may have claimed focus while
             // SwiftUI attached this editor during the same update.
             if let responder = window.firstResponder as? NSTextView,
