@@ -27,6 +27,10 @@ final class ExportPresentationTests: XCTestCase {
         XCTAssertNil(try ExportCommandRoute.format(for: []))
         XCTAssertEqual(try ExportCommandRoute.format(for: ["PDF"]), .pdf)
         XCTAssertEqual(try ExportCommandRoute.format(for: ["html"]), .html)
+        XCTAssertEqual(try ExportCommandRoute.format(for: ["DOCX"]), .docx)
+        XCTAssertEqual(try ExportCommandRoute.format(for: ["txt"]), .txt)
+        XCTAssertEqual(ExportSavePanelConfiguration.make(format: .docx, sourceFilename: "Notes.md").suggestedFilename, "Notes.docx")
+        XCTAssertEqual(ExportSavePanelConfiguration.make(format: .txt, sourceFilename: "Notes.md").suggestedFilename, "Notes.txt")
         XCTAssertThrowsError(try ExportCommandRoute.format(for: ["markdown"])) { error in
             XCTAssertEqual(
                 error as? ExportPresentationError,

@@ -10,7 +10,7 @@ fade while you write.
 - Multiple documents in a vertical sidebar, with separate windows when needed.
 - Search across selected workspace folders and move documents between them.
 - Focus dimming, typewriter scrolling and a compact document minimap.
-- PDF and self-contained HTML export.
+- PDF, self-contained HTML, editable Word (.docx), and readable UTF-8 text (.txt) export.
 - Word count, reading time and speaking time estimates.
 - Autosave, external-edit conflict handling and recovery copies.
 
@@ -58,7 +58,7 @@ separate, maintainer-controlled distribution process.
 - `Clio/Editor` — AppKit/TextKit 2 editor and scrolling
 - `Clio/Workspace` — document access, recovery, watchers and search
 - `Clio/Markdown` — parsing, highlighting and source-preserving edits
-- `Clio/Export` — PDF and HTML exporters
+- `Clio/Export` — PDF, HTML, Word, and plain-text exporters
 - `Clio/Experience` — interface motion and focus behaviour
 - `ClioTests`, `ClioUITests` — automated regression coverage
 

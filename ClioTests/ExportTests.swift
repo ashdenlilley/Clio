@@ -5,6 +5,46 @@ import XCTest
 
 @MainActor
 final class ExportTests: XCTestCase {
+    func testEditableAndPlainTextExportsUseInstallerAndRetainReadableContent() async throws {
+        try await withTemporaryDirectory { directory in
+            let source = "# Notes\n\n**Bold** and *italic* 🙂\n\n[Example](https://example.com)\n\n| Name | Value |\n| --- | --- |\n| First | Second |\n"
+            let snapshot = makeSnapshot(source: source)
+            for format in [ExportFormat.txt, .docx] {
+                let destination = directory.appendingPathComponent("Notes.\(format.rawValue)")
+                let coordinator = DocumentExportCoordinator()
+                let receipt = try await coordinator.export(makeRequest(format, snapshot: snapshot, destination: destination))
+                XCTAssertEqual(receipt.destinationURL, destination)
+                let data = try Data(contentsOf: destination)
+                if format == .txt {
+                    let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+                    XCTAssertTrue(text.contains("Bold and italic 🙂"))
+                    XCTAssertTrue(text.contains("Example (https://example.com)"))
+                    XCTAssertTrue(text.contains("Name\tValue"))
+                    XCTAssertFalse(text.contains("**Bold**"))
+                    XCTAssertFalse(text.contains("# Notes"))
+                } else {
+                    XCTAssertEqual(Array(data.prefix(2)), [0x50, 0x4b], "DOCX must be an Open XML ZIP package")
+                    let decoded = try NSAttributedString(data: data,
+                        options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil)
+                    XCTAssertTrue(decoded.string.contains("Bold and italic 🙂"))
+                    XCTAssertTrue(decoded.string.contains("First"))
+                    let range = (decoded.string as NSString).range(of: "Bold")
+                    XCTAssertNotEqual(range.location, NSNotFound)
+                    if range.location != NSNotFound {
+                        let font = try XCTUnwrap(decoded.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+                        XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.boldFontMask))
+                    }
+                }
+                // Existing destinations must still require an explicit collision decision.
+                do {
+                    _ = try await coordinator.export(makeRequest(format, snapshot: snapshot, destination: destination))
+                    XCTFail("Export must not overwrite an existing file silently")
+                } catch DocumentExportError.destinationExists { }
+                XCTAssertEqual(try Data(contentsOf: destination), data)
+            }
+        }
+    }
+
     func testHTMLExportIsSemanticSelfContainedAndEscapesHostileInput() async throws {
         try await withTemporaryDirectory { directory in
             let snapshot = makeSnapshot(source: "# Notes\nUnsafe")

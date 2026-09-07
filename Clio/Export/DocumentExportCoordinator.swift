@@ -86,6 +86,8 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
 
             let staged: StagedDocumentExport
             switch request.format {
+            case .docx, .txt:
+                staged = try EditableDocumentExporter.prepare(parsed: parsed, request: request, collisionResolution: collisionResolution)
             case .pdf:
                 staged = try await pdfExporter.prepare(
                     parsed: parsed,

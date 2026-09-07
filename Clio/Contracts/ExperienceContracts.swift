@@ -135,9 +135,9 @@ enum ClioCommandParseError: LocalizedError, Equatable {
         case .danglingEscape:
             return "An argument cannot end with an escape character."
         case let .invalidExportFormat(format):
-            return "Unsupported export format “\(format)”. Use pdf or html."
+            return "Unsupported export format “\(format)”. Use pdf, html, docx or txt."
         case .tooManyExportArguments:
-            return "Export accepts one format: pdf or html."
+            return "Export accepts one format: pdf, html, docx or txt."
         }
     }
 }
@@ -168,7 +168,7 @@ enum ClioCommandParser {
                 throw ClioCommandParseError.tooManyExportArguments
             }
             if let format = arguments.first,
-               !["pdf", "html"].contains(format.lowercased()) {
+               !["pdf", "html", "docx", "txt"].contains(format.lowercased()) {
                 throw ClioCommandParseError.invalidExportFormat(format)
             }
         }

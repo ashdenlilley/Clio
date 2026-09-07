@@ -17,7 +17,7 @@ enum ExportPresentationError: LocalizedError, Equatable {
             return "Clio could not find the document window for this export."
         case .invalidCommandArguments(let arguments):
             let supplied = arguments.joined(separator: " ")
-            return "Unknown export format “\(supplied)”. Use /export, /export pdf, or /export html."
+            return "Unknown export format “\(supplied)”. Use /export with pdf, html, docx or txt."
         }
     }
 }
@@ -48,6 +48,8 @@ struct ExportSavePanelConfiguration: Equatable, Sendable {
             ? "Untitled"
             : source.deletingPathExtension
         switch format {
+        case .docx, .txt:
+            return Self(format: format, title: format == .docx ? "Export Word" : "Export Plain Text", prompt: "Export", suggestedFilename: "\(stem).\(format.rawValue)", contentTypeIdentifier: format == .docx ? "org.openxmlformats.wordprocessingml.document" : UTType.plainText.identifier)
         case .pdf:
             return Self(
                 format: format,
@@ -308,6 +310,8 @@ final class DocumentExportPresentation {
         case .parsing: "Preparing Markdown…"
         case .rendering(.pdf): "Laying out PDF pages…"
         case .rendering(.html): "Rendering HTML…"
+        case .rendering(.docx): "Creating Word document…"
+        case .rendering(.txt): "Creating plain text…"
         case .installing: "Saving atomically…"
         case .completed(let receipt): "Exported \(receipt.destinationURL.lastPathComponent)"
         case .failed: "Export failed"
@@ -709,6 +713,8 @@ private struct ExportOptionsView: View {
             )) {
                 Text("PDF").tag(ExportFormat.pdf)
                 Text("HTML").tag(ExportFormat.html)
+                Text("Word (.docx)").tag(ExportFormat.docx)
+                Text("Plain Text (.txt)").tag(ExportFormat.txt)
             }
             .pickerStyle(.segmented)
 
@@ -724,12 +730,16 @@ private struct ExportOptionsView: View {
                     Button("Page Setup…", action: presentation.presentPageSetup)
                 }
             } else {
-                Text("A self-contained light reading and print layout. Remote content is never loaded while exporting.")
+                Text("Remote content is never loaded while exporting. Your source Markdown is unchanged.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text(presentation.selectedFormat == .pdf
+            Text(presentation.selectedFormat == .txt
+                ? "UTF-8 text without Markdown formatting markers; tables use tabs and links retain destinations."
+                : presentation.selectedFormat == .docx
+                ? "Editable Word formatting. Images use descriptions; raw HTML is preserved as literal text."
+                : presentation.selectedFormat == .pdf
                 ? "PDF uses black text on white paper."
                 : "HTML uses a white reading surface and print stylesheet.")
                 .font(.callout)

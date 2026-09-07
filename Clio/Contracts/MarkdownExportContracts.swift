@@ -196,6 +196,8 @@ protocol MarkdownParsing: Sendable {
 enum ExportFormat: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
     case pdf
     case html
+    case docx
+    case txt
 
     var id: Self { self }
 }

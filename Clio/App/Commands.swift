@@ -93,6 +93,8 @@ struct ClioCommands: Commands {
                 Button("PDF…") {
                     exportPresentation?.requestExport(as: .pdf)
                 }
+                Button("Word (.docx)…") { exportPresentation?.requestExport(as: .docx) }
+                Button("Plain Text (.txt)…") { exportPresentation?.requestExport(as: .txt) }
                 Button("HTML…") {
                     exportPresentation?.requestExport(as: .html)
                 }

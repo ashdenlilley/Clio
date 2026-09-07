@@ -1,4 +1,145 @@
 import Foundation
+import AppKit
+
+/// Uses the same parsed snapshot and atomic installer as PDF/HTML. No HTML
+/// importer or external image fetch is used when creating an editable document.
+@MainActor
+enum EditableDocumentExporter {
+    static func prepare(parsed: ParsedMarkdown, request: ExportRequest,
+                        collisionResolution: ExportCollisionResolution?) throws -> StagedDocumentExport {
+        try Task.checkCancellation()
+        guard parsed.canApply(to: request.snapshot) else { throw DocumentExportError.staleParse }
+        let reservation = try ExportDestination.resolve(requestedURL: request.destinationURL,
+                                                        resolution: collisionResolution)
+        let temporary = try reservation.url.clioExportStagingURL(format: request.format)
+        do {
+            let document = try EditableDocumentRenderer.render(parsed.document, plain: request.format == .txt)
+            let data: Data
+            if request.format == .txt {
+                data = Data(document.string.utf8)
+            } else {
+                data = try document.data(from: NSRange(location: 0, length: document.length),
+                                         documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML])
+            }
+            try Task.checkCancellation()
+            guard Int64(data.count) <= AtomicWriteTransactions.maximumRecoverableByteCount else {
+                throw DocumentExportError.artifactTooLarge(reservation.url, byteCount: Int64(data.count),
+                    maximumByteCount: AtomicWriteTransactions.maximumRecoverableByteCount)
+            }
+            try data.write(to: temporary)
+            return StagedDocumentExport(format: request.format, temporaryURL: temporary,
+                reservation: reservation, byteCount: Int64(data.count), documentID: request.snapshot.documentID,
+                generation: request.snapshot.generation, sourceFingerprint: request.snapshot.sourceFingerprint)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+}
+
+@MainActor
+enum EditableDocumentRenderer {
+    static func render(_ document: MarkdownDocumentModel, plain: Bool) throws -> NSAttributedString {
+        let output = NSMutableAttributedString(string: "")
+        try blocks(document.blocks, depth: 0, plain: plain, into: output)
+        return output
+    }
+
+    private static func inlines(_ nodes: [MarkdownInline], attributes: [NSAttributedString.Key: Any],
+                                plain: Bool, into output: NSMutableAttributedString) throws {
+        for node in nodes {
+            try Task.checkCancellation()
+            var attributes = attributes
+            var text: String?
+            switch node {
+            case .text(let value, _), .rawHTML(let value, _): text = value
+            case .code(let value, _):
+                text = value
+                attributes[.font] = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            case .strong(let content, _), .emphasis(let content, _), .strikethrough(let content, _):
+                let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
+                switch node {
+                case .strong: attributes[.font] = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+                case .emphasis: attributes[.font] = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+                default: attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                }
+                try inlines(content, attributes: attributes, plain: plain, into: output)
+            case .link(let destination, _, let content, _):
+                if let safe = ExportContentPolicy.safeLink(destination) { attributes[.link] = safe }
+                try inlines(content, attributes: attributes, plain: plain, into: output)
+                if plain { text = " (\(destination))" }
+            case .image(_, _, let alt, _):
+                output.append(NSAttributedString(string: "[Image: ", attributes: attributes))
+                try inlines(alt, attributes: attributes, plain: plain, into: output)
+                text = "]"
+            case .autolink(let label, let destination, _):
+                text = label
+                if let safe = ExportContentPolicy.safeLink(destination) { attributes[.link] = safe }
+            case .footnoteReference(let label, _): text = "[\(label)]"
+            case .softBreak: text = " "
+            case .hardBreak: text = "\n"
+            }
+            if let text { output.append(NSAttributedString(string: text, attributes: attributes)) }
+        }
+    }
+
+    private static func blocks(_ nodes: [MarkdownBlock], depth: Int, plain: Bool,
+                               into output: NSMutableAttributedString) throws {
+        for node in nodes {
+            try Task.checkCancellation()
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.headIndent = CGFloat(depth) * 18
+            paragraph.firstLineHeadIndent = paragraph.headIndent
+            paragraph.paragraphSpacing = 8
+            var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.black, .paragraphStyle: paragraph]
+            switch node {
+            case .paragraph(let content, _), .heading(_, let content, _):
+                if case .heading(let level, _, _) = node {
+                    paragraph.headerLevel = min(6, max(1, level))
+                    attributes[.font] = NSFont.boldSystemFont(ofSize: CGFloat(max(13, 26 - level * 2)))
+                }
+                try inlines(content, attributes: attributes, plain: plain, into: output)
+                output.append(NSAttributedString(string: "\n", attributes: attributes))
+            case .blockquote(let content, _): try blocks(content, depth: depth + 1, plain: plain, into: output)
+            case .list(let list):
+                for (index, item) in list.items.enumerated() {
+                    let marker = item.taskState.map { $0 == .checked ? "☑" : "☐" }
+                        ?? (list.isOrdered ? "\((list.start ?? 1) + index)." : "•")
+                    output.append(NSAttributedString(string: String(repeating: "  ", count: depth) + marker + " ", attributes: attributes))
+                    try blocks(item.blocks, depth: depth + 1, plain: plain, into: output)
+                }
+            case .codeFence(_, let source, _), .frontMatter(let source, _), .rawHTML(let source, _):
+                attributes[.font] = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                output.append(NSAttributedString(string: source + "\n", attributes: attributes))
+            case .thematicBreak: output.append(NSAttributedString(string: "────────\n", attributes: attributes))
+            case .footnoteDefinition(let label, let content, _):
+                output.append(NSAttributedString(string: "[\(label)] ", attributes: attributes))
+                try blocks(content, depth: depth, plain: plain, into: output)
+            case .table(let table):
+                let nativeTable = NSTextTable()
+                nativeTable.numberOfColumns = max(1, table.header.count)
+                for (rowIndex, row) in ([table.header] + table.rows).enumerated() {
+                    for (column, cell) in row.enumerated() {
+                        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                        if !plain {
+                            let block = NSTextTableBlock(table: nativeTable, startingRow: rowIndex, rowSpan: 1,
+                                                         startingColumn: column, columnSpan: 1)
+                            block.setWidth(0.5, type: .absoluteValueType, for: .border)
+                            block.setBorderColor(.gray)
+                            style.textBlocks = [block]
+                        }
+                        attributes[.paragraphStyle] = style
+                        if rowIndex == 0 { attributes[.font] = NSFont.boldSystemFont(ofSize: 12) }
+                        else { attributes[.font] = NSFont.systemFont(ofSize: 12) }
+                        try inlines(cell.content, attributes: attributes, plain: plain, into: output)
+                        output.append(NSAttributedString(string: plain && column < row.count - 1 ? "\t" : "\n", attributes: attributes))
+                    }
+                }
+            }
+        }
+    }
+}
 
 actor HTMLDocumentExporter {
     private let fileManager: FileManager
