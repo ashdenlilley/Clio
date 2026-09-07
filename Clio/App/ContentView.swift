@@ -165,6 +165,7 @@ struct ContentView: View {
                 ),
                 configuration: EditorConfiguration(
                     fontSize: CGFloat(appState.fontSize),
+                    fontName: appState.editorFontName,
                     measure: appState.measure,
                     lineHeightMultiple: CGFloat(appState.lineHeight),
                     isSpellCheckingEnabled: appState.isSpellCheckingEnabled,

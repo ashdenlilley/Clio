@@ -477,7 +477,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             guard let self, let surface else { return }
             if clamped.fractionalYOffset > 0 {
                 let font = surface.textView.font
-                    ?? Typography.font(size: self.configuration.resolvedFontSize)
+                    ?? Typography.font(size: self.configuration.resolvedFontSize, name: self.configuration.fontName)
                 let lineHeight = surface.textView.layoutManager?
                     .defaultLineHeight(for: font)
                     ?? font.boundingRectForFont.height
@@ -512,7 +512,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         minimap?.visibleOffset = topOffset
         guard let viewport else { return }
         let font = textView.font
-            ?? Typography.font(size: configuration.resolvedFontSize)
+            ?? Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         let lineHeight = max(
             1,
             textView.layoutManager?.defaultLineHeight(for: font)

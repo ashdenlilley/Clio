@@ -17,7 +17,7 @@ final class MarkdownTextKitHighlighter {
         let invalidated = update.invalidatedRange
             .clamped(toUTF16Length: storage.length)
             .nsRange
-        let baseFont = Typography.font(size: configuration.resolvedFontSize)
+        let baseFont = Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         let base: [NSAttributedString.Key: Any] = [
             .font: baseFont,
             .foregroundColor: Palette.foreground,
@@ -54,7 +54,7 @@ final class MarkdownTextKitHighlighter {
             lastUpdate = nil
             return
         }
-        let baseFont = Typography.font(size: configuration.resolvedFontSize)
+        let baseFont = Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         storage.beginEditing()
         storage.addAttributes([
             .font: baseFont,
@@ -115,7 +115,7 @@ final class MarkdownTextKitHighlighter {
             default: scale = 1
             }
             return [
-                .font: Typography.font(size: fontSize * scale, traits: .boldFontMask),
+                .font: converted(NSFontManager.shared.convert(baseFont, toSize: fontSize * scale), adding: .boldFontMask),
                 .foregroundColor: Palette.emphasis,
             ]
         case .strong:

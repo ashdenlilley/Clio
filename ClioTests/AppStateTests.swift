@@ -33,12 +33,14 @@ final class AppStateTests: XCTestCase {
         let state = isolatedAppState(defaults: defaults)
 
         state.fontSize = 18
+        state.editorFontName = "Helvetica"
         state.measure = 84
         state.isFocusModeEnabled = false
         state.accent = .cyan
 
         let restored = isolatedAppState(defaults: defaults)
         XCTAssertEqual(restored.fontSize, 18)
+        XCTAssertEqual(restored.editorFontName, "Helvetica")
         XCTAssertEqual(restored.measure, 84)
         XCTAssertFalse(restored.isFocusModeEnabled)
         XCTAssertEqual(restored.accent, .cyan)

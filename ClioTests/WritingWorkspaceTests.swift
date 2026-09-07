@@ -4,6 +4,35 @@ import XCTest
 
 final class WritingWorkspaceTests: XCTestCase {
     @MainActor
+    func testSelectedFontChangesDisplayWithoutChangingMarkdownOrSelection() throws {
+        let name = try XCTUnwrap(NSFont(name: "Helvetica", size: 16)).fontName
+        let view = EditorTextView.makeTextKit2TextView()
+        view.string = "**Bold** and *italic*"
+        let range = NSRange(location: 2, length: 4)
+        view.setSelectedRange(range)
+        let configuration = EditorConfiguration(fontSize: 16, fontName: name)
+        view.applyEditorConfiguration(configuration)
+        view.applyBaseAttributes(for: configuration)
+        XCTAssertEqual(view.font?.fontName, name)
+        XCTAssertEqual(view.string, "**Bold** and *italic*")
+        XCTAssertEqual(view.selectedRange(), range)
+        XCTAssertEqual(Typography.font(size: 16, traits: .boldFontMask, name: name).familyName,
+                       NSFont(name: name, size: 16)?.familyName)
+        XCTAssertEqual(Typography.font(size: 16, name: "Unavailable-Clio-Test-Font").fontName,
+                       Typography.font(size: 16).fontName)
+    }
+
+    @MainActor
+    func testAccentSwatchesAreFullColourMenuImages() {
+        for accent in AppState.AccentPreset.allCases {
+            let image = AccentSwatch.image(for: accent.nsColor)
+            XCTAssertFalse(image.isTemplate)
+            XCTAssertEqual(image.size, NSSize(width: 14, height: 14))
+            XCTAssertNotNil(image.tiffRepresentation)
+        }
+    }
+
+    @MainActor
     func testTypewriterPaddingKeepsVisibleLinesInsideNativeHitAreaAcrossResizeAndToggle() {
         let view = EditorTextView.makeTextKit2TextView()
         let surface = EditorContainerView(textView: view)

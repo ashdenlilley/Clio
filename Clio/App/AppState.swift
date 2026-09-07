@@ -50,6 +50,9 @@ final class AppState: ClioCommandDispatching {
     let discoverySettings: WorkspaceDiscoverySettings
     private(set) var pendingExportRecoveries: [ExportRecoveryItem] = []
 
+    var editorFontName: String = "Hack-Regular" {
+        didSet { defaults.set(editorFontName, forKey: "editor.fontName") }
+    }
     var fontSize: Double = 14 {
         didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
     }
@@ -252,6 +255,7 @@ final class AppState: ClioCommandDispatching {
             }
         )
 
+        editorFontName = defaults.string(forKey: "editor.fontName") ?? "Hack-Regular"
         fontSize = Self.clamp(
             Self.double(forKey: Keys.fontSize, default: 14, in: defaults),
             to: 12...20

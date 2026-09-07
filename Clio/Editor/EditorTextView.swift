@@ -146,10 +146,11 @@ final class EditorTextView: NSTextView {
     }
 
     func applyEditorConfiguration(_ configuration: EditorConfiguration) {
-        let font = Typography.font(size: configuration.resolvedFontSize)
+        let font = Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         let paragraphStyle = Typography.paragraphStyle(
             fontSize: configuration.resolvedFontSize,
-            lineHeightMultiple: configuration.resolvedLineHeightMultiple
+            lineHeightMultiple: configuration.resolvedLineHeightMultiple,
+            fontName: configuration.fontName
         )
 
         drawsBackground = true
@@ -203,10 +204,11 @@ final class EditorTextView: NSTextView {
     }
 
     func applyBaseAttributes(for configuration: EditorConfiguration) {
-        let font = Typography.font(size: configuration.resolvedFontSize)
+        let font = Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         let paragraphStyle = Typography.paragraphStyle(
             fontSize: configuration.resolvedFontSize,
-            lineHeightMultiple: configuration.resolvedLineHeightMultiple
+            lineHeightMultiple: configuration.resolvedLineHeightMultiple,
+            fontName: configuration.fontName
         )
         let attributes = Self.baseAttributes(font: font, paragraphStyle: paragraphStyle)
 

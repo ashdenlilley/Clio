@@ -13,9 +13,13 @@ enum Typography {
     /// resource is accidentally omitted from a development build.
     static func font(
         size: CGFloat = baseSize,
-        traits: NSFontTraitMask = []
+        traits: NSFontTraitMask = [],
+        name: String = "Hack-Regular"
     ) -> NSFont {
         let resolvedSize = max(1, size)
+        if name != "Hack-Regular", let selected = NSFont(name: name, size: resolvedSize) {
+            return traits.isEmpty ? selected : NSFontManager.shared.convert(selected, toHaveTrait: traits)
+        }
         let wantsBold = traits.contains(.boldFontMask)
         let wantsItalic = traits.contains(.italicFontMask)
 
@@ -51,7 +55,8 @@ enum Typography {
 
     static func paragraphStyle(
         fontSize: CGFloat,
-        lineHeightMultiple: CGFloat = lineHeight
+        lineHeightMultiple: CGFloat = lineHeight,
+        fontName: String = "Hack-Regular"
     ) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         let resolvedLineHeight = max(1, fontSize * lineHeightMultiple)
@@ -60,7 +65,7 @@ enum Typography {
         style.lineBreakMode = .byWordWrapping
         style.hyphenationFactor = 0
         style.tabStops = []
-        style.defaultTabInterval = characterAdvance(for: font(size: fontSize)) * 4
+        style.defaultTabInterval = characterAdvance(for: font(size: fontSize, name: fontName)) * 4
         return style.copy() as! NSParagraphStyle
     }
 

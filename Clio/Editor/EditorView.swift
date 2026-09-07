@@ -8,6 +8,7 @@ struct SlashCommandPresentation {
 }
 
 struct EditorConfiguration: Equatable {
+    var fontName: String
     var fontSize: CGFloat
     var measure: Int
     var lineHeightMultiple: CGFloat
@@ -20,6 +21,7 @@ struct EditorConfiguration: Equatable {
 
     init(
         fontSize: CGFloat = Typography.baseSize,
+        fontName: String = "Hack-Regular",
         measure: Int = Metrics.measure,
         lineHeightMultiple: CGFloat = Typography.lineHeight,
         isSpellCheckingEnabled: Bool = true,
@@ -30,6 +32,7 @@ struct EditorConfiguration: Equatable {
         accent: AppState.AccentPreset = .clio
     ) {
         self.fontSize = fontSize
+        self.fontName = fontName
         self.measure = measure
         self.lineHeightMultiple = lineHeightMultiple
         self.isSpellCheckingEnabled = isSpellCheckingEnabled
@@ -229,7 +232,7 @@ final class EditorContainerView: NSView {
 
     func apply(configuration: EditorConfiguration) {
         textView.applyEditorConfiguration(configuration)
-        let font = Typography.font(size: configuration.resolvedFontSize)
+        let font = Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
         let textWidth = Typography.characterAdvance(for: font)
             * CGFloat(configuration.resolvedMeasure)
         preferredTextWidth = ceil(textWidth)
