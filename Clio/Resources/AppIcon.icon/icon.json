@@ -6,10 +6,15 @@
     {
       "layers" : [
         {
-          "glass" : false,
-          "hidden" : false,
-          "image-name" : "logo-liquid-glass-black.svg",
-          "name" : "logo-liquid-glass-black"
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : true,
+          "image-name" : "clio-app-icon-logo-layer.svg",
+          "name" : "clio-app-icon-logo-layer"
         }
       ],
       "shadow" : {
