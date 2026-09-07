@@ -161,6 +161,21 @@ targets:
           CODE_SIGN_IDENTITY: "-"
 
 schemes:
+  ClioShutdownDiagnostics:
+    build:
+      targets:
+        Clio: [test]
+        ClioUITests: [test]
+    test:
+      config: Debug
+      enableAddressSanitizer: true
+      gatherCoverageData: false
+      preferredScreenCaptureFormat: screenshots
+      targets:
+        - name: ClioUITests
+          parallelizable: false
+          selectedTests:
+            - ClioShutdownUITests
   ClioLaunchDiagnostics:
     build:
       targets:

@@ -33,6 +33,70 @@ class ClioDiagnosticTestCase: XCTestCase {
     }
 }
 
+final class ClioShutdownUITests: ClioDiagnosticTestCase {
+    func testRepeatedKeyboardQuitSavesAndRelaunches() throws {
+        try exerciseQuit(menu: false, closeWindow: false, fullscreen: false)
+    }
+
+    func testMenuQuitAfterLastWindowClosed() throws {
+        try exerciseQuit(menu: true, closeWindow: true, fullscreen: false)
+    }
+
+    func testFullscreenMultiwindowQuitSavesAndRelaunches() throws {
+        try exerciseQuit(menu: false, closeWindow: false, fullscreen: true)
+    }
+
+    private func exerciseQuit(menu: Bool, closeWindow: Bool, fullscreen: Bool) throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["CLIO_UI_TESTING"] = "1"
+        app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
+        app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
+        app.launchEnvironment["CLIO_UI_TEST_SCENARIO"] = "shutdown"
+        addTeardownBlock { if app.state != .notRunning { app.terminate() } }
+        let reports = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+        // Failure to read diagnostics is not a successful no-crash observation.
+        let initialReports = Set(try FileManager.default.contentsOfDirectory(atPath: reports.path))
+        var expected = "Alpha beta gamma\nSecond line\n"
+        for iteration in 0..<3 {
+            app.launch()
+            XCTAssertEqual(app.state, .runningForeground)
+            let editor = app.textViews["editor.text"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 10))
+            XCTAssertEqual(editor.value as? String, expected, "Quit must preserve the last run's bytes")
+            app.typeKey(.downArrow, modifierFlags: .command)
+            let suffix = "Quit-cycle-\(iteration)\n"
+            app.typeText(suffix)
+            expected += suffix
+            if fullscreen {
+                app.typeKey("n", modifierFlags: [.command, .shift])
+                XCTAssertTrue(app.windows.element(boundBy: 1).waitForExistence(timeout: 5))
+                let window = app.windows.firstMatch
+                let height = window.frame.height
+                app.typeKey("f", modifierFlags: [.command, .control])
+                let entered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in window.frame.height > height + 20 }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 10), .completed)
+            }
+            if closeWindow { app.typeKey("w", modifierFlags: .command) }
+            // No Command-S or debounce wait: quit itself must flush the edit.
+            if menu {
+                app.menuBars.menuBarItems["Clio"].click()
+                app.menuItems["Quit Clio"].click()
+            } else { app.typeKey("q", modifierFlags: .command) }
+            XCTAssertTrue(app.wait(for: .notRunning, timeout: 15), "Quit must finish without force-termination")
+            // Allow the OS reporter to publish an immediately generated report.
+            let grace = Date().addingTimeInterval(3)
+            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in Date() >= grace }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed)
+            let newReports = Set(try FileManager.default.contentsOfDirectory(atPath: reports.path)).subtracting(initialReports)
+            XCTAssertTrue(newReports.filter { $0.hasPrefix("Clio-") && ($0.hasSuffix(".ips") || $0.hasSuffix(".crash")) }.isEmpty,
+                          "A new Clio crash report appeared during intentional quit")
+        }
+        app.launch()
+        XCTAssertTrue(app.textViews["editor.text"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["editor.text"].value as? String, expected)
+    }
+}
+
 final class ClioLaunchUITests: ClioDiagnosticTestCase {
     func testLaunchReachesForegroundAndEditor() {
         let app = XCUIApplication()

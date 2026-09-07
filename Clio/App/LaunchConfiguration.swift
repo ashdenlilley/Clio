@@ -43,7 +43,10 @@ private extension ClioLaunchConfiguration {
         ClioLaunchDiagnostics.mark("isolated-directory-ready")
         let seedURL = rootURL.appendingPathComponent("seed.md")
         let seedText = "Alpha beta gamma\nSecond line\n"
-        try seedText.write(to: seedURL, atomically: true, encoding: .utf8)
+        // Quit/relaunch diagnostics must read the previous run's saved bytes.
+        if environment["CLIO_UI_TEST_SCENARIO"] != "shutdown" || !FileManager.default.fileExists(atPath: seedURL.path) {
+            try seedText.write(to: seedURL, atomically: true, encoding: .utf8)
+        }
         let journal = CrashRecoveryJournal(rootURL: rootURL.appendingPathComponent(".crash-recovery"))
         let identities = DocumentIdentityStore(storageURL: rootURL.appendingPathComponent(".identities.json"))
         let index = try SQLiteSearchIndex(databaseURL: rootURL.appendingPathComponent(".index.sqlite"), identityStore: identities)
@@ -90,7 +93,7 @@ private extension ClioLaunchConfiguration {
                 appState: appState,
                 initialWindowRequest: .newDocument()
             )
-        case "restoration":
+        case "restoration", "shutdown":
             let tabID = UUID()
             var request = EditorWindowRequest.mostRecent()
             request.restoration = EditorWindowRestorationState(
