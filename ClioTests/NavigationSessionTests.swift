@@ -343,6 +343,31 @@ final class NavigationSessionTests: XCTestCase {
         XCTAssertFalse(EditorCoordinator.isEmptySlashLine(in: "🙂 text", range: NSRange(location: 3, length: 0)))
     }
 
+    func testDoubleSpaceCancelsEmptySlashCommandAndRestoresOnlySlash() {
+        for anchor in [CGRect?.none, CGRect(x: 100, y: 200, width: 1, height: 20)] {
+            let window = EditorWindowSession(request: .newDocument())
+            var restored: [String] = []
+            window.presentInlineSlashPalette(.init(anchor: anchor, restoreLiteral: { restored.append($0) }))
+            window.updatePaletteQuery("/ ")
+            XCTAssertTrue(window.isPalettePresented)
+            window.updatePaletteQuery("/  ")
+            XCTAssertFalse(window.isPalettePresented)
+            XCTAssertEqual(restored, ["/"])
+            window.dismissPalette()
+            XCTAssertEqual(restored, ["/"])
+        }
+    }
+
+    func testDoubleSpaceDoesNotCancelNonemptyCommandOrSearch() {
+        let window = EditorWindowSession(request: .newDocument())
+        window.presentInlineSlashPalette()
+        window.updatePaletteQuery("/open  ")
+        XCTAssertTrue(window.isPalettePresented)
+        window.presentPalette(mode: .search)
+        window.updatePaletteQuery("  ")
+        XCTAssertTrue(window.isPalettePresented)
+    }
+
     func testAcceptedSlashDoesNotInsertCommandIntoSource() {
         let window = EditorWindowSession(request: .newDocument())
         var restored = false

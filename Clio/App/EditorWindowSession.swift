@@ -355,6 +355,14 @@ final class EditorWindowSession: Identifiable {
     }
 
     func updatePaletteQuery(_ query: String) {
+        // Two literal spaces escape an empty slash command. Do not trim:
+        // whitespace within a real command or workspace search remains input.
+        if isPalettePresented, paletteMode == .commands, paletteSource == .inlineSlash,
+           query == "/  " || query == "  " {
+            paletteQuery = "/"
+            dismissPalette()
+            return
+        }
         paletteQuery = query
         paletteErrorMessage = nil
         paletteSelectionIndex = 0

@@ -41,6 +41,22 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["sidebar"].exists })
     }
 
+    func testDoubleSpaceDismissesSlashPaletteAndLeavesLiteralSlash() {
+        launch(scenario: "blank")
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.typeText("/")
+        let query = app.textFields["palette.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        query.typeText(" ")
+        XCTAssertTrue(query.exists)
+        query.typeText(" ")
+        XCTAssertTrue(waitUntil { !self.app.descendants(matching: .any)["command.palette"].exists })
+        XCTAssertEqual(editor.value as? String, "/")
+        app.typeText("next")
+        XCTAssertEqual(editor.value as? String, "/next")
+    }
+
     func testSlashInsideProseUsesCenteredPaletteAndEscapePreservesText() {
         launch(scenario: "blank")
         let editor = app.textViews["editor.text"]
