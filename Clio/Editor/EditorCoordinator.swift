@@ -284,6 +284,11 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
                 self.isRestoringLiteralSlash = true
                 defer { self.isRestoringLiteralSlash = false }
                 textView.insertText(literal, replacementRange: affectedCharRange)
+                // Keep the caret immediately after the restored literal, even
+                // when the slash was entered in the middle of a Unicode line.
+                let offset = min(affectedCharRange.location + literal.utf16.count, textView.string.utf16.count)
+                textView.setSelectedRange(NSRange(location: offset, length: 0))
+                self.captureViewport()
             }
             DispatchQueue.main.async { [weak self] in
                 self?.onSlashCommand?(presentation)
