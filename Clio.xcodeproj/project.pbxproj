@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC0120000000000000000001 /* MCPAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000002 /* MCPAccessPolicy.swift */; };
+		AC0120000000000000000003 /* MCPDocumentAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000004 /* MCPDocumentAccess.swift */; };
+		AC0120000000000000000005 /* MCPAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000006 /* MCPAccessTests.swift */; };
 		02C93EA5D305801DD36D203F /* WorkspaceContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4212B1B2844F9B9576D273EE /* WorkspaceContracts.swift */; };
 		05D5C8451674A226E9D523FB /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99FFDC4F6FD0B1903F2D36A5 /* Workspace.swift */; };
 		064F7AC387919E611A9BE8E0 /* ClioDiagnosticTestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9093A096DCE89DE476E6252B /* ClioDiagnosticTestCase.swift */; };
@@ -166,6 +169,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AC0120000000000000000002 /* MCPAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPAccessPolicy.swift; sourceTree = "<group>"; };
+		AC0120000000000000000004 /* MCPDocumentAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDocumentAccess.swift; sourceTree = "<group>"; };
+		AC0120000000000000000006 /* MCPAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPAccessTests.swift; sourceTree = "<group>"; };
 		0033457428D3EA40B0EEC891 /* GitIgnoreMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitIgnoreMatcher.swift; sourceTree = "<group>"; };
 		01B9E54F910D6A753ED29027 /* ClioMotionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioMotionUITests.swift; sourceTree = "<group>"; };
 		03066127C645305A50AE45C2 /* ExportRecoveryCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportRecoveryCatalogTests.swift; sourceTree = "<group>"; };
@@ -311,6 +317,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		AC0120000000000000000007 /* MCP */ = {
+			isa = PBXGroup;
+			children = (
+				AC0120000000000000000002 /* MCPAccessPolicy.swift */,
+				AC0120000000000000000004 /* MCPDocumentAccess.swift */,
+			);
+			path = MCP;
+			sourceTree = "<group>";
+		};
 		00D658C0348E46A174469A3E /* Experience */ = {
 			isa = PBXGroup;
 			children = (
@@ -434,6 +449,7 @@
 				00D658C0348E46A174469A3E /* Experience */,
 				AFFFABD5EDD581F7AD4155DC /* Export */,
 				B8FB170880A39D61CB226AD0 /* Markdown */,
+				AC0120000000000000000007 /* MCP */,
 				45CB4BC46EBD92F16CE07506 /* Resources */,
 				6640EAFF46CEB9710033D36F /* Workspace */,
 			);
@@ -548,6 +564,7 @@
 			children = (
 				5951908261381D4FC7B083A2 /* Fixtures */,
 				2F710F7CDE141F9CF769FD50 /* AppStateTests.swift */,
+				AC0120000000000000000006 /* MCPAccessTests.swift */,
 				DDD83589B757361BBB1A0C6B /* ContractTests.swift */,
 				CE0395A9DD7ECE0D431EA770 /* CrashSafetyTests.swift */,
 				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
@@ -804,6 +821,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				F6E2FFDCABEF71BD602494BB /* AppState.swift in Sources */,
+				AC0120000000000000000001 /* MCPAccessPolicy.swift in Sources */,
+				AC0120000000000000000003 /* MCPDocumentAccess.swift in Sources */,
 				8F5CD3569250DBB2C2B1D304 /* AtomicWriteTransaction.swift in Sources */,
 				78731B2EF1742FD0E6C633E4 /* Autosaver.swift in Sources */,
 				C343BDD49ED7D7E2AC4A584C /* ChromeMotionController.swift in Sources */,
@@ -889,6 +908,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				09041C9D26FB0103FCC39427 /* AppStateTests.swift in Sources */,
+				AC0120000000000000000005 /* MCPAccessTests.swift in Sources */,
 				B7D2D3C32DA0AFB3AD54B71B /* ContractTests.swift in Sources */,
 				B7004DB966171C7BC7A36B88 /* CrashSafetyTests.swift in Sources */,
 				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,

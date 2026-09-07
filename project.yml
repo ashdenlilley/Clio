@@ -161,6 +161,21 @@ targets:
           CODE_SIGN_IDENTITY: "-"
 
 schemes:
+  ClioMCPDiagnostics:
+    build:
+      targets:
+        Clio: [test]
+        ClioTests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      environmentVariables:
+        CLIO_UI_TESTING: "1"
+      targets:
+        - name: ClioTests
+          parallelizable: false
+          selectedTests:
+            - MCPAccessTests
   ClioShutdownDiagnostics:
     build:
       targets:

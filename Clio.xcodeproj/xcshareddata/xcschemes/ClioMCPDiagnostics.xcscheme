@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1500" version="1.7">
+  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="9463A50ACA7319BF58C292E5" BuildableName="Clio.app" BlueprintName="Clio" ReferencedContainer="container:Clio.xcodeproj"/>
+      </BuildActionEntry>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="1EFC903199B1E422F418531B" BuildableName="ClioTests.xctest" BlueprintName="ClioTests" ReferencedContainer="container:Clio.xcodeproj"/>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES" codeCoverageEnabled="NO">
+    <MacroExpansion>
+      <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="9463A50ACA7319BF58C292E5" BuildableName="Clio.app" BlueprintName="Clio" ReferencedContainer="container:Clio.xcodeproj"/>
+    </MacroExpansion>
+    <Testables>
+      <TestableReference skipped="NO" parallelizable="NO" useTestSelectionWhitelist="YES">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="1EFC903199B1E422F418531B" BuildableName="ClioTests.xctest" BlueprintName="ClioTests" ReferencedContainer="container:Clio.xcodeproj"/>
+        <SelectedTests><Test Identifier="MCPAccessTests"/></SelectedTests>
+      </TestableReference>
+    </Testables>
+    <EnvironmentVariables>
+      <EnvironmentVariable key="CLIO_UI_TESTING" value="1" isEnabled="YES"/>
+    </EnvironmentVariables>
+  </TestAction>
+</Scheme>

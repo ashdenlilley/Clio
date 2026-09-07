@@ -1,6 +1,47 @@
 # Local MCP integration — implementation plan
 
-Status: requirements agreed; not implemented. Keep separate from shutdown repair.
+Status: implementation in progress on `feature/local-mcp`; not available to clients
+yet. Keep separate from shutdown repair. Hosted connectivity deferred by default.
+
+## Implementation checkpoint
+
+Implemented, pending Xcode Cloud verification:
+
+- Default-off client/workspace authorization with token digests, revocation,
+  pause/resume invalidation, and shutdown invalidation.
+- Loopback Host/Origin/request-size policy (no HTTP listener yet).
+- Live, settled, paginated reads through DocumentBufferRegistry. Continuation
+  pages require a matching revision; pending saves/conflicts are explicit.
+- Process/buffer-incarnation revision tokens, Unicode-safe replacement candidate
+  validation, and canonical workspace path checks including symlink escapes.
+- Bounded, per-client mutation retry ledger and native-only, expiring, one-shot
+  deletion approval primitive. Neither is exposed as a tool.
+- Eight `MCPAccessTests` and the shared `ClioMCPDiagnostics` Cloud test scheme.
+
+Not implemented yet (not a usable MCP server):
+
+- HTTP parsing/listener, protocol router/negotiation, sessions and cancellation.
+- Keychain-backed credential provisioning and native client/workspace approvals.
+- Tool adapters for discovery/search, undo-aware edits, create/rename/move/trash,
+  export, active document/selection, and UI navigation. Untitled documents are
+  deliberately not accessible through the initial read adapter.
+- Settings/menu-bar controls, login registration, windowless startup and quit
+  integration, and client connection guides/smoke tests.
+
+No listener, sandbox entitlement expansion, login registration, tunnel, release
+tag, or changes to the shutdown comparison branches are included in this slice.
+
+### Cloud verification for this checkpoint
+
+Use branch `feature/local-mcp`, scheme `ClioMCPDiagnostics`, macOS Test action,
+Required to Pass, no retries, no archive/distribution action. No MCP or release
+secrets are needed by these tests; retain any existing repository preflight
+configuration required by `ci_post_clone.sh`. The scheme is committed on this
+branch, not on `main`; let Xcode discover it from the branch checkout first.
+
+Local checks are source/project syntax only. Cloud compilation and test execution
+remain required; no client interoperability or clean shutdown claim follows from
+these foundation tests alone. Run full Clio regression tests before merging.
 
 ## Product requirements
 
