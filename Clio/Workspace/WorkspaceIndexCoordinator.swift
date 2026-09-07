@@ -163,6 +163,12 @@ final class WorkspaceIndexCoordinator {
         try await apply(events, reconcilingBuffers: true)
     }
 
+    /// The document/registry already reflect these local commits. Refresh only
+    /// derived index/tree data, without replaying external-change reconciliation.
+    func recordCommittedEvents(_ events: [WorkspaceEvent]) async throws {
+        try await apply(events, reconcilingBuffers: false)
+    }
+
     /// Records a Stage 2 move after the filesystem commit. This preserves the
     /// canonical ID across workspace roots and invalidates both search rows and
     /// trees without re-running buffer reconciliation for an already-moved file.
@@ -233,7 +239,7 @@ final class WorkspaceIndexCoordinator {
         let requiresGlobalDiscovery = actionableEvents.contains {
             $0.kind == .rootChanged
                 || $0.kind == .rescanRequired
-                || $0.kind == .deleted
+                || (reconcilingBuffers && $0.kind == .deleted)
         }
         let descriptorIDs = requiresGlobalDiscovery
             ? Set(catalog.descriptors.map(\.id))

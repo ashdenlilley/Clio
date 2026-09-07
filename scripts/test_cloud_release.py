@@ -4,6 +4,7 @@ import io
 import importlib.util
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -143,6 +144,87 @@ class Gates(unittest.TestCase):
                                      "CI_XCODEBUILD_EXIT_CODE": "65"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "requires successful Cloud archive"):
                 r.main()
+
+
+class MCPBridgeVerification(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.app = Path(self.directory.name)/"Clio.app"
+        self.bridge = self.app/"Contents/Helpers/ClioMCPBridge"
+        self.bridge.parent.mkdir(parents=True)
+        self.bridge.write_bytes(b"mock Mach-O; no executable is run by these tests")
+        self.architectures = b"arm64 x86_64\n"
+        metadata = plistlib.dumps({"CFBundleIdentifier": "olympus.clio.mac.mcp-bridge",
+                                  "CFBundleName": "ClioMCPBridge",
+                                  "CFBundleExecutable": "ClioMCPBridge"})
+        self.metadata = {"arm64": metadata, "x86_64": metadata}
+        self.entitlements = {"com.apple.security.app-sandbox": True,
+                             "com.apple.security.network.client": True}
+        self.commands = []
+
+    def inspect_command(self, *args):
+        self.commands.append(args)
+        if args[:2] == ("/usr/bin/lipo", "-archs"):
+            return self.architectures
+        if args[:3] == ("/usr/bin/xcrun", "otool", "-arch"):
+            self.assertEqual(args[4:6], ("-X", "-P"))
+            return self.metadata[args[3]]
+        if args[:3] == ("/usr/bin/codesign", "--verify", "--strict"):
+            return b""
+        if args[:4] == ("/usr/bin/codesign", "-d", "--entitlements", ":-"):
+            return plistlib.dumps(self.entitlements)
+        raise AssertionError("Unexpected verification command")
+
+    def verify(self):
+        with patch.object(r, "run", side_effect=self.inspect_command):
+            r.verify_mcp_bridge(self.app)
+
+    def test_checks_embedded_metadata_in_both_architectures(self):
+        self.verify()
+        checked = [command[3] for command in self.commands if command[1] == "otool"]
+        self.assertEqual(checked, ["arm64", "x86_64"])
+
+    def test_missing_or_symlinked_bridge_is_rejected_before_inspection(self):
+        self.bridge.unlink()
+        with self.assertRaisesRegex(RuntimeError, "bridge missing"):
+            self.verify()
+        self.bridge.symlink_to("../MissingBridge")
+        with self.assertRaisesRegex(RuntimeError, "bridge missing"):
+            self.verify()
+        self.assertEqual(self.commands, [])
+
+    def test_nonuniversal_bridge_is_rejected(self):
+        self.architectures = b"arm64\n"
+        with self.assertRaisesRegex(RuntimeError, "bridge must be universal"):
+            self.verify()
+
+    def test_each_architecture_requires_valid_embedded_metadata(self):
+        valid = self.metadata.copy()
+        for architecture in ("arm64", "x86_64"):
+            for malformed in (b"", b"<plist><dict>", b"not an Info.plist"):
+                with self.subTest(architecture=architecture, malformed=malformed):
+                    self.metadata = {**valid, architecture: malformed}
+                    with self.assertRaisesRegex(RuntimeError, f"{architecture} embedded Info.plist missing or invalid"):
+                        self.verify()
+
+    def test_wrong_embedded_identity_is_rejected(self):
+        for value in ({"CFBundleIdentifier": "wrong.tool"}, ["not a dictionary"]):
+            self.metadata["x86_64"] = plistlib.dumps(value)
+            with self.assertRaisesRegex(RuntimeError, "x86_64 embedded bundle metadata is incorrect"):
+                self.verify()
+
+    def test_sandbox_and_network_entitlements_are_required(self):
+        valid = self.entitlements.copy()
+        for key in valid:
+            self.entitlements = {other: value for other, value in valid.items() if other != key}
+            with self.assertRaises(RuntimeError):
+                self.verify()
+
+    def test_debug_entitlement_is_rejected(self):
+        self.entitlements["com.apple.security.get-task-allow"] = True
+        with self.assertRaisesRegex(RuntimeError, "bridge debug entitlement"):
+            self.verify()
 
 
 class AdvisoryResults(unittest.TestCase):

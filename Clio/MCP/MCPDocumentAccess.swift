@@ -19,6 +19,9 @@ final class MCPDocumentAccess {
         let id: UUID
     }
     private var incarnations: [DocumentID: Incarnation] = [:]
+    private var insertionsSinceCleanup = 0
+    private var cleanupInterval = 256
+    private(set) var incarnationCleanupCount = 0
 
     init(access: MCPAccessController, registry: DocumentBufferRegistry) {
         self.access = access
@@ -28,7 +31,7 @@ final class MCPDocumentAccess {
     func read(
         documentID: DocumentID, workspace: Workspace, grant: MCPClientGrant,
         offset: Int = 0, limit: Int = 16_384, expectedRevision: MCPRevision? = nil,
-        authorizedUntitled: Bool = false
+        authorizedUntitled: @MainActor (Document) -> Bool = { _ in false }
     ) async throws -> MCPDocumentPage {
         try access.validate(grant, workspaceID: workspace.id)
         try Task.checkCancellation()
@@ -39,7 +42,7 @@ final class MCPDocumentAccess {
             if let file = document.fileURL {
                 try MCPWorkspaceBoundary.validate(file, beneath: workspace.rootURL)
                 _ = try workspace.locator(for: file)
-            } else if !authorizedUntitled { throw MCPAccessError.outsideWorkspace }
+            } else if !authorizedUntitled(document) { throw MCPAccessError.outsideWorkspace }
             let token = self.revision(for: document)
             if let expectedRevision, expectedRevision != token { throw MCPAccessError.staleRevision }
             // Further pages MUST be tied to a revision, otherwise concurrent
@@ -68,8 +71,16 @@ final class MCPDocumentAccess {
     }
 
     func revision(for document: Document) -> MCPRevision {
-        incarnations = incarnations.filter { $0.value.document != nil }
         if incarnations[document.id]?.document !== document {
+            // Prune only after enough insertions to amortize the scan. Repeated
+            // metadata reads of retained buffers must remain constant-time.
+            insertionsSinceCleanup += 1
+            if insertionsSinceCleanup >= cleanupInterval {
+                incarnations = incarnations.filter { $0.value.document != nil }
+                insertionsSinceCleanup = 0
+                cleanupInterval = max(256, incarnations.count)
+                incarnationCleanupCount += 1
+            }
             incarnations[document.id] = Incarnation(document: document, id: UUID())
         }
         return MCPRevision(incarnation: incarnations[document.id]!.id,

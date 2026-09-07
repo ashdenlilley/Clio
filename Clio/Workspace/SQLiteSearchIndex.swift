@@ -1019,7 +1019,7 @@ private extension SQLiteSearchIndex {
         }
     }
 
-    static func queryTerms(_ query: String) -> [String] {
+    nonisolated internal static func queryTerms(_ query: String) -> [String] {
         query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" })
             .prefix(16)
@@ -1027,13 +1027,13 @@ private extension SQLiteSearchIndex {
             .filter { !$0.isEmpty }
     }
 
-    static func ftsQuery(_ terms: [String]) -> String? {
+    nonisolated internal static func ftsQuery(_ terms: [String]) -> String? {
         guard !terms.isEmpty else { return nil }
         return terms.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
             .joined(separator: " AND ")
     }
 
-    static func escapedLike(_ input: String) -> String {
+    nonisolated internal static func escapedLike(_ input: String) -> String {
         input
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%")
@@ -1051,5 +1051,74 @@ private extension SQLiteSearchIndex {
         }
         guard let match = matches.min(by: { $0.location < $1.location }) else { return nil }
         return UTF16Range(location: match.location, length: match.length)
+    }
+}
+
+/// Runs the identical FTS5 tokenizer/query against an ephemeral live buffer.
+/// Kept off MainActor; unsaved text is never written into the disk index.
+actor SQLiteLiveBufferMatcher {
+    private var database: OpaquePointer?
+
+    deinit { if let database { sqlite3_close(database) } }
+
+    func matches(text: String, relativePath: String, query: String) throws -> Bool {
+        if database == nil {
+            guard sqlite3_open(":memory:", &database) == SQLITE_OK else {
+                if let database { sqlite3_close(database) }
+                database = nil
+                throw SQLiteSearchIndex.IndexError.sqlite("Unable to open live search")
+            }
+            do {
+                try execute("CREATE VIRTUAL TABLE live_buffer USING fts5(relative_path, content, tokenize='unicode61 remove_diacritics 2')")
+            } catch {
+                sqlite3_close(database); database = nil
+                throw error
+            }
+        }
+        let terms = SQLiteSearchIndex.queryTerms(query)
+        guard let fts = SQLiteSearchIndex.ftsQuery(terms) else {
+            return try evaluate("SELECT ? LIKE ? ESCAPE '\\' COLLATE NOCASE", bindings: [
+                relativePath, "%\(SQLiteSearchIndex.escapedLike(query))%"
+            ])
+        }
+        try execute("DELETE FROM live_buffer")
+        defer { try? execute("DELETE FROM live_buffer") }
+        try execute("INSERT INTO live_buffer(rowid, relative_path, content) VALUES(1, ?, ?)", bindings: [relativePath, text])
+        return try evaluate("SELECT EXISTS(SELECT 1 FROM live_buffer WHERE live_buffer MATCH ?)", bindings: [fts])
+    }
+
+    private func statement(_ sql: String, bindings: [String]) throws -> OpaquePointer {
+        var prepared: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else {
+            throw SQLiteSearchIndex.IndexError.sqlite("Unable to prepare live search")
+        }
+        for (offset, value) in bindings.enumerated() {
+            let code = value.withCString {
+                sqlite3_bind_text(prepared, Int32(offset + 1), $0, Int32(value.utf8.count),
+                                  unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            guard code == SQLITE_OK else {
+                sqlite3_finalize(prepared)
+                throw SQLiteSearchIndex.IndexError.sqlite("Unable to bind live search")
+            }
+        }
+        return prepared
+    }
+
+    private func execute(_ sql: String, bindings: [String] = []) throws {
+        let prepared = try statement(sql, bindings: bindings)
+        defer { sqlite3_finalize(prepared) }
+        guard sqlite3_step(prepared) == SQLITE_DONE else {
+            throw SQLiteSearchIndex.IndexError.sqlite("Unable to update live search")
+        }
+    }
+
+    private func evaluate(_ sql: String, bindings: [String]) throws -> Bool {
+        let prepared = try statement(sql, bindings: bindings)
+        defer { sqlite3_finalize(prepared) }
+        guard sqlite3_step(prepared) == SQLITE_ROW else {
+            throw SQLiteSearchIndex.IndexError.sqlite("Unable to evaluate live search")
+        }
+        return sqlite3_column_int(prepared, 0) != 0
     }
 }

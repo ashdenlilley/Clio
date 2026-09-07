@@ -78,19 +78,19 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
             app.typeText(suffix)
             expected += suffix
             if fullscreen {
-                app.typeKey("n", modifierFlags: [.command, .shift])
-                XCTAssertTrue(app.windows.element(boundBy: 1).waitForExistence(timeout: 5))
-                let window = app.windows.firstMatch
-                let height = window.frame.height
-                app.typeKey("f", modifierFlags: [.command, .control])
-                let entered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in window.frame.height > height + 20 }, object: nil)
-                XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 10), .completed)
+                try openAdditionalEditorAndEnterFullscreen(in: app)
             }
             if closeWindow { app.typeKey("w", modifierFlags: .command) }
             // No Command-S or debounce wait: quit itself must flush the edit.
             if menu {
-                app.menuBars.menuBarItems["Clio"].click()
-                app.menuItems["Quit Clio"].click()
+                let applicationMenu = app.menuBars.menuBarItems["Clio"]
+                applicationMenu.click()
+                // The status-menu extra also contains Quit Clio. Exercise the
+                // opened application menu, never an application-wide match.
+                let quitItems = applicationMenu.menuItems.matching(identifier: "Quit Clio")
+                XCTAssertTrue(quitItems.element.waitForExistence(timeout: 3))
+                XCTAssertEqual(quitItems.count, 1, "The application menu must contain exactly one quit command")
+                quitItems.element.click()
             } else { app.typeKey("q", modifierFlags: .command) }
             XCTAssertTrue(app.wait(for: .notRunning, timeout: 15), "Quit must finish without force-termination")
             // Allow the OS reporter to publish an immediately generated report.
@@ -106,6 +106,43 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
         app.launch()
         XCTAssertTrue(app.textViews["editor.text"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.textViews["editor.text"].value as? String, expected)
+    }
+
+    private func openAdditionalEditorAndEnterFullscreen(in app: XCUIApplication) throws {
+        let editorWindows = app.windows.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "diagnostics.editor-window.")
+        )
+        let previousIDs = Set(editorWindows.allElementsBoundByIndex.map(\.identifier))
+        XCTAssertFalse(previousIDs.isEmpty, "The original editor must have a stable window identifier")
+        app.typeKey("n", modifierFlags: [.command, .shift])
+
+        let opened = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let currentIDs = Set(editorWindows.allElementsBoundByIndex.map(\.identifier))
+            return currentIDs.subtracting(previousIDs).count == 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 5), .completed,
+                       "New Window must create a separately identifiable editor")
+        let currentIDs = Set(editorWindows.allElementsBoundByIndex.map(\.identifier))
+        let targetID = try XCTUnwrap(currentIDs.subtracting(previousIDs).first)
+        // Re-query by identity instead of retaining an element bound to an
+        // index: AppKit can reorder windows as the new one becomes key.
+        let targetWindow = app.windows[targetID]
+        let targetEditor = targetWindow.textViews["editor.text"]
+        XCTAssertTrue(targetEditor.waitForExistence(timeout: 5))
+        targetEditor.click()
+        let fullscreenState = targetWindow.staticTexts["diagnostics.window.fullscreen"]
+        XCTAssertTrue(fullscreenState.waitForExistence(timeout: 3))
+        XCTAssertEqual(fullscreenState.label, "windowed")
+        targetWindow.typeKey("f", modifierFlags: [.command, .control])
+
+        let entered = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "fullscreen"),
+            object: fullscreenState
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 10), .completed,
+                       "The selected editor must finish entering fullscreen before quitting")
+        // The target's own completed-state marker proves which window entered.
+        // Do not query older windows now: they may be in a different Space.
     }
 }
 

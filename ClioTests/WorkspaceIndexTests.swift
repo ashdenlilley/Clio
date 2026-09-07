@@ -1588,12 +1588,92 @@ final class WorkspaceIndexTests: XCTestCase {
     }
 
     @MainActor
+    func testCommittedCreateAndDeleteUpdateOnlyAffectedRootWithoutReconcilingBuffers() async throws {
+        try await withTemporaryDirectory { baseURL in
+            let workspaceURL = baseURL.appendingPathComponent("workspace", isDirectory: true)
+            let unrelatedURL = baseURL.appendingPathComponent("unrelated", isDirectory: true)
+            let deletedURL = workspaceURL.appendingPathComponent("deleted.md")
+            try write("deleted unique token", to: deletedURL)
+            try write("unrelated retained token", to: unrelatedURL.appendingPathComponent("retained.md"))
+            let (defaults, suiteName) = try temporaryDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let catalog = testCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(workspaceURL)
+            let unrelated = try catalog.addAuthorizedFolder(unrelatedURL)
+            let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
+            let store = DocumentIdentityStore(storageURL: nil)
+            let registry = DocumentBufferRegistry(identityStore: store)
+            let deletedDocument = try registry.open(deletedURL, in: workspace)
+            let index = RecordingSearchIndex(wrapping: try SQLiteSearchIndex(
+                databaseURL: baseURL.appendingPathComponent("committed.sqlite3"),
+                identityStore: store
+            ))
+            let fileManager = DisappearingRootFileManager(rootURL: unrelatedURL)
+            var reconciledEvents: [WorkspaceEventKind] = []
+            let coordinator = WorkspaceIndexCoordinator(
+                catalog: catalog,
+                registry: registry,
+                searchIndex: index,
+                scanner: WorkspaceScanner(fileManager: fileManager, identityStore: store),
+                eventReconciler: { event, _ in reconciledEvents.append(event.kind) },
+                watcherFactory: { _ in IdleWorkspaceEventSource() }
+            )
+            try await coordinator.synchronize(policy: .default)
+            let unrelatedSnapshot = try XCTUnwrap(coordinator.treeSnapshots[unrelated.id])
+            // This existing scanner fixture removes the unrelated root if it is
+            // ever scanned again, making an accidental global rescan observable.
+            fileManager.disappearsDuringNextScan = true
+
+            let createdURL = workspaceURL.appendingPathComponent("created.md")
+            try write("created unique token", to: createdURL)
+            let createdDocument = try registry.open(createdURL, in: workspace)
+            try await coordinator.recordCommittedEvents([
+                WorkspaceEvent(workspaceID: descriptor.id, kind: .created,
+                               fileURL: createdURL, origin: .clio)
+            ])
+            XCTAssertTrue(reconciledEvents.isEmpty)
+            let createdResults = try await finalBatch(from: await coordinator.search(
+                WorkspaceSearchQuery(text: "created unique")
+            ))
+            XCTAssertEqual(createdResults.results.map(\.documentID), [createdDocument.id])
+
+            let deletedLocator = try workspace.locator(for: deletedURL)
+            try FileManager.default.removeItem(at: deletedURL)
+            deletedDocument.markUnbacked(previous: deletedLocator)
+            registry.detach(deletedDocument.id, from: deletedLocator)
+            try await coordinator.recordCommittedEvents([
+                WorkspaceEvent(workspaceID: descriptor.id, kind: .deleted,
+                               fileURL: deletedURL, origin: .clio)
+            ])
+            // Watcher deletions normally reconcile after a 500 ms correlation
+            // delay; a committed local deletion must not enqueue that work.
+            try await Task.sleep(for: .milliseconds(650))
+            XCTAssertTrue(reconciledEvents.isEmpty)
+            XCTAssertEqual(coordinator.treeSnapshots[descriptor.id]?.files.map(\.relativePath), ["created.md"])
+            XCTAssertEqual(coordinator.treeSnapshots[unrelated.id], unrelatedSnapshot)
+            XCTAssertTrue(fileManager.disappearsDuringNextScan)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedURL.path))
+            XCTAssertNil(coordinator.failures[unrelated.id])
+            let deletedResults = try await finalBatch(from: await coordinator.search(
+                WorkspaceSearchQuery(text: "deleted unique")
+            ))
+            XCTAssertTrue(deletedResults.results.isEmpty)
+            let rebuilds = await index.rebuildCount
+            let batches = await index.appliedBatches
+            XCTAssertEqual(rebuilds, 1, "Only the initial synchronization may rebuild")
+            XCTAssertEqual(batches.map { $0.map(\.kind) }, [[.created], [.deleted]])
+        }
+    }
+
+    @MainActor
     func testCommittedCrossWorkspaceMoveRetainsCanonicalSearchAndTreeIdentity() async throws {
         try await withTemporaryDirectory { baseURL in
             let sourceURL = baseURL.appendingPathComponent("source", isDirectory: true)
             let destinationURL = baseURL.appendingPathComponent("destination", isDirectory: true)
+            let unrelatedURL = baseURL.appendingPathComponent("unrelated", isDirectory: true)
             try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            try write("unrelated retained token", to: unrelatedURL.appendingPathComponent("retained.md"))
             let noteURL = sourceURL.appendingPathComponent("move-me.md")
             try write("cross workspace identity", to: noteURL)
             let (defaults, suiteName) = try temporaryDefaults()
@@ -1601,6 +1681,7 @@ final class WorkspaceIndexTests: XCTestCase {
             let catalog = testCatalog(defaults: defaults)
             let sourceDescriptor = try catalog.addAuthorizedFolder(sourceURL)
             let destinationDescriptor = try catalog.addAuthorizedFolder(destinationURL)
+            let unrelated = try catalog.addAuthorizedFolder(unrelatedURL)
             let source = try XCTUnwrap(catalog.workspace(id: sourceDescriptor.id))
             let destination = try XCTUnwrap(catalog.workspace(id: destinationDescriptor.id))
             let store = DocumentIdentityStore(
@@ -1608,16 +1689,23 @@ final class WorkspaceIndexTests: XCTestCase {
             )
             let registry = DocumentBufferRegistry(identityStore: store)
             let document = try registry.open(noteURL, in: source)
+            let index = RecordingSearchIndex(wrapping: try SQLiteSearchIndex(
+                databaseURL: baseURL.appendingPathComponent("moves.sqlite3"),
+                identityStore: store
+            ))
+            let fileManager = DisappearingRootFileManager(rootURL: unrelatedURL)
+            var reconciledEvents: [WorkspaceEventKind] = []
             let coordinator = WorkspaceIndexCoordinator(
                 catalog: catalog,
                 registry: registry,
-                searchIndex: try SQLiteSearchIndex(
-                    databaseURL: baseURL.appendingPathComponent("moves.sqlite3"),
-                    identityStore: store
-                ),
+                searchIndex: index,
+                scanner: WorkspaceScanner(fileManager: fileManager, identityStore: store),
+                eventReconciler: { event, _ in reconciledEvents.append(event.kind) },
                 watcherFactory: { _ in IdleWorkspaceEventSource() }
             )
             try await coordinator.synchronize(policy: .default)
+            let unrelatedSnapshot = try XCTUnwrap(coordinator.treeSnapshots[unrelated.id])
+            fileManager.disappearsDuringNextScan = true
             let sourceLocator = try source.locator(for: noteURL)
             let outcome = try await DocumentMover(
                 recoveryStore: RecoveryStore(
@@ -1650,6 +1738,17 @@ final class WorkspaceIndexTests: XCTestCase {
             )
             XCTAssertEqual(result.results.first?.documentID, document.id)
             XCTAssertTrue(try coordinator.open(try XCTUnwrap(result.results.first)) === document)
+            XCTAssertTrue(reconciledEvents.isEmpty)
+            XCTAssertEqual(coordinator.treeSnapshots[unrelated.id], unrelatedSnapshot)
+            XCTAssertTrue(fileManager.disappearsDuringNextScan)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedURL.path))
+            XCTAssertNil(coordinator.failures[unrelated.id])
+            let rebuilds = await index.rebuildCount
+            let batches = await index.appliedBatches
+            XCTAssertEqual(rebuilds, 1, "A committed move must apply events, not rebuild")
+            XCTAssertEqual(batches.count, 1)
+            XCTAssertEqual(batches.first?.map(\.kind), [.deleted, .created])
+            XCTAssertEqual(batches.first?.map(\.workspaceID), [sourceDescriptor.id, destinationDescriptor.id])
         }
     }
 
@@ -2245,6 +2344,34 @@ private final class ManualWorkspaceEventSource: WorkspaceEventSource, @unchecked
 
     func send(_ event: WorkspaceEvent) {
         continuation.yield(event)
+    }
+}
+
+/// Counts coordinator operations while retaining the real index's assertions
+/// about searchable contents and canonical document identities.
+private actor RecordingSearchIndex: SearchIndexing {
+    private let wrapped: any SearchIndexing
+    private(set) var rebuildCount = 0
+    private(set) var appliedBatches: [[WorkspaceEvent]] = []
+
+    init(wrapping wrapped: any SearchIndexing) { self.wrapped = wrapped }
+
+    func rebuild(workspaces: [WorkspaceDescriptor], policy: DiscoveryPolicy) async throws {
+        rebuildCount += 1
+        try await wrapped.rebuild(workspaces: workspaces, policy: policy)
+    }
+
+    func apply(_ events: [WorkspaceEvent]) async throws {
+        appliedBatches.append(events)
+        try await wrapped.apply(events)
+    }
+
+    func quickOpen(_ query: WorkspaceSearchQuery) async -> AsyncThrowingStream<SearchBatch, Error> {
+        await wrapped.quickOpen(query)
+    }
+
+    func search(_ query: WorkspaceSearchQuery) async -> AsyncThrowingStream<SearchBatch, Error> {
+        await wrapped.search(query)
     }
 }
 

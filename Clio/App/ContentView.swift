@@ -11,6 +11,10 @@ private func markAsClioEditorWindow(_ window: NSWindow, sessionID: UUID) {
         sessionID as NSUUID,
         .OBJC_ASSOCIATION_RETAIN_NONATOMIC
     )
+    if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] == "1" {
+        // Stable across front-to-back ordering changes and fullscreen Spaces.
+        window.setAccessibilityIdentifier("diagnostics.editor-window.\(sessionID.uuidString)")
+    }
 }
 
 func clioEditorSessionID(for window: NSWindow) -> UUID? {
@@ -90,6 +94,17 @@ struct ContentView: View {
                 editorSession: windowSession.activeTab
             )
         )
+        .overlay(alignment: .bottomTrailing) {
+            if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] == "1" {
+                // New windows start windowed; the notifications below update
+                // this only when AppKit has completed a fullscreen transition,
+                // not when its shortcut is sent. Never present in normal use.
+                Text(windowSession.isFullScreenEnabled ? "fullscreen" : "windowed")
+                    .font(.system(size: 8))
+                    .accessibilityIdentifier("diagnostics.window.fullscreen")
+                    .allowsHitTesting(false)
+            }
+        }
         .transaction { $0.animation = nil }
         .onChange(of: reduceMotion, initial: true) { _, _ in updateMotionPreferences() }
         .onChange(of: reduceTransparency) { _, _ in updateMotionPreferences() }

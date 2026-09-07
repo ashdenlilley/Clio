@@ -152,6 +152,39 @@ final class MarkdownEditingTests: XCTestCase {
         XCTAssertEqual(textView.string, "draft")
     }
 
+    @MainActor
+    func testLiteralReplacementBypassesMarkersAndSlashButPreservesNativeUndo() {
+        for replacement in ["*", "_", "~", "`", "/"] {
+            let textView = EditorTextView.makeTextKit2TextView()
+            textView.applyEditorConfiguration(EditorConfiguration())
+            textView.string = "draft target"
+            let surface = EditorContainerView(textView: textView)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = surface
+            var edits: [MarkdownTextEdit] = []
+            let coordinator = EditorCoordinator(configuration: EditorConfiguration(),
+                onTextEdit: { edits.append($0) },
+                onSlashCommand: { _ in XCTFail("Literal slash must not open a palette") })
+            coordinator.attach(to: surface)
+            textView.setSelectedRange(NSRange(location: 0, length: 5))
+
+            textView.replaceCharactersLiterally(in: NSRange(location: 6, length: 6), with: replacement)
+
+            XCTAssertEqual(textView.string, "draft " + replacement, replacement)
+            XCTAssertEqual(edits.count, 1, "Literal changes must reach the canonical edit delegate")
+            XCTAssertEqual(edits.first?.replacedRange, UTF16Range(location: 6, length: 6))
+            XCTAssertEqual(edits.first?.replacement, replacement)
+            XCTAssertFalse(textView.isApplyingLiteralReplacement)
+            XCTAssertTrue(textView.undoManager?.canUndo == true)
+            textView.undoManager?.undo()
+            XCTAssertEqual(textView.string, "draft target", replacement)
+            textView.undoManager?.redo()
+            XCTAssertEqual(textView.string, "draft " + replacement, replacement)
+            withExtendedLifetime(coordinator) {}
+        }
+    }
+
     private func apply(_ edit: MarkdownEditTransaction, to source: String) -> String {
         let value = NSMutableString(string: source)
         value.replaceCharacters(in: edit.replacementRange.nsRange, with: edit.replacement)

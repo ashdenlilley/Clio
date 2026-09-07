@@ -175,6 +175,23 @@ final class AppState: ClioCommandDispatching {
         await workspaceIndexCoordinator.search(WorkspaceSearchQuery(text: text, workspaceFilter: workspaceID, includesIgnored: false, limit: 500))
     }
 
+    /// A filesystem mutation has already committed. Failure to update derived
+    /// navigation data must not turn it into an apparently failed/retryable write.
+    func recordMCPCommittedEvents(_ events: [WorkspaceEvent]) async -> Bool {
+        do {
+            try await workspaceIndexCoordinator.recordCommittedEvents(events)
+            return true
+        } catch { return false } // Watcher reconciliation can retry the affected paths.
+    }
+
+    func recordMCPCommittedMove(documentID: DocumentID, from source: DocumentLocator,
+                                to destination: DocumentLocator) async -> Bool {
+        do {
+            try await workspaceIndexCoordinator.recordCommittedMove(documentID: documentID, from: source, to: destination)
+            return true
+        } catch { return false }
+    }
+
     @ObservationIgnored
     private let workspaceIndexCoordinator: WorkspaceIndexCoordinator
 

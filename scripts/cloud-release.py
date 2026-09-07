@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from xml.parsers.expat import ExpatError
 
 ROOT = Path(__file__).resolve().parent.parent
 TEAM = os.environ.get("DEVELOPER_TEAM_ID", "")
@@ -196,7 +197,35 @@ def verify_app(app, version):
     require(entitlements.get("com.apple.security.files.user-selected.read-write") is True,
             "user-selected file access missing")
     require(not entitlements.get("com.apple.security.get-task-allow"), "debug entitlement in release")
+    verify_mcp_bridge(app)
     return info
+
+
+def verify_mcp_bridge(app):
+    bridge = app/"Contents/Helpers/ClioMCPBridge"
+    require(bridge.is_file() and not bridge.is_symlink(), "MCP bridge missing from release")
+    require(set(run("/usr/bin/lipo", "-archs", bridge).decode().split()) == {"arm64", "x86_64"},
+            "MCP bridge must be universal arm64/x86_64")
+    # Inspect each slice, not only the build host architecture. A valid code
+    # signature alone does not guarantee that sandbox startup can find an ID.
+    for architecture in ("arm64", "x86_64"):
+        data = run("/usr/bin/xcrun", "otool", "-arch", architecture, "-X", "-P", bridge)
+        try:
+            info = plistlib.loads(data.strip())
+        except (ValueError, ExpatError):
+            raise RuntimeError(f"MCP bridge {architecture} embedded Info.plist missing or invalid") from None
+        require(isinstance(info, dict) and info.get("CFBundleIdentifier") == "olympus.clio.mac.mcp-bridge"
+                and info.get("CFBundleName") == "ClioMCPBridge"
+                and info.get("CFBundleExecutable") == "ClioMCPBridge",
+                f"MCP bridge {architecture} embedded bundle metadata is incorrect")
+    run("/usr/bin/codesign", "--verify", "--strict", bridge)
+    entitlements = plistlib.loads(run("/usr/bin/codesign", "-d", "--entitlements", ":-", bridge))
+    require(entitlements.get("com.apple.security.app-sandbox") is True,
+            "MCP bridge App Sandbox missing")
+    require(entitlements.get("com.apple.security.network.client") is True,
+            "MCP bridge outgoing network access missing")
+    require(not entitlements.get("com.apple.security.get-task-allow"),
+            "MCP bridge debug entitlement in release")
 
 
 def notarize(path, key, output):

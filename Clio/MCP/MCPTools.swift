@@ -14,6 +14,7 @@ final class MCPTools {
     var openEditor: (() -> Void)?
     var clientName: ((UUID) -> String)?
     private let approvals = MCPDeletionApprovals()
+    private let liveSearch = SQLiteLiveBufferMatcher()
 
     init(app: AppState, access: MCPAccessController) {
         self.app = app; self.access = access
@@ -84,6 +85,7 @@ final class MCPTools {
             let query = name == "search_documents" ? try string(a, "query") : ""
             guard query.utf8.count <= 256 else { throw MCPAccessError.invalidRequest }
             var matches: [DocumentID: [String: Any]] = [:]
+            var liveSnapshots: [DocumentID: (revision: MCPRevision, relativePath: String)] = [:]
             var capped = false
             let files = app.workspaceTrees[workspaceID]?.files.filter { $0.exclusionReason == nil } ?? []
             if name == "search_documents" {
@@ -109,13 +111,50 @@ final class MCPTools {
                 + app.mcpSessions.filter { $0.workspaceID == workspaceID }.compactMap { $0.document?.id })
             for id in openIDs {
                 try Task.checkCancellation()
-                let document = try await resolve(id, workspace: workspace, grant: grant)
-                try await app.documentRegistry.withSettledEditorEdits(for: id) {
+                do {
+                    let document = try await resolve(id, workspace: workspace, grant: grant)
+                    let snapshot = try await app.documentRegistry.withSettledEditorEdits(for: id) {
+                        try access.validate(grant, workspaceID: workspaceID)
+                        try validateDiscoveryDocument(document, workspace: workspace)
+                        return (document.text, reader.revision(for: document),
+                                try document.fileURL.map { try workspace.relativePath(for: $0) } ?? document.filename)
+                    }
+                    let matched = name == "list_documents" ? true : try await liveSearch.matches(
+                        text: snapshot.0, relativePath: snapshot.2, query: query)
                     try access.validate(grant, workspaceID: workspaceID)
-                    if name == "list_documents" || document.text.localizedCaseInsensitiveContains(query) {
-                        matches[id] = metadata(document, workspaceID: workspaceID)
-                    } else { matches.removeValue(forKey: id) }
+                    try validateDiscoveryDocument(document, workspace: workspace)
+                    guard reader.revision(for: document) == snapshot.1,
+                          try discoveryRelativePath(document, workspace: workspace) == snapshot.2 else {
+                        throw MCPAccessError.staleRevision
+                    }
+                    liveSnapshots[id] = (snapshot.1, snapshot.2)
+                    if matched { matches[id] = metadata(document, workspaceID: workspaceID) }
+                    else { matches.removeValue(forKey: id) }
+                } catch MCPAccessError.oversizedRequest {
+                    // Metadata-only listing; never return a stale indexed search
+                    // match for a live buffer whose contents we cannot examine.
+                    if name == "search_documents" { matches.removeValue(forKey: id) }
+                } catch MCPAccessError.outsideWorkspace {
+                    matches.removeValue(forKey: id)
                 }
+            }
+            try access.validate(grant, workspaceID: workspaceID)
+            // Earlier matches may have moved while a later buffer was searched.
+            // Recheck all live results together at the non-suspending return edge.
+            for id in Set(matches.keys).union(liveSnapshots.keys) {
+                guard let document = app.documentRegistry.document(withID: id) else { continue }
+                do {
+                    try validateDiscoveryDocument(document, workspace: workspace)
+                    if name == "search_documents", let snapshot = liveSnapshots[id] {
+                        guard reader.revision(for: document) == snapshot.revision,
+                              try discoveryRelativePath(document, workspace: workspace) == snapshot.relativePath else {
+                            throw MCPAccessError.staleRevision
+                        }
+                    }
+                }
+                catch MCPAccessError.oversizedRequest {
+                    if name == "search_documents" { matches.removeValue(forKey: id) }
+                } catch MCPAccessError.outsideWorkspace { matches.removeValue(forKey: id) }
             }
             let ids = matches.keys.sorted { $0.rawValue.uuidString < $1.rawValue.uuidString }
             guard offset <= ids.count else { throw MCPAccessError.invalidRange }
@@ -135,8 +174,10 @@ final class MCPTools {
             document.replaceTextFromEditor(with: text)
             _ = try workspace.save(document, allowingEmptyCreation: true)
             app.documentRegistry.register(document, in: workspace)
-            app.refreshWorkspaceDiscovery()
-            return metadata(document, workspaceID: workspaceID)
+            let indexed = await app.recordMCPCommittedEvents([
+                WorkspaceEvent(workspaceID: workspaceID, kind: .created, fileURL: document.fileURL, origin: .clio)
+            ])
+            return metadata(document, workspaceID: workspaceID).merging(["indexUpdatePending": !indexed]) { _, new in new }
         }
         let documentID = DocumentID(rawValue: try uuid(a, "documentID"))
         let document = try await resolve(documentID, workspace: workspace, grant: grant)
@@ -144,16 +185,19 @@ final class MCPTools {
             let expected = try optionalRevision(a)
             let page = try await reader.read(documentID: documentID, workspace: workspace, grant: grant,
                 offset: number(a, "offset", fallback: 0), limit: number(a, "limit", fallback: 16_384),
-                expectedRevision: expected, authorizedUntitled: isOwnedUntitled(document, workspaceID: workspaceID))
+                expectedRevision: expected, authorizedUntitled: { self.isOwnedUntitled($0, workspaceID: workspaceID) })
             return ["text": page.text, "revision": encodeRevision(page.revision), "utf16Offset": page.utf16Offset,
                     "nextUTF16Offset": page.nextUTF16Offset.map { $0 as Any } ?? NSNull(), "saveState": page.saveState]
         }
         if name == "open_document" || name == "select_text" || name == "edit_document" {
             let tab = try await editor(for: document, workspace: workspace, grant: grant)
             try await app.documentRegistry.withSettledEditorEdits(for: documentID) {
-                try access.validate(grant, workspaceID: workspaceID)
+                // Both editor discovery and settlement suspend. A move can
+                // change ownership without advancing the text revision.
+                try validateMCPFinalEditorAuthority(document, workspace: workspace,
+                    sessionWorkspaceID: tab.workspaceID, grant: grant)
                 if name != "open_document" { try checkRevision(a, document: document) }
-                guard tab.document === document, let view = tab.mcpTextView, view.window != nil,
+                guard tab.document === document, let view = tab.mcpTextView as? EditorTextView, view.window != nil,
                       view.string == document.text, !view.hasMarkedText() else {
                     throw MCPToolFailure(code: "editor_busy_retry")
                 }
@@ -166,7 +210,8 @@ final class MCPTools {
                         guard document.conflict == nil, document.utf8ByteCount <= Document.maximumSynchronousByteCount else {
                             throw MCPToolFailure(code: "document_conflicted_or_too_large")
                         }
-                        view.insertText(replacement.text, replacementRange: NSRange(location: location, length: length))
+                        view.replaceCharactersLiterally(in: NSRange(location: location, length: length),
+                                                        with: replacement.text)
                         guard view.string == candidate else { throw MCPToolFailure(code: "editor_rejected_change") }
                         view.undoManager?.setActionName("MCP Edit")
                     } else { view.setSelectedRange(NSRange(location: location, length: length)) }
@@ -187,15 +232,18 @@ final class MCPTools {
             _ = try await editor(for: document, workspace: workspace, grant: grant)
             try await confirmTrash(name: file.lastPathComponent, path: file.path, client: clientName?(grant.id) ?? "MCP client")
             let approval = try approvals.recordNativeConfirmation(client: grant.id, revision: approvedRevision)
-            return try await app.documentRegistry.withSettledEditorEdits(for: documentID) {
+            try await app.documentRegistry.withSettledEditorEdits(for: documentID) {
                 try Task.checkCancellation()
                 try access.validate(grant, workspaceID: workspaceID)
+                guard document.fileURL == file else { throw MCPAccessError.outsideWorkspace }
                 try MCPWorkspaceBoundary.validate(file, beneath: workspace.rootURL)
                 try approvals.consume(approval, client: grant.id, revision: reader.revision(for: document))
                 _ = try app.documentMover.moveToTrash(document, workspace: workspace, registry: app.documentRegistry)
-                app.refreshWorkspaceDiscovery()
-                return ["trashed": true, "recovery": "macOS Trash"]
             }
+            let indexed = await app.recordMCPCommittedEvents([
+                WorkspaceEvent(workspaceID: workspaceID, kind: .deleted, fileURL: file, origin: .clio)
+            ])
+            return ["trashed": true, "recovery": "macOS Trash", "indexUpdatePending": !indexed]
         }
         let destinationID = WorkspaceID(rawValue: try uuid(a, "destinationWorkspaceID"))
         try access.validate(grant, workspaceID: destinationID)
@@ -207,6 +255,7 @@ final class MCPTools {
             }
             let parent = a["parentRelativePath"] as? String ?? ""
             if !parent.isEmpty { _ = try DocumentLocator(workspaceID: destinationID, relativePath: parent) }
+            let sourceLocator = try workspace.locator(for: document.fileURL!)
             let result = try await app.documentMover.move(document, from: workspace, to: destination,
                 parentRelativePath: parent, preferredFilename: destinationName, registry: app.documentRegistry,
                 validateAuthority: {
@@ -216,9 +265,9 @@ final class MCPTools {
                     try self.checkRevision(a, document: document)
                 })
             switch result {
-            case .completed, .completedWithRecovery:
-                app.refreshWorkspaceDiscovery()
-                return metadata(document, workspaceID: destinationID)
+            case .completed(let target), .completedWithRecovery(let target, _):
+                let indexed = await app.recordMCPCommittedMove(documentID: documentID, from: sourceLocator, to: target)
+                return metadata(document, workspaceID: destinationID).merging(["indexUpdatePending": !indexed]) { _, new in new }
             case .collision: throw MCPToolFailure(code: "destination_exists")
             case .cancelled: throw MCPToolFailure(code: "move_cancelled")
             }
@@ -249,6 +298,24 @@ final class MCPTools {
         throw MCPToolFailure(code: "unknown_tool")
     }
 
+    /// Must run in the non-suspending editor transaction, never before its await.
+    func validateMCPFinalEditorAuthority(_ document: Document, workspace: Workspace,
+                                       sessionWorkspaceID: WorkspaceID?, grant: MCPClientGrant) throws {
+        try Task.checkCancellation()
+        try access.validate(grant, workspaceID: workspace.id)
+        guard app.workspace(for: workspace.id) === workspace,
+              sessionWorkspaceID == workspace.id,
+              app.documentRegistry.document(withID: document.id) === document else {
+            throw MCPAccessError.outsideWorkspace
+        }
+        if let file = document.fileURL {
+            try MCPWorkspaceBoundary.validate(file, beneath: workspace.rootURL)
+            _ = try workspace.locator(for: file)
+        } else if !isOwnedUntitled(document, workspaceID: workspace.id) {
+            throw MCPAccessError.outsideWorkspace
+        }
+    }
+
     private func resolve(_ id: DocumentID, workspace: Workspace, grant: MCPClientGrant) async throws -> Document {
         try access.validate(grant, workspaceID: workspace.id)
         let document: Document
@@ -260,9 +327,7 @@ final class MCPTools {
         }
         try Task.checkCancellation()
         try access.validate(grant, workspaceID: workspace.id)
-        guard document.utf8ByteCount <= 1_048_576 else { throw MCPAccessError.oversizedRequest }
-        if let url = document.fileURL { try MCPWorkspaceBoundary.validate(url, beneath: workspace.rootURL) }
-        else if !isOwnedUntitled(document, workspaceID: workspace.id) { throw MCPAccessError.outsideWorkspace }
+        try validateDiscoveryDocument(document, workspace: workspace)
         return document
     }
 
@@ -270,23 +335,46 @@ final class MCPTools {
         doc.previousLocator == nil && app.mcpSessions.contains { $0.document === doc && $0.workspaceID == workspaceID }
     }
 
+    private func validateDiscoveryDocument(_ document: Document, workspace: Workspace) throws {
+        guard app.workspace(for: workspace.id) === workspace,
+              app.documentRegistry.document(withID: document.id) === document else {
+            throw MCPAccessError.outsideWorkspace
+        }
+        if let url = document.fileURL {
+            try MCPWorkspaceBoundary.validate(url, beneath: workspace.rootURL)
+        } else if !isOwnedUntitled(document, workspaceID: workspace.id) {
+            throw MCPAccessError.outsideWorkspace
+        }
+        guard document.utf8ByteCount <= 1_048_576 else { throw MCPAccessError.oversizedRequest }
+    }
+
+    private func discoveryRelativePath(_ document: Document, workspace: Workspace) throws -> String {
+        try document.fileURL.map { try workspace.relativePath(for: $0) } ?? document.filename
+    }
+
     private func editor(for doc: Document, workspace: Workspace, grant: MCPClientGrant) async throws -> EditorSession {
         openEditor?()
         for _ in 0..<40 {
             try Task.checkCancellation()
             try access.validate(grant, workspaceID: workspace.id)
-            if let window = app.mcpWindows.first {
+            try validateDiscoveryDocument(doc, workspace: workspace)
+            if let window = owningWindow(for: doc) {
                 if let tab = window.tabs.first(where: { $0.document === doc }) {
                     window.select(tabID: tab.id)
+                    app.focusWindow(window.id)
                     if tab.mcpTextView?.window != nil { return tab }
-                } else if let file = doc.fileURL {
-                    _ = try await app.openWorkspaceFileNow(documentID: doc.id, workspaceID: workspace.id,
-                        relativePath: workspace.relativePath(for: file), from: window)
                 }
+            } else if let window = app.mcpWindows.first, let file = doc.fileURL {
+                _ = try await app.openWorkspaceFileNow(documentID: doc.id, workspaceID: workspace.id,
+                    relativePath: workspace.relativePath(for: file), from: window)
             }
             try await Task.sleep(for: .milliseconds(100))
         }
         throw MCPToolFailure(code: "editor_unavailable")
+    }
+
+    func owningWindow(for document: Document) -> EditorWindowSession? {
+        app.mcpWindows.first { $0.tabs.contains { $0.document === document } }
     }
 
     private func confirmTrash(name: String, path: String, client: String) async throws {

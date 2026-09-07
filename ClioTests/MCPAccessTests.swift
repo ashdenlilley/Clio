@@ -153,6 +153,49 @@ final class MCPAccessTests: XCTestCase {
         } catch { XCTAssertEqual(error as? MCPAccessError, .disabled) }
     }
 
+    func testFinalEditorAuthorityRejectsMoveWithoutTextRevisionChange() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let approved = root.appendingPathComponent("approved", isDirectory: true)
+        let other = root.appendingPathComponent("other", isDirectory: true)
+        try FileManager.default.createDirectory(at: approved, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let file = approved.appendingPathComponent("draft.md")
+        try Data("unchanged".utf8).write(to: file)
+        let workspace = try Workspace(rootURL: approved, accessSecurityScopedResource: false,
+                                      recoverWorkspaceTransactions: false)
+        let app = isolatedAppState(initialWorkspace: workspace)
+        let document = try app.documentRegistry.open(file, in: workspace)
+        let access = MCPAccessController(), token = Data(repeating: 9, count: 32)
+        _ = try access.authorizeClient(name: "Editor authority", token: token, workspaces: [workspace.id])
+        access.setEnabled(true)
+        let grant = try access.authenticate(token: token)
+        let tools = MCPTools(app: app, access: access)
+        let revision = tools.reader.revision(for: document)
+        try tools.validateMCPFinalEditorAuthority(document, workspace: workspace,
+            sessionWorkspaceID: workspace.id, grant: grant)
+
+        // Model a move while editor discovery or editor settlement is suspended.
+        await Task.yield()
+        document.didMove(to: other.appendingPathComponent("draft.md"), revision: nil)
+        XCTAssertEqual(tools.reader.revision(for: document), revision)
+        XCTAssertThrowsError(try tools.validateMCPFinalEditorAuthority(document, workspace: workspace,
+            sessionWorkspaceID: workspace.id, grant: grant)) {
+            XCTAssertEqual($0 as? MCPAccessError, .outsideWorkspace)
+        }
+        document.didMove(to: file, revision: nil)
+        XCTAssertThrowsError(try tools.validateMCPFinalEditorAuthority(document, workspace: workspace,
+            sessionWorkspaceID: WorkspaceID(), grant: grant))
+        let replacementWorkspace = try Workspace(id: workspace.id, rootURL: other,
+            accessSecurityScopedResource: false, recoverWorkspaceTransactions: false)
+        XCTAssertThrowsError(try tools.validateMCPFinalEditorAuthority(document, workspace: replacementWorkspace,
+            sessionWorkspaceID: workspace.id, grant: grant))
+        access.setEnabled(false)
+        XCTAssertThrowsError(try tools.validateMCPFinalEditorAuthority(document, workspace: workspace,
+            sessionWorkspaceID: workspace.id, grant: grant))
+        XCTAssertEqual(document.text, "unchanged")
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Clio-MCP-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

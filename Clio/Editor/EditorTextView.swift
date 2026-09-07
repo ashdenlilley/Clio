@@ -30,6 +30,7 @@ final class EditorTextView: NSTextView {
     private var retainedTextKitStack: AnyObject?
     private let blockCaret = CALayer()
     private var isProcessingKeyEvent = false
+    private(set) var isApplyingLiteralReplacement = false
     var managesTypingScroll = false
 
     static func makeTextKit2TextView() -> EditorTextView {
@@ -75,6 +76,17 @@ final class EditorTextView: NSTextView {
             return
         }
         super.insertText(insertString, replacementRange: replacementRange)
+    }
+
+    /// Programmatic edits are literal, not interactive Markdown commands.
+    /// Keep AppKit's delegate notifications and undo registration intact.
+    func replaceCharactersLiterally(in range: NSRange, with replacement: String) {
+        let wasApplyingLiteralReplacement = isApplyingLiteralReplacement
+        isApplyingLiteralReplacement = true
+        defer { isApplyingLiteralReplacement = wasApplyingLiteralReplacement }
+        breakUndoCoalescing()
+        super.insertText(replacement, replacementRange: range)
+        breakUndoCoalescing()
     }
 
     override func paste(_ sender: Any?) {

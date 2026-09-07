@@ -99,6 +99,12 @@ targets:
       base:
         PRODUCT_NAME: ClioMCPBridge
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac.mcp-bridge
+        # A sandboxed single-file executable needs bundle metadata in its Mach-O
+        # __TEXT,__info_plist section before sandbox initialization can run.
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        INFOPLIST_FILE: ClioMCPBridge/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_OUTPUT_FORMAT: xml
         SKIP_INSTALL: YES
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

@@ -263,7 +263,10 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         replacementString: String?
     ) -> Bool {
         let replacement = replacementString ?? ""
-        if onSlashCommand != nil, !isRestoringLiteralSlash, Self.isInlineSlashTrigger(
+        if onSlashCommand != nil, !isRestoringLiteralSlash,
+           (textView as? EditorTextView)?.isApplyingLiteralReplacement != true,
+           textView.undoManager?.isUndoing != true, textView.undoManager?.isRedoing != true,
+           Self.isInlineSlashTrigger(
             in: textView.string,
             range: affectedCharRange,
             replacement: replacement,

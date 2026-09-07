@@ -112,6 +112,144 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertTrue(app.mcpService.clients.isEmpty)
     }
 
+    func testLiveSearchUsesIndexTokenPrefixesAndUnicodeSemantics() async throws {
+        let matcher = SQLiteLiveBufferMatcher()
+        let cases: [(String, String, Bool)] = [
+            ("alpha ... beta", "alpha beta", true),
+            ("alphabet betatron", "alp bet", true),
+            ("alphabet only", "alpha beta", false),
+            ("CAFÉ résumé", "cafe resu", true),
+            ("alpha_beta", "alpha_beta", true),
+            ("xalpha beta", "alpha", false),
+            ("日本語 alpha", "日本 alpha", true)
+        ]
+        for (text, query, expected) in cases {
+            let actual = try await matcher.matches(text: text, relativePath: "sample.md", query: query)
+            XCTAssertEqual(actual, expected, "query: \(query)")
+        }
+        let filenameFallback = try await matcher.matches(text: "", relativePath: "sample.md", query: "")
+        XCTAssertTrue(filenameFallback)
+        let filenameOnly = try await matcher.matches(text: "unrelated", relativePath: "alpha.md", query: "alp")
+        XCTAssertTrue(filenameOnly)
+        let splitFields = try await matcher.matches(text: "beta", relativePath: "alpha.md", query: "alpha beta")
+        XCTAssertTrue(splitFields)
+        let noRetainedText = try await matcher.matches(text: "unrelated", relativePath: "other.md", query: "alpha")
+        XCTAssertFalse(noRetainedText, "One live buffer must not leak matches into another")
+    }
+
+    func testDiscoverySkipsDetachedAndOversizedBuffersWithoutLosingOtherResults() async throws {
+        let root = try mcpTemporaryDirectory()
+        let catalog = try mcpCatalog(root: root)
+        let workspace = try XCTUnwrap(catalog.workspaces.first)
+        for name in ["small.md", "large.md", "detached.md"] {
+            try Data("alpha ... beta".utf8).write(to: root.appendingPathComponent(name))
+        }
+        let app = isolatedAppState(workspaceCatalog: catalog), access = MCPAccessController()
+        try await waitForDiscovery(app)
+        let token = Data(repeating: 11, count: 32)
+        let clientID = try access.authorizeClient(name: "Discovery", token: token, workspaces: [workspace.id])
+        access.setEnabled(true)
+        let grant = try access.authenticate(token: token), tools = MCPTools(app: app, access: access)
+        let searchArguments: [String: Any] = ["workspaceID": workspace.id.rawValue.uuidString, "query": "alpha beta"]
+        let before = try await tools.call("search_documents", arguments: searchArguments, grant: grant)
+        XCTAssertEqual((before["documents"] as? [[String: Any]])?.count, 3)
+        let small = try app.documentRegistry.open(root.appendingPathComponent("small.md"), in: workspace)
+        let large = try app.documentRegistry.open(root.appendingPathComponent("large.md"), in: workspace)
+        let detached = try app.documentRegistry.open(root.appendingPathComponent("detached.md"), in: workspace)
+        large.replaceText(with: String(repeating: "x", count: 1_048_577))
+        detached.markUnbacked(previous: try workspace.locator(for: root.appendingPathComponent("detached.md")))
+        let search = try await tools.call("search_documents", arguments: searchArguments, grant: grant)
+        let documents = try XCTUnwrap(search["documents"] as? [[String: Any]])
+        XCTAssertEqual(documents.compactMap { $0["documentID"] as? String }, [small.id.rawValue.uuidString])
+        let list = try await tools.call("list_documents", arguments: ["workspaceID": workspace.id.rawValue.uuidString], grant: grant)
+        let listed = try XCTUnwrap(list["documents"] as? [[String: Any]])
+        XCTAssertEqual(Set(listed.compactMap { $0["documentID"] as? String }),
+                       Set([small.id.rawValue.uuidString, large.id.rawValue.uuidString]))
+        access.revoke(clientID)
+        do {
+            _ = try await tools.call("list_documents", arguments: ["workspaceID": workspace.id.rawValue.uuidString], grant: grant)
+            XCTFail("Discovery must propagate revocation")
+        } catch let error as MCPAccessError { XCTAssertEqual(error, .unauthorized) }
+    }
+
+    func testUntitledEditorLookupFindsSecondWindow() throws {
+        let workspace = try Workspace(rootURL: mcpTemporaryDirectory(), accessSecurityScopedResource: false,
+                                      recoverWorkspaceTransactions: false)
+        let app = isolatedAppState(initialWorkspace: workspace)
+        let first = EditorWindowSession(request: .newDocument()), second = EditorWindowSession(request: .newDocument())
+        first.connect(to: app); second.connect(to: app)
+        let document = try XCTUnwrap(second.activeTab?.document)
+        XCTAssertNil(document.fileURL)
+        let tools = MCPTools(app: app, access: MCPAccessController())
+        XCTAssertTrue(tools.owningWindow(for: document) === second)
+        XCTAssertFalse(tools.owningWindow(for: document) === first)
+    }
+
+    func testRevisionLookupAmortizesCleanupWithoutChangingTokens() throws {
+        let app = isolatedAppState(), access = MCPAccessController()
+        let reader = MCPDocumentAccess(access: access, registry: app.documentRegistry)
+        let documents = (0..<5_000).map { Document(text: "\($0)") }
+        let tokens = documents.map { reader.revision(for: $0) }
+        let scans = reader.incarnationCleanupCount
+        for (document, token) in zip(documents, tokens) { XCTAssertEqual(reader.revision(for: document), token) }
+        XCTAssertEqual(reader.incarnationCleanupCount, scans, "Reads must never scan the incarnation table")
+        XCTAssertLessThan(scans, 20, "Cleanup must be amortized across insertions")
+        for _ in 0..<10_000 { _ = reader.revision(for: Document(text: "temporary")) }
+        XCTAssertGreaterThan(reader.incarnationCleanupCount, scans, "Cleanup must not starve as the table grows")
+        XCTAssertEqual(reader.revision(for: documents[0]), tokens[0])
+    }
+
+    func testMCPCreateUsesIncrementalIndexUpdatesNotRebuilds() async throws {
+        let catalog = try mcpCatalog(root: mcpTemporaryDirectory())
+        let workspace = try XCTUnwrap(catalog.workspaces.first)
+        let index = MCPIndexUpdateSpy()
+        let app = isolatedAppState(workspaceCatalog: catalog, searchIndex: index)
+        try await waitForDiscovery(app)
+        let baseline = await index.rebuildCount
+        let access = MCPAccessController(), token = Data(repeating: 12, count: 32)
+        _ = try access.authorizeClient(name: "Create", token: token, workspaces: [workspace.id])
+        access.setEnabled(true)
+        let grant = try access.authenticate(token: token), tools = MCPTools(app: app, access: access)
+        for name in ["one.md", "two.md"] {
+            _ = try await tools.call("create_document", arguments: ["workspaceID": workspace.id.rawValue.uuidString,
+                "filename": name, "text": "small", "mutationID": UUID().uuidString], grant: grant)
+        }
+        let rebuilds = await index.rebuildCount, events = await index.events
+        XCTAssertEqual(rebuilds, baseline)
+        XCTAssertTrue(events.contains { $0.kind == .created && $0.fileURL?.lastPathComponent == "one.md" })
+        XCTAssertTrue(events.contains { $0.kind == .created && $0.fileURL?.lastPathComponent == "two.md" })
+    }
+
+    private func mcpTemporaryDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ClioMCPReview-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    private func mcpCatalog(root: URL) throws -> WorkspaceCatalog {
+        let suite = "ClioMCPReview.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let catalog = WorkspaceCatalog(defaults: defaults,
+            bookmarkMaker: { Data($0.path.utf8) },
+            bookmarkResolver: { Workspace.BookmarkResolution(url: URL(fileURLWithPath: String(decoding: $0, as: UTF8.self)), isStale: false) },
+            crashRecoveryJournal: CrashRecoveryJournal(rootURL: root.appendingPathComponent(".test-journal")),
+            workspaceFactory: { try Workspace(id: $0, rootURL: $1, accessSecurityScopedResource: false,
+                crashRecoveryJournal: $2, recoverWorkspaceTransactions: false) })
+        try catalog.addAuthorizedFolder(root)
+        return catalog
+    }
+
+    private func waitForDiscovery(_ app: AppState) async throws {
+        for _ in 0..<200 {
+            if !app.isRefreshingWorkspaces { return }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTFail("Initial workspace discovery did not finish")
+        throw CancellationError()
+    }
+
     private func request(method: String, id: Int? = nil, token: Data, session: String? = nil,
                          params: [String: Any] = [:]) -> MCPHTTPRequest {
         var object: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
@@ -128,5 +266,18 @@ final class MCPProtocolTests: XCTestCase {
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         let text = try XCTUnwrap(content.first?["text"] as? String)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+}
+
+private actor MCPIndexUpdateSpy: SearchIndexing {
+    private(set) var rebuildCount = 0
+    private(set) var events: [WorkspaceEvent] = []
+    func rebuild(workspaces: [WorkspaceDescriptor], policy: DiscoveryPolicy) async throws { rebuildCount += 1 }
+    func apply(_ events: [WorkspaceEvent]) async throws { self.events += events }
+    func quickOpen(_ query: WorkspaceSearchQuery) async -> AsyncThrowingStream<SearchBatch, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func search(_ query: WorkspaceSearchQuery) async -> AsyncThrowingStream<SearchBatch, Error> {
+        AsyncThrowingStream { $0.finish() }
     }
 }
