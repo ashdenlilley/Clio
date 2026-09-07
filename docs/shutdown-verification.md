@@ -8,8 +8,11 @@ it does not need release credentials. The scheme enables Address Sanitizer.
 1. Run `diagnostics/quit-baseline` to characterize the unmodified editor teardown.
 2. Run `fix/quit-lifecycle` with the same Xcode/macOS environment.
 3. Inspect the result bundle, sanitizer output, and app diagnostics. A launch
-   failure, inaccessible diagnostic-report directory, or skipped test is not
-   evidence that quit is fixed. If the baseline does not reproduce, repeat the
+   failure or skipped test is not evidence that quit is fixed. A sandboxed
+   runner may lack access to host crash reports; tests attach that limitation
+   and continue checking quit/persistence. Inspect Cloud crash and sanitizer
+   artifacts separately: a green test in this mode is not proof of no crash.
+   If the baseline does not reproduce, repeat the
    user's exact interaction sequence before drawing conclusions.
 4. Require successful keyboard Quit, menu Quit after the final window closes,
    and fullscreen/multiwindow Quit. The tests reuse isolated storage, quit
