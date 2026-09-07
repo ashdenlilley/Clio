@@ -52,17 +52,17 @@ final class MCPAccessController {
 
     /// UI must approve the named client and exact workspace set before calling.
     /// Persist the random token in Keychain, never in defaults or document files.
-    func authorizeClient(name: String, token: Data, workspaces: Set<WorkspaceID>) throws -> UUID {
+    func authorizeClient(name: String, token: Data, workspaces: Set<WorkspaceID>, id: UUID = UUID()) throws -> UUID {
         guard token.count == 32, !workspaces.isEmpty,
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              name.utf8.count <= 128, clients.count < 32 else {
+              name.utf8.count <= 128, clients.count < 32, clients[id] == nil,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             throw MCPAccessError.invalidRequest
         }
         let digest = Data(SHA256.hash(data: token))
         guard !clients.values.contains(where: { $0.digest == digest }) else {
             throw MCPAccessError.invalidRequest
         }
-        let id = UUID()
         clients[id] = Client(name: name, digest: digest, workspaces: workspaces)
         return id
     }

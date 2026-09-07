@@ -147,6 +147,13 @@ struct SettingsView: View {
                 Toggle("Check spelling", isOn: $appState.isSpellCheckingEnabled)
             }
 
+            Section("Local MCP") {
+                Toggle("Enable local MCP", isOn: Binding(get: { appState.mcpService.enabled }, set: { appState.mcpService.setEnabled($0) }))
+                Toggle("Open at login", isOn: Binding(get: { appState.mcpService.loginEnabled }, set: { appState.mcpService.setLoginEnabled($0) }))
+                Button("Manage clients and folders…") { appState.mcpService.showSettings() }
+                Text(appState.mcpService.status).font(.caption)
+            }
+
             Section("Appearance") {
                 Picker("Accent colour", selection: $appState.accent) {
                     ForEach(AppState.AccentPreset.allCases) { accent in

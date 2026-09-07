@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC0120000000000000000040 = {isa = PBXBuildFile; fileRef = AC0120000000000000000041; };
+		AC0120000000000000000020 = {isa = PBXBuildFile; fileRef = AC0120000000000000000021; };
+		AC0120000000000000000022 = {isa = PBXBuildFile; fileRef = AC0120000000000000000023; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		AC0120000000000000000010 /* MCPHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000011; };
+		AC0120000000000000000012 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000013; };
+		AC0120000000000000000014 /* MCPRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000015; };
+		AC0120000000000000000016 /* ClioMCPService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000017; };
 		AC0120000000000000000001 /* MCPAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000002 /* MCPAccessPolicy.swift */; };
 		AC0120000000000000000003 /* MCPDocumentAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000004 /* MCPDocumentAccess.swift */; };
 		AC0120000000000000000005 /* MCPAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0120000000000000000006 /* MCPAccessTests.swift */; };
@@ -145,6 +152,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		AC0120000000000000000024 = {isa = PBXContainerItemProxy; containerPortal = 16DB908F10D3CBF83AA6133E; proxyType = 1; remoteGlobalIDString = AC0120000000000000000030; remoteInfo = ClioMCPBridge; };
 		2D25565A59F8F0DC6C601A5E /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 16DB908F10D3CBF83AA6133E /* Project object */;
@@ -168,7 +176,18 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		AC0120000000000000000025 /* Embed Helpers */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = Contents/Helpers; dstSubfolderSpec = 1; files = (AC0120000000000000000022, ); name = "Embed Helpers"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		AC0120000000000000000041 /* MCPProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPProtocolTests.swift; sourceTree = "<group>"; };
+		AC0120000000000000000021 /* bridge main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioMCPBridge/main.swift; sourceTree = SOURCE_ROOT; };
+		AC0120000000000000000023 /* ClioMCPBridge */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ClioMCPBridge; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC0120000000000000000011 /* MCPHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPHTTPServer.swift; sourceTree = "<group>"; };
+		AC0120000000000000000013 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
+		AC0120000000000000000015 /* MCPRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPRouter.swift; sourceTree = "<group>"; };
+		AC0120000000000000000017 /* ClioMCPService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioMCPService.swift; sourceTree = "<group>"; };
 		AC0120000000000000000002 /* MCPAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0120000000000000000004 /* MCPDocumentAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDocumentAccess.swift; sourceTree = "<group>"; };
 		AC0120000000000000000006 /* MCPAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPAccessTests.swift; sourceTree = "<group>"; };
@@ -321,6 +340,10 @@
 			isa = PBXGroup;
 			children = (
 				AC0120000000000000000002 /* MCPAccessPolicy.swift */,
+				AC0120000000000000000011 /* MCPHTTPServer.swift */,
+				AC0120000000000000000013 /* MCPTools.swift */,
+				AC0120000000000000000015 /* MCPRouter.swift */,
+				AC0120000000000000000017 /* ClioMCPService.swift */,
 				AC0120000000000000000004 /* MCPDocumentAccess.swift */,
 			);
 			path = MCP;
@@ -376,6 +399,7 @@
 			children = (
 				FB38CDA2EE93F624A724B0B4 /* Clio.app */,
 				92E11143ADCEC8434A5E62A1 /* ClioCrashProbe */,
+				AC0120000000000000000023 /* ClioMCPBridge */,
 				F7BC8CF4558956B63F83A6B6 /* ClioTests.xctest */,
 				79A15EEC927835FFA50A60E8 /* ClioUITests.xctest */,
 			);
@@ -551,6 +575,7 @@
 			isa = PBXGroup;
 			children = (
 				6D7D78B28D5E604A4EE21EE9 /* Clio */,
+				AC0120000000000000000021 /* bridge main.swift */,
 				8C5289083AD49075AB0D85F8 /* ClioCrashProbe */,
 				C00578F4C5669CE45B6F6B5B /* ClioTests */,
 				22E10C0F39172D7A2A994AD8 /* ClioUITests */,
@@ -565,6 +590,7 @@
 				5951908261381D4FC7B083A2 /* Fixtures */,
 				2F710F7CDE141F9CF769FD50 /* AppStateTests.swift */,
 				AC0120000000000000000006 /* MCPAccessTests.swift */,
+				AC0120000000000000000041 /* MCPProtocolTests.swift */,
 				DDD83589B757361BBB1A0C6B /* ContractTests.swift */,
 				CE0395A9DD7ECE0D431EA770 /* CrashSafetyTests.swift */,
 				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
@@ -611,6 +637,15 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AC0120000000000000000030 /* ClioMCPBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC0120000000000000000031;
+			buildPhases = (AC0120000000000000000032, );
+			buildRules = (); dependencies = ();
+			name = ClioMCPBridge; productName = ClioMCPBridge;
+			productReference = AC0120000000000000000023;
+			productType = "com.apple.product-type.tool";
+		};
 		1EFC903199B1E422F418531B /* ClioTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4DBC9094D10DBA5F67457D64 /* Build configuration list for PBXNativeTarget "ClioTests" */;
@@ -674,10 +709,12 @@
 				BA61BE75D51E7198564D984F /* Sources */,
 				D3CB5A1E36CCD9C10CA4B983 /* Resources */,
 				F53B9310441BD6031D40EDF8 /* Frameworks */,
+				AC0120000000000000000025 /* Embed Helpers */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AC0120000000000000000033 /* ClioMCPBridge dependency */,
 			);
 			name = Clio;
 			packageProductDependencies = (
@@ -730,6 +767,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				AC0120000000000000000030 /* ClioMCPBridge */,
 				9463A50ACA7319BF58C292E5 /* Clio */,
 				53AC5D0BE1CAE9C5CFF650F4 /* ClioCrashProbe */,
 				1EFC903199B1E422F418531B /* ClioTests */,
@@ -792,6 +830,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AC0120000000000000000032 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AC0120000000000000000020, ); runOnlyForDeploymentPostprocessing = 0; };
 		0C7CCE86163C88DFB437A866 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -822,6 +861,10 @@
 			files = (
 				F6E2FFDCABEF71BD602494BB /* AppState.swift in Sources */,
 				AC0120000000000000000001 /* MCPAccessPolicy.swift in Sources */,
+				AC0120000000000000000010 /* MCPHTTPServer.swift in Sources */,
+				AC0120000000000000000012 /* MCPTools.swift in Sources */,
+				AC0120000000000000000014 /* MCPRouter.swift in Sources */,
+				AC0120000000000000000016 /* ClioMCPService.swift in Sources */,
 				AC0120000000000000000003 /* MCPDocumentAccess.swift in Sources */,
 				8F5CD3569250DBB2C2B1D304 /* AtomicWriteTransaction.swift in Sources */,
 				78731B2EF1742FD0E6C633E4 /* Autosaver.swift in Sources */,
@@ -909,6 +952,7 @@
 			files = (
 				09041C9D26FB0103FCC39427 /* AppStateTests.swift in Sources */,
 				AC0120000000000000000005 /* MCPAccessTests.swift in Sources */,
+				AC0120000000000000000040 /* MCPProtocolTests.swift in Sources */,
 				B7D2D3C32DA0AFB3AD54B71B /* ContractTests.swift in Sources */,
 				B7004DB966171C7BC7A36B88 /* CrashSafetyTests.swift in Sources */,
 				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,
@@ -944,6 +988,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		AC0120000000000000000033 = {isa = PBXTargetDependency; target = AC0120000000000000000030; targetProxy = AC0120000000000000000024; };
 		0B1505969BB9BE8395ADBDBB /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 9463A50ACA7319BF58C292E5 /* Clio */;
@@ -962,6 +1007,18 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		AC0120000000000000000034 = {isa = XCBuildConfiguration; buildSettings = {
+			PRODUCT_NAME = ClioMCPBridge; PRODUCT_BUNDLE_IDENTIFIER = "olympus.clio.mac.mcp-bridge";
+			SKIP_INSTALL = YES; ENABLE_HARDENED_RUNTIME = YES; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+			CODE_SIGN_ENTITLEMENTS = ClioMCPBridge/ClioMCPBridge.entitlements;
+			CODE_SIGN_STYLE = Manual; CODE_SIGN_IDENTITY = "-";
+		}; name = Debug; };
+		AC0120000000000000000035 = {isa = XCBuildConfiguration; buildSettings = {
+			PRODUCT_NAME = ClioMCPBridge; PRODUCT_BUNDLE_IDENTIFIER = "olympus.clio.mac.mcp-bridge";
+			SKIP_INSTALL = YES; ENABLE_HARDENED_RUNTIME = YES; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+			CODE_SIGN_ENTITLEMENTS = ClioMCPBridge/ClioMCPBridge.entitlements;
+			ONLY_ACTIVE_ARCH = NO; ARCHS = "arm64 x86_64";
+		}; name = Release; };
 		0FE4B4B673EBBF2AD94ACF78 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1260,6 +1317,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AC0120000000000000000031 = {isa = XCConfigurationList; buildConfigurations = (AC0120000000000000000034, AC0120000000000000000035, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
 		491AE8B2B2F472C7F67BB758 /* Build configuration list for PBXProject "Clio" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

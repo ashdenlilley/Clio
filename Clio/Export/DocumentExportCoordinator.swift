@@ -63,7 +63,8 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
 
     func export(
         _ request: ExportRequest,
-        collisionResolution: ExportCollisionResolution?
+        collisionResolution: ExportCollisionResolution?,
+        validateAuthority: @escaping @MainActor () throws -> Void = {}
     ) async throws -> ExportReceipt {
         activeTask?.cancel()
         let operationID = UUID()
@@ -113,6 +114,7 @@ final class DocumentExportCoordinator: DocumentExportCoordinating {
             try Task.checkCancellation()
             self.phase = .installing
 
+            try validateAuthority()
             let receipt = try await installer.install(
                 staged,
                 strategy: request.recoveryStrategy

@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import SwiftUI
 
 @main
@@ -7,6 +8,32 @@ struct ClioApp: App {
     private var applicationDelegate
 
     var body: some Scene {
+        editorScene
+        MenuBarExtra("Clio", systemImage: "doc.text") {
+            let service = applicationDelegate.appState.mcpService
+            Text(service.status).onAppear { service.refreshLoginStatus() }
+            Button("Open Clio") { applicationDelegate.openEditorForMCP() }
+            Button("MCP Settings…") { service.showSettings() }
+            Button(service.enabled ? "Pause MCP" : "Resume MCP") { service.setEnabled(!service.enabled) }
+            Toggle("Open at login", isOn: Binding(get: { service.loginEnabled }, set: { service.setLoginEnabled($0) }))
+            Text("\(service.connectedSessions) client sessions")
+            ForEach(service.clients) { client in
+                Button("Revoke \(client.name)") { service.revoke(client.id) }
+            }
+            Divider()
+            Button("Quit Clio") { NSApp.terminate(nil) }
+        }
+    }
+
+    @SceneBuilder private var editorScene: some Scene {
+        if #available(macOS 15.0, *) {
+            editorWindows.defaultLaunchBehavior(.suppressed)
+        } else {
+            editorWindows
+        }
+    }
+
+    private var editorWindows: some Scene {
         WindowGroup(
             "Clio",
             id: "editor",
@@ -141,6 +168,24 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ClioLaunchDiagnostics.mark("application-did-finish-launching")
+        let service = appState.mcpService
+        service.openEditor = { [weak self] in self?.openEditorForMCP() }
+        service.startConfigured()
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let loginLaunch = event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        if loginLaunch {
+            // Hide any restored windows as well; do not close or discard them.
+            for window in NSApp.windows where isClioEditorWindow(window) { window.orderOut(nil) }
+        } else if #available(macOS 15.0, *) {
+            Task { @MainActor [weak self] in
+                for _ in 0..<20 {
+                    await Task.yield()
+                    self?.openEditorForMCP()
+                    if self?.appState.mcpWindows.isEmpty == false { break }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -185,6 +230,8 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
+        let resumeMCP = appState.mcpService.enabled
+        appState.mcpService.quiesceForQuit()
         guard appState.flushAllEditorSessions() else {
             sender.activate(ignoringOtherApps: true)
 
@@ -194,6 +241,7 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Quit was cancelled so your unsaved text remains in Clio. Restore workspace access or free disk space, then try again."
             alert.addButton(withTitle: "Keep Clio Open")
             alert.runModal()
+            if resumeMCP { appState.mcpService.setEnabled(true) }
             return .terminateCancel
         }
 
@@ -239,6 +287,10 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     private func openNewDocumentFromDock(_ sender: Any?) {
         NSApplication.shared.activate(ignoringOtherApps: true)
         performWindowCommand(titled: "New Document")
+    }
+
+    func openEditorForMCP() {
+        _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: NSApp.windows.contains { $0.isVisible && isClioEditorWindow($0) })
     }
 
     @objc

@@ -181,7 +181,8 @@ struct ContentView: View {
                 onSlashCommand: { presentation in
                     windowSession.presentInlineSlashPalette(presentation)
                 },
-                minimap: windowSession.minimap
+                minimap: windowSession.minimap,
+                onEditorReady: { [weak editorSession] in editorSession?.mcpTextView = $0 }
             )
             .overlay(alignment: .topTrailing) { EditorMinimapOverlay().frame(width: 32) }
 

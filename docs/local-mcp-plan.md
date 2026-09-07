@@ -1,7 +1,8 @@
 # Local MCP integration — implementation plan
 
-Status: implementation in progress on `feature/local-mcp`; not available to clients
-yet. Keep separate from shutdown repair. Hosted connectivity deferred by default.
+Status: local implementation on `feature/local-mcp`, pending Cloud compilation,
+tests and signed-client smoke verification. Not released. Keep separate from
+shutdown repair. Hosted connectivity is deferred.
 
 ## Implementation checkpoint
 
@@ -9,27 +10,53 @@ Implemented, pending Xcode Cloud verification:
 
 - Default-off client/workspace authorization with token digests, revocation,
   pause/resume invalidation, and shutdown invalidation.
-- Loopback Host/Origin/request-size policy (no HTTP listener yet).
+- Loopback HTTP listener with Host/Origin/request-size/framing checks.
 - Live, settled, paginated reads through DocumentBufferRegistry. Continuation
   pages require a matching revision; pending saves/conflicts are explicit.
 - Process/buffer-incarnation revision tokens, Unicode-safe replacement candidate
   validation, and canonical workspace path checks including symlink escapes.
 - Bounded, per-client mutation retry ledger and native-only, expiring, one-shot
   deletion approval primitive. Neither is exposed as a tool.
-- Eight `MCPAccessTests` and the shared `ClioMCPDiagnostics` Cloud test scheme.
+- Eight `MCPAccessTests`, six `MCPProtocolTests`, and the shared
+  `ClioMCPDiagnostics` Cloud test scheme.
 
-Not implemented yet (not a usable MCP server):
+Additional implementation (also pending Cloud verification):
 
-- HTTP parsing/listener, protocol router/negotiation, sessions and cancellation.
-- Keychain-backed credential provisioning and native client/workspace approvals.
-- Tool adapters for discovery/search, undo-aware edits, create/rename/move/trash,
-  export, active document/selection, and UI navigation. Untitled documents are
-  deliberately not accessible through the initial read adapter.
-- Settings/menu-bar controls, login registration, windowless startup and quit
-  integration, and client connection guides/smoke tests.
+- Version-negotiated MCP JSON-RPC router, initialized sessions bound to the
+  authenticated client, cancellation, bounded in-flight operations and retries.
+- Keychain credentials and native explicit folder/client authorization. Tokens
+  never appear in logs; clipboard copies are user-triggered and expire.
+- List/search/read, native undo-aware edits, create, rename/move without replacing,
+  recoverable trash after confirmation, PDF/HTML/DOCX/TXT exports, active document,
+  selection, and opening a document. Scoped live untitled buffers are readable.
+- Menu-bar and Settings controls; optional SMAppService main-app login registration;
+  startup window suppression on macOS 15+, hiding restored windows at login,
+  and MCP quiescence before the existing quit-save gate.
+- Bundled sandboxed stdio-to-HTTP client adapter, built/signed with Clio. It does
+  not run a second document service or launch Clio.
+- Local-client setup and acceptance checklist: [MCP setup](local-mcp-setup.md).
 
-No listener, sandbox entitlement expansion, login registration, tunnel, release
-tag, or changes to the shutdown comparison branches are included in this slice.
+The app gains only the inbound-network sandbox entitlement. The bridge has only
+App Sandbox and outbound-network access. No service or login registration is
+enabled by editing/building the repo. No tunnel, release tag, or changes to the
+shutdown comparison branches are included.
+
+### Initial safety limits
+
+- 1 MiB request/read document limit, 16 Ki UTF-16 read pages, 100-result list/search
+  pages and 500 indexed search matches plus live-buffer overrides. Refine a
+  truncated search. Create/edit/trash conservatively cap synchronous documents at 256 KiB;
+  larger mutations fail rather than blocking or bypassing the editor pipeline.
+- One mutation at a time. Non-overwriting move requires a saved source. Creation
+  uses the workspace root; move can choose a relative subfolder. Export uses the
+  destination workspace root. Renaming is the move tool with the same workspace.
+- Edit/selection opens the native editor. Untitled buffers require an owning
+  approved-workspace session. Deleted/detached recovery buffers are not exposed.
+- Browser Origins are rejected, including localhost browser Origins. Negotiated
+  protocol versions are 2025-03-26, 2025-06-18 and 2025-11-25 (JSON responses,
+  no server-initiated SSE). No OAuth/remote discovery endpoint is claimed.
+- Login suppression on macOS 14 uses post-launch window hiding; verify whether a
+  brief window appears. macOS 15+ uses SwiftUI suppressed launch behavior.
 
 ### Cloud verification for this checkpoint
 
@@ -41,7 +68,9 @@ branch, not on `main`; let Xcode discover it from the branch checkout first.
 
 Local checks are source/project syntax only. Cloud compilation and test execution
 remain required; no client interoperability or clean shutdown claim follows from
-these foundation tests alone. Run full Clio regression tests before merging.
+these tests alone. Run full Clio regression tests and the manual acceptance
+checklist before merging. Do not cut a release until the shutdown repair is
+verified and integrated, and the helper passes nested signing/notarization checks.
 
 ## Product requirements
 
@@ -105,5 +134,5 @@ these foundation tests alone. Run full Clio regression tests before merging.
 - Claude Code MCP: https://code.claude.com/docs/en/mcp
 - OpenAI local/hosted client distinction: https://learn.chatgpt.com/docs/extend/mcp
 
-One remaining deployment choice: whether hosted-client access should be included
-via an opt-in secure tunnel, or deferred while local client integrations ship.
+Hosted-client access is deferred; adding any tunnel remains a separate explicit
+owner decision.

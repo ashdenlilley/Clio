@@ -27,17 +27,19 @@ final class MCPDocumentAccess {
 
     func read(
         documentID: DocumentID, workspace: Workspace, grant: MCPClientGrant,
-        offset: Int = 0, limit: Int = 16_384, expectedRevision: MCPRevision? = nil
+        offset: Int = 0, limit: Int = 16_384, expectedRevision: MCPRevision? = nil,
+        authorizedUntitled: Bool = false
     ) async throws -> MCPDocumentPage {
         try access.validate(grant, workspaceID: workspace.id)
         try Task.checkCancellation()
         return try await registry.withSettledEditorEdits(for: documentID) {
             try Task.checkCancellation()
             try self.access.validate(grant, workspaceID: workspace.id)
-            guard let document = self.registry.document(withID: documentID),
-                  let file = document.fileURL else { throw MCPAccessError.outsideWorkspace }
-            try MCPWorkspaceBoundary.validate(file, beneath: workspace.rootURL)
-            _ = try workspace.locator(for: file)
+            guard let document = self.registry.document(withID: documentID) else { throw MCPAccessError.outsideWorkspace }
+            if let file = document.fileURL {
+                try MCPWorkspaceBoundary.validate(file, beneath: workspace.rootURL)
+                _ = try workspace.locator(for: file)
+            } else if !authorizedUntitled { throw MCPAccessError.outsideWorkspace }
             let token = self.revision(for: document)
             if let expectedRevision, expectedRevision != token { throw MCPAccessError.staleRevision }
             // Further pages MUST be tied to a revision, otherwise concurrent
@@ -65,7 +67,7 @@ final class MCPDocumentAccess {
         }
     }
 
-    private func revision(for document: Document) -> MCPRevision {
+    func revision(for document: Document) -> MCPRevision {
         incarnations = incarnations.filter { $0.value.document != nil }
         if incarnations[document.id]?.document !== document {
             incarnations[document.id] = Incarnation(document: document, id: UUID())

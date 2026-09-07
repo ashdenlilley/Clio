@@ -17,7 +17,7 @@
     <Testables>
       <TestableReference skipped="NO" parallelizable="NO" useTestSelectionWhitelist="YES">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="1EFC903199B1E422F418531B" BuildableName="ClioTests.xctest" BlueprintName="ClioTests" ReferencedContainer="container:Clio.xcodeproj"/>
-        <SelectedTests><Test Identifier="MCPAccessTests"/></SelectedTests>
+        <SelectedTests><Test Identifier="MCPAccessTests"/><Test Identifier="MCPProtocolTests"/></SelectedTests>
       </TestableReference>
     </Testables>
     <EnvironmentVariables>

@@ -47,8 +47,10 @@ final class DocumentMover {
         preferredFilename: String? = nil,
         collisionChoice: CollisionChoice? = nil,
         approvedCollision: FileCollision? = nil,
-        registry: DocumentBufferRegistry? = nil
+        registry: DocumentBufferRegistry? = nil,
+        validateAuthority: @MainActor () throws -> Void = {}
     ) async throws -> FileMutationOutcome {
+        try validateAuthority()
         registry?.suspendAutosave(for: document.id)
         defer { registry?.resumeAutosave(for: document.id) }
         if let registry {
@@ -84,6 +86,7 @@ final class DocumentMover {
             return .completed(proposedLocator)
         }
 
+        try validateAuthority()
         try await fileIO.createParentDirectory(
             for: destinationURL,
             inside: destinationWorkspace.rootURL
@@ -237,6 +240,7 @@ final class DocumentMover {
         )
         let created: Bool
         do {
+            try validateAuthority()
             created = try await fileIO.create(contents: installedData, at: destinationURL)
         } catch {
             _ = try? await fileIO.abortMoveTransactionIfUncommitted(moveTransaction)

@@ -162,6 +162,19 @@ final class AppState: ClioCommandDispatching {
     @ObservationIgnored
     private var editorWindows: [EditorWindowSession] = []
 
+    @ObservationIgnored lazy var mcpService = ClioMCPService(appState: self, defaults: defaults)
+
+    var mcpWindows: [EditorWindowSession] { editorWindows }
+    var mcpSessions: [EditorSession] { editorSessions }
+
+    func makeMCPExportCoordinator() -> DocumentExportCoordinator {
+        DocumentExportCoordinator(recoveryCheckpointStore: exportRecoveryCheckpointStore)
+    }
+
+    func mcpSearch(_ text: String, workspaceID: WorkspaceID) async -> AsyncThrowingStream<SearchBatch, Error> {
+        await workspaceIndexCoordinator.search(WorkspaceSearchQuery(text: text, workspaceFilter: workspaceID, includesIgnored: false, limit: 500))
+    }
+
     @ObservationIgnored
     private let workspaceIndexCoordinator: WorkspaceIndexCoordinator
 

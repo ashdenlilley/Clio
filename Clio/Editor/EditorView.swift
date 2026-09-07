@@ -58,6 +58,7 @@ struct EditorView: NSViewRepresentable {
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
     private var minimap: EditorMinimapModel?
+    private var onEditorReady: (@MainActor (NSTextView) -> Void)?
 
     init(
         text: String,
@@ -66,7 +67,8 @@ struct EditorView: NSViewRepresentable {
         configuration: EditorConfiguration = EditorConfiguration(),
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
         onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
-        minimap: EditorMinimapModel? = nil
+        minimap: EditorMinimapModel? = nil,
+        onEditorReady: (@MainActor (NSTextView) -> Void)? = nil
     ) {
         self.text = text
         self.contentGeneration = contentGeneration
@@ -75,6 +77,7 @@ struct EditorView: NSViewRepresentable {
         self.onTextEdit = onTextEdit
         self.onSlashCommand = onSlashCommand
         self.minimap = minimap
+        self.onEditorReady = onEditorReady
     }
 
     func makeCoordinator() -> EditorCoordinator {
@@ -99,10 +102,12 @@ struct EditorView: NSViewRepresentable {
             onTextEdit: onTextEdit,
             onSlashCommand: onSlashCommand
         )
+        onEditorReady?(textView)
         return surface
     }
 
     func updateNSView(_ nsView: EditorContainerView, context: Context) {
+        onEditorReady?(nsView.textView)
         context.coordinator.update(
             text: text,
             contentGeneration: contentGeneration,

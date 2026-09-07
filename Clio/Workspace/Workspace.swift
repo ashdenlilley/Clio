@@ -362,7 +362,8 @@ final class Workspace {
     @discardableResult
     func save(
         _ document: Document,
-        allowingDetachedRestore: Bool = false
+        allowingDetachedRestore: Bool = false,
+        allowingEmptyCreation: Bool = false
     ) throws -> URL? {
         let snapshot = document.snapshot()
 
@@ -387,7 +388,7 @@ final class Workspace {
             throw WorkspaceError.detachedDocumentRequiresExplicitRestore(previousLocator)
         }
 
-        guard snapshot.fileURL != nil || !snapshot.text.isEmpty else {
+        guard snapshot.fileURL != nil || !snapshot.text.isEmpty || allowingEmptyCreation else {
             document.didSkipEmptyUnbackedWrite(snapshot)
             return nil
         }

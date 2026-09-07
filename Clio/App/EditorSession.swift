@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -22,6 +23,7 @@ enum EditorSynchronizationError: LocalizedError {
 
 struct EditorWindowRequest: Codable, Hashable, Sendable {
     let id: UUID
+    @ObservationIgnored weak var mcpTextView: NSTextView?
     var openingMode: EditorOpeningMode
     var relativePath: String?
     var isFullScreen: Bool

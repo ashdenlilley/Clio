@@ -59,6 +59,13 @@ targets:
     dependencies:
       - sdk: libsqlite3.tbd
       - package: Markdown
+      - target: ClioMCPBridge
+        link: false
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac
@@ -83,6 +90,26 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "-"
+  ClioMCPBridge:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ClioMCPBridge/main.swift
+    settings:
+      base:
+        PRODUCT_NAME: ClioMCPBridge
+        PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac.mcp-bridge
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        CODE_SIGN_ENTITLEMENTS: ClioMCPBridge/ClioMCPBridge.entitlements
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "-"
+        Release:
+          ONLY_ACTIVE_ARCH: NO
+          ARCHS: "arm64 x86_64"
   ClioCrashProbe:
     type: tool
     platform: macOS
@@ -176,6 +203,7 @@ schemes:
           parallelizable: false
           selectedTests:
             - MCPAccessTests
+            - MCPProtocolTests
   ClioShutdownDiagnostics:
     build:
       targets:
