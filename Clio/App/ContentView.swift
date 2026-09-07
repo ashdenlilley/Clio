@@ -294,10 +294,17 @@ struct ContentView: View {
     }
 
     private func restoreEditorFocus() {
+        let generation = windowSession.focusRestorationGeneration
+        let tabID = windowSession.activeTabID
         DispatchQueue.main.async {
-            guard let window = NSApplication.shared.windows.first(where: {
+            guard windowSession.focusRestorationGeneration == generation,
+                  windowSession.activeTabID == tabID,
+                  !windowSession.isPalettePresented,
+                  !windowSession.isSettingsPresented,
+                  !windowSession.motion.hasActiveSurfaces,
+                  let window = NSApplication.shared.windows.first(where: {
                 clioEditorSessionID(for: $0) == windowSession.id
-            }), let contentView = window.contentView,
+            }), window.isKeyWindow, let contentView = window.contentView,
               let editor = findEditorTextView(in: contentView) else { return }
             window.makeFirstResponder(editor)
         }

@@ -150,6 +150,7 @@ private struct EditorWindowRoot: View {
 
 @MainActor
 final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var terminationTextViews: [NSTextView] = []
     let appState: AppState
     let initialWindowRequest: EditorWindowRequest
 
@@ -245,7 +246,19 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
             return .terminateCancel
         }
 
+        // AppKit may still have deferred drag-registration work queued for a
+        // text view as SwiftUI dismantles the window. Keep live text views and
+        // their TextKit stacks alive until process exit, only after saves pass.
+        terminationTextViews = sender.windows.filter(isClioEditorWindow).flatMap {
+            Self.textViews(in: $0.contentView)
+        }
+        ClioLaunchDiagnostics.mark("quit-save-flush-complete")
         return .terminateNow
+    }
+
+    private static func textViews(in view: NSView?) -> [NSTextView] {
+        guard let view else { return [] }
+        return (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(

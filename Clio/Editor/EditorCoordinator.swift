@@ -116,6 +116,36 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         }
     }
 
+    /// SwiftUI can release the editor before this coordinator is deallocated.
+    /// Stop callbacks while both objects still exist; repeated teardown is safe.
+    func detach() {
+        markdownRequestSequence &+= 1
+        markdownEngineEpoch &+= 1
+        markdownTask?.cancel()
+        markdownTask = nil
+        markdownEditTask?.cancel()
+        markdownEditTask = nil
+        pendingHighlightEdits.removeAll()
+        typewriterScroller.suspendUntilNextEdit()
+        if let boundsObserver {
+            NotificationCenter.default.removeObserver(boundsObserver)
+            self.boundsObserver = nil
+        }
+        if let textView = surface?.textView {
+            textView.delegate = nil
+            textView.onUserScroll = nil
+            textView.onKeyEventBegan = nil
+            textView.onKeyEventEnded = nil
+            textView.onMarkdownAction = nil
+        }
+        surface?.onViewportSizeChanged = nil
+        minimap?.navigate = nil
+        viewport = nil
+        onSlashCommand = nil
+        onTextEdit = { _ in }
+        surface = nil
+    }
+
     func update(
         text: String,
         contentGeneration: BufferGeneration,
@@ -254,6 +284,11 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
                 self.isRestoringLiteralSlash = true
                 defer { self.isRestoringLiteralSlash = false }
                 textView.insertText(literal, replacementRange: affectedCharRange)
+                // Keep the caret immediately after the restored literal, even
+                // when the slash was entered in the middle of a Unicode line.
+                let offset = min(affectedCharRange.location + literal.utf16.count, textView.string.utf16.count)
+                textView.setSelectedRange(NSRange(location: offset, length: 0))
+                self.captureViewport()
             }
             DispatchQueue.main.async { [weak self] in
                 self?.onSlashCommand?(presentation)
@@ -474,7 +509,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         )
 
         DispatchQueue.main.async { [weak self, weak surface] in
-            guard let self, let surface else { return }
+            guard let self, let surface, self.surface === surface else { return }
             if clamped.fractionalYOffset > 0 {
                 let font = surface.textView.font
                     ?? Typography.font(size: self.configuration.resolvedFontSize, name: self.configuration.fontName)

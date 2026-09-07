@@ -61,6 +61,23 @@ final class ClioMotionUITests: ClioDiagnosticTestCase {
         XCTAssertEqual(editor.value as? String, "AlphaX beta gamma\nSecond line\n")
     }
 
+    func testSlashDismissalResumesTypingAtOriginalCharacter() {
+        let editor = app.textViews["editor.text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        // Fixture restores the insertion point immediately after "Alpha".
+        app.typeText("/")
+        XCTAssertTrue(app.textFields["palette.query"].waitForExistence(timeout: 3))
+        app.typeKey(.escape, modifierFlags: [])
+        app.typeText("🙂X")
+        XCTAssertEqual(editor.value as? String, "Alpha/🙂X beta gamma\nSecond line\n")
+        app.typeText("/")
+        let query = app.textFields["palette.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        query.typeText("  ")
+        app.typeText("Y")
+        XCTAssertEqual(editor.value as? String, "Alpha/🙂X/Y beta gamma\nSecond line\n")
+    }
+
     func testSettingsUsesCurrentWindowAndRestoresEditorFocus() {
         let editor = app.textViews["editor.text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))

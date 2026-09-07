@@ -340,6 +340,7 @@ final class EditorWindowSession: Identifiable {
     }
 
     func dismissPalette(preservingLiteral: Bool = true) {
+        guard isPalettePresented else { return }
         let restore = restoreSlashLiteral
         restoreSlashLiteral = nil
         searchTask?.cancel()
@@ -352,6 +353,9 @@ final class EditorWindowSession: Identifiable {
         }
         paletteErrorMessage = nil
         isSearching = false
+        // SwiftUI's field editor relinquishes focus after its presentation
+        // update. Request a guarded follow-up without restoring the old range.
+        focusRestorationGeneration &+= 1
     }
 
     func updatePaletteQuery(_ query: String) {
