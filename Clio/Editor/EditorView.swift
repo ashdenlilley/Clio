@@ -195,7 +195,7 @@ final class EditorContainerView: NSView {
         let inset = max(Metrics.horizontalPadding, (viewportSize.width - preferredTextWidth) / 2)
         if abs(textView.textContainerInset.width - inset) > 0.5 {
             textView.invalidateBlockCaret()
-            textView.textContainerInset = NSSize(width: inset, height: Metrics.verticalPadding)
+            textView.textContainerInset = NSSize(width: inset, height: textView.textContainerInset.height)
         }
         textView.minSize = NSSize(width: 0, height: viewportSize.height)
         if abs(textView.frame.width - viewportSize.width) > 0.5 {

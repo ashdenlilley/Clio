@@ -31,31 +31,35 @@ final class TypewriterScroller {
         configuration: EditorConfiguration
     ) {
         let scrollView = surface.scrollView
+        // contentInsets describe scroll-view chrome, not document padding.
+        // Large typewriter insets can leave visible text outside AppKit's
+        // interactive content area. Keep all text inside the document instead.
+        let zeroInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        if !Self.nearlyEqual(scrollView.contentInsets, zeroInsets) {
+            scrollView.contentInsets = zeroInsets
+        }
         guard configuration.isTypewriterScrollingEnabled else {
             returnTimer?.invalidate()
             returnTimer = nil
             shouldEaseReturn = false
-            let zeroInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-            if !Self.nearlyEqual(scrollView.contentInsets, zeroInsets) {
-                scrollView.contentInsets = zeroInsets
-            }
+            setDocumentPadding(Metrics.verticalPadding, in: surface)
             return
         }
 
         let viewportHeight = scrollView.contentView.bounds.height
         guard viewportHeight > 0 else { return }
 
-        // The text view already supplies the fixed 64pt editor padding. Extra
-        // scroll insets make both the first and final line able to reach the
-        // asymmetric typewriter anchor without altering the source or layout.
+        // Symmetric document padding must accommodate the larger side of the
+        // asymmetric anchor. This also keeps hit testing in text-view coordinates.
         let anchor = configuration.resolvedTypewriterAnchor
-        let top = max(0, viewportHeight * anchor - Metrics.verticalPadding)
-        let bottom = max(0, viewportHeight * (1 - anchor) - Metrics.verticalPadding)
-        let insets = NSEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+        setDocumentPadding(max(Metrics.verticalPadding, viewportHeight * max(anchor, 1 - anchor)), in: surface)
+    }
 
-        if !Self.nearlyEqual(scrollView.contentInsets, insets) {
-            scrollView.contentInsets = insets
-        }
+    private func setDocumentPadding(_ padding: CGFloat, in surface: EditorContainerView) {
+        let textView = surface.textView
+        guard abs(textView.textContainerInset.height - padding) > 0.5 else { return }
+        textView.invalidateBlockCaret()
+        textView.textContainerInset = NSSize(width: textView.textContainerInset.width, height: padding)
     }
 
     func scrollCaretToAnchor(
@@ -64,10 +68,11 @@ final class TypewriterScroller {
         animated: Bool
     ) {
         guard configuration.isTypewriterScrollingEnabled,
-              !isSuspendedByUserScroll,
-              let caretRect = caretRect(in: surface.textView) else { return }
+              !isSuspendedByUserScroll else { return }
 
         updateViewportInsets(in: surface, configuration: configuration)
+        // Insets change the text container origin: query the caret afterwards.
+        guard let caretRect = caretRect(in: surface.textView) else { return }
 
         let scrollView = surface.scrollView
         let clipView = scrollView.contentView

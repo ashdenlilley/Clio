@@ -3,6 +3,49 @@ import XCTest
 @testable import Clio
 
 final class WritingWorkspaceTests: XCTestCase {
+    @MainActor
+    func testTypewriterPaddingKeepsVisibleLinesInsideNativeHitAreaAcrossResizeAndToggle() {
+        let view = EditorTextView.makeTextKit2TextView()
+        let surface = EditorContainerView(textView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        let scroller = TypewriterScroller()
+        let source = "Alpha beta gamma\nSecond line\nThird line"
+        view.string = source
+        for enabled in [true, false, true] {
+            for anchor in [CGFloat(0.30), CGFloat(0.45), CGFloat(0.60)] {
+                let config = EditorConfiguration(isTypewriterScrollingEnabled: enabled,
+                                                 typewriterAnchor: anchor, isFocusModeEnabled: false)
+                surface.apply(configuration: config)
+                view.applyBaseAttributes(for: config)
+                for size in [NSSize(width: 900, height: 600), NSSize(width: 1440, height: 1000), NSSize(width: 900, height: 600)] {
+                    window.setContentSize(size)
+                    surface.layoutSubtreeIfNeeded()
+                    scroller.updateViewportInsets(in: surface, configuration: config)
+                    XCTAssertEqual(surface.scrollView.contentInsets.top, 0)
+                    XCTAssertEqual(surface.scrollView.contentInsets.bottom, 0)
+                    for offset in [0, 17, 29] {
+                        view.setSelectedRange(NSRange(location: offset, length: 0))
+                        scroller.scrollCaretToAnchor(in: surface, configuration: config, animated: false)
+                        view.scrollRangeToVisible(view.selectedRange())
+                        let screen = view.firstRect(forCharacterRange: view.selectedRange(), actualRange: nil)
+                        let rect = view.convert(window.convertFromScreen(screen), from: nil)
+                        let point = NSPoint(x: rect.midX + 2, y: rect.midY)
+                        XCTAssertTrue(view.bounds.contains(point))
+                        XCTAssertTrue(surface.scrollView.documentVisibleRect.contains(point))
+                        let hit = surface.hitTest(surface.convert(point, from: view))
+                        XCTAssertTrue(hit === view, "Visible text must receive native mouse input")
+                    }
+                    XCTAssertEqual(view.string, source)
+                }
+                if !enabled { XCTAssertEqual(view.textContainerInset.height, Metrics.verticalPadding) }
+            }
+        }
+    }
+
     func testReadingAndSpeakingTimesRoundUpToWholeSeconds() {
         XCTAssertEqual(WritingTime.label(words: 500, wordsPerMinute: 250), "2m")
         XCTAssertEqual(WritingTime.label(words: 500, wordsPerMinute: 140), "3m 35s")

@@ -157,8 +157,10 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         app.buttons["sidebar.toggle"].click()
         let window = app.windows.firstMatch
         let originalFrame = window.frame
+        assertTypingLineSupportsMouseSelection(editor)
         app.typeKey("f", modifierFlags: [.control, .command])
         XCTAssertTrue(waitUntil(timeout: 8) { window.frame.height > originalFrame.height + 20 })
+        assertTypingLineSupportsMouseSelection(editor)
         // A coordinate drag exercises hit testing, not accessibility select-all.
         // The current typing line is at the configured 45% vertical anchor.
         let viewport = app.descendants(matching: .any)["editor.surface.no-focus-ring"]
@@ -175,11 +177,38 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         add(screenshot)
         app.typeKey("f", modifierFlags: [.control, .command])
         XCTAssertTrue(waitUntil(timeout: 8) { abs(window.frame.height - originalFrame.height) < 20 })
+        assertTypingLineSupportsMouseSelection(editor)
         editor.click()
         editor.rightClick()
         XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(editor.value as? String, "Alpha beta gamma\nSecond line")
+    }
+
+    private func assertTypingLineSupportsMouseSelection(_ editor: XCUIElement) {
+        let original = editor.value as? String
+        let viewport = app.descendants(matching: .any)["editor.surface.no-focus-ring"]
+        let start = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
+        start.click()
+        start.press(forDuration: 0.1, thenDragTo: end)
+        editor.rightClick()
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.menuItems["Copy"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        app.typeText("REPLACED")
+        XCTAssertTrue(waitUntil { (editor.value as? String)?.contains("REPLACED") == true })
+        XCTAssertLessThan((editor.value as? String)?.count ?? Int.max, (original?.count ?? 0) + "REPLACED".count,
+                          "Mouse drag must select text, not merely leave an insertion point")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(waitUntil { editor.value as? String == original })
+        // Return to the end and settle the typewriter anchor for the next phase.
+        app.typeKey(.downArrow, modifierFlags: .command)
+        app.typeText(" ")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(waitUntil { editor.value as? String == original })
+        let settleStarted = Date()
+        XCTAssertTrue(waitUntil(timeout: 3) { Date().timeIntervalSince(settleStarted) >= 2.2 })
     }
 
     private func launch(scenario: String) {
