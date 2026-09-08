@@ -77,3 +77,11 @@ delegate removal, followed by release when the snapshot is discarded. This
 closes a gap in the previous mitigation but is not proof of the production
 crash's exact cause. Cloud verification and signed-app reproduction remain
 required before claiming resolution.
+
+Cloud shutdown build 44 (`ae78a56`) compiled and ran five tests under Address
+Sanitizer: four passed, one failed. Both lifetime tests, repeated keyboard quit
+with saves/relaunch, and menu quit after closing the last window passed. The
+sole failure is still `testFullscreenMultiwindowQuitSavesAndRelaunches` timing
+out before fullscreen entry. This verifies the candidate's retention/release
+contract in the fixture; it does not reproduce or establish resolution of the
+reported production crash. No new DMG or release tag was created by this pass.
