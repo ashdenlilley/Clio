@@ -62,3 +62,18 @@ AppKit can retain the editor beyond one run-loop pass, so the probe now waits
 up to five seconds for actual release before draining subsequent callbacks.
 The other failure remains the fullscreen transition timeout. Neither outcome
 establishes the cause of the production crash.
+
+Cloud shutdown build 43 (`a325640`) ran four tests: three passed, with only the
+existing fullscreen transition timeout failing. The corrected destruction probe
+passed; it did not reproduce the reported crash. The user confirmed that the
+editor window was still open when quitting.
+
+The next candidate captures windows, view hierarchies, text-view/window delegates,
+and existing shared field editors before MCP quiescence and saving. Previously,
+only text views in marked editor windows were captured after saving. Successful
+quit retains the snapshot through process exit; cancelled quit releases the
+temporary ownership. A focused regression checks retention after hierarchy and
+delegate removal, followed by release when the snapshot is discarded. This
+closes a gap in the previous mitigation but is not proof of the production
+crash's exact cause. Cloud verification and signed-app reproduction remain
+required before claiming resolution.

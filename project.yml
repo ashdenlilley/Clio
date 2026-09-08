@@ -228,6 +228,7 @@ schemes:
           parallelizable: false
           selectedTests:
             - WritingWorkspaceTests/testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView
+            - WritingWorkspaceTests/testQuitSnapshotRetainsRemovedViewAndDelegateUntilReleased
         - name: ClioUITests
           parallelizable: false
           selectedTests:

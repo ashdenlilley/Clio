@@ -141,8 +141,38 @@ private struct EditorWindowRoot: View {
 }
 
 @MainActor
+final class QuitViewLifetime {
+    private var objects: [AnyObject] = []
+    private var identities: Set<ObjectIdentifier> = []
+
+    init(windows: [NSWindow]) {
+        for window in windows {
+            retain(window)
+            if let delegate = window.delegate { retain(delegate) }
+            capture(window.contentView)
+            // A window's shared field editor need not be in its content tree.
+            capture(window.fieldEditor(false, for: nil) as? NSView)
+            if let responder = window.firstResponder { retain(responder) }
+        }
+    }
+
+    private func retain(_ object: AnyObject) {
+        if identities.insert(ObjectIdentifier(object)).inserted { objects.append(object) }
+    }
+
+    private func capture(_ view: NSView?) {
+        guard let view else { return }
+        retain(view)
+        if let textView = view as? NSTextView, let delegate = textView.delegate {
+            retain(delegate)
+        }
+        for child in view.subviews { capture(child) }
+    }
+}
+
+@MainActor
 final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
-    private var terminationTextViews: [NSTextView] = []
+    private var terminationViewLifetime: QuitViewLifetime?
     let appState: AppState
     let initialWindowRequest: EditorWindowRequest
 
@@ -214,6 +244,11 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
+        // Capture before observable service/save changes can cause SwiftUI to
+        // dismantle a surface. Retaining just NSTextView after the save gate
+        // misses removed views, shared field editors, and their delegates.
+        let quitLifetime = QuitViewLifetime(windows: sender.windows)
+        ClioLaunchDiagnostics.mark("quit-view-lifetime-captured")
         let resumeMCP = appState.mcpService.enabled
         appState.mcpService.quiesceForQuit()
         guard appState.flushAllEditorSessions() else {
@@ -225,23 +260,19 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Quit was cancelled so your unsaved text remains in Clio. Restore workspace access or free disk space, then try again."
             alert.addButton(withTitle: "Keep Clio Open")
             alert.runModal()
-            if resumeMCP { appState.mcpService.setEnabled(true) }
+            withExtendedLifetime(quitLifetime) {
+                if resumeMCP { appState.mcpService.setEnabled(true) }
+            }
             return .terminateCancel
         }
 
         // AppKit may still have deferred drag-registration work queued for a
-        // text view as SwiftUI dismantles the window. Keep live text views and
-        // their TextKit stacks alive until process exit, only after saves pass.
-        terminationTextViews = sender.windows.filter(isClioEditorWindow).flatMap {
-            Self.textViews(in: $0.contentView)
-        }
+        // text view as SwiftUI dismantles the window. Keep the captured graph
+        // alive until process exit only after saving succeeds. A cancelled quit
+        // releases its temporary snapshot instead of retaining stale windows.
+        terminationViewLifetime = quitLifetime
         ClioLaunchDiagnostics.mark("quit-save-flush-complete")
         return .terminateNow
-    }
-
-    private static func textViews(in view: NSView?) -> [NSTextView] {
-        guard let view else { return [] }
-        return (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(

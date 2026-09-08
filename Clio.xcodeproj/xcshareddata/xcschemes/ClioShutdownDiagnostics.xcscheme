@@ -84,6 +84,9 @@
                <Test
                   Identifier = "WritingWorkspaceTests/testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView">
                </Test>
+               <Test
+                  Identifier = "WritingWorkspaceTests/testQuitSnapshotRetainsRemovedViewAndDelegateUntilReleased">
+               </Test>
             </SelectedTests>
          </TestableReference>
          <TestableReference

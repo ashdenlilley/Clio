@@ -4,6 +4,44 @@ import XCTest
 
 final class WritingWorkspaceTests: XCTestCase {
     @MainActor
+    func testQuitSnapshotRetainsRemovedViewAndDelegateUntilReleased() async {
+        weak var removedView: EditorTextView?
+        weak var removedCoordinator: EditorCoordinator?
+        var snapshot: QuitViewLifetime?
+        autoreleasepool {
+            let view = EditorTextView.makeTextKit2TextView()
+            let surface = EditorContainerView(textView: view)
+            let coordinator = EditorCoordinator(configuration: EditorConfiguration(), onTextEdit: { _ in })
+            coordinator.attach(to: surface)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = surface
+            removedView = view
+            removedCoordinator = coordinator
+            // No Clio window marker: transient windows must be covered too.
+            snapshot = QuitViewLifetime(windows: [window])
+            coordinator.detach()
+            surface.prepareForRemoval()
+            window.contentView = nil
+            window.close()
+        }
+        let drained = expectation(description: "Shutdown snapshot survives view removal")
+        RunLoop.main.perform(inModes: [.default]) { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 3)
+        withExtendedLifetime(snapshot) {
+            XCTAssertNotNil(removedView)
+            XCTAssertNotNil(removedCoordinator, "Queued work must not outlive the former text-view delegate")
+        }
+        // Models releasing temporary ownership when saving cancels quit.
+        snapshot = nil
+        let released = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in removedView == nil && removedCoordinator == nil }, object: nil
+        )
+        await fulfillment(of: [released], timeout: 5)
+    }
+
+    @MainActor
     func testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView() async {
         // The callback-disconnection test below retains its view throughout
         // the wait. Exercise actual destruction as well: AppKit can enqueue
