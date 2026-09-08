@@ -29,6 +29,20 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1EFC903199B1E422F418531B"
+               BuildableName = "ClioTests.xctest"
+               BlueprintName = "ClioTests"
+               ReferencedContainer = "container:Clio.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "7E850D3042C8CEC48DC8A783"
                BuildableName = "ClioUITests.xctest"
                BlueprintName = "ClioUITests"
@@ -41,7 +55,7 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldUseLaunchSchemeArgsEnv = "NO"
       preferredScreenCaptureFormat = "screenshots"
       onlyGenerateCoverageForSpecifiedTargets = "NO"
       enableAddressSanitizer = "YES">
@@ -55,6 +69,23 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO"
+            useTestSelectionWhitelist = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1EFC903199B1E422F418531B"
+               BuildableName = "ClioTests.xctest"
+               BlueprintName = "ClioTests"
+               ReferencedContainer = "container:Clio.xcodeproj">
+            </BuildableReference>
+            <SelectedTests>
+               <Test
+                  Identifier = "WritingWorkspaceTests/testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView">
+               </Test>
+            </SelectedTests>
+         </TestableReference>
          <TestableReference
             skipped = "NO"
             parallelizable = "NO"
@@ -75,6 +106,13 @@
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "CLIO_UI_TESTING"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

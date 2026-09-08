@@ -214,13 +214,20 @@ schemes:
     build:
       targets:
         Clio: [test]
+        ClioTests: [test]
         ClioUITests: [test]
     test:
       config: Debug
       enableAddressSanitizer: true
       gatherCoverageData: false
       preferredScreenCaptureFormat: screenshots
+      environmentVariables:
+        CLIO_UI_TESTING: "1"
       targets:
+        - name: ClioTests
+          parallelizable: false
+          selectedTests:
+            - WritingWorkspaceTests/testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView
         - name: ClioUITests
           parallelizable: false
           selectedTests:

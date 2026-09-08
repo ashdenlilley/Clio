@@ -4,6 +4,45 @@ import XCTest
 
 final class WritingWorkspaceTests: XCTestCase {
     @MainActor
+    func testRemovedEditorSurvivesDeferredAppKitCallbacksWithoutRetainingView() async {
+        // The callback-disconnection test below retains its view throughout
+        // the wait. Exercise actual destruction as well: AppKit can enqueue
+        // drag-registration work when configuration or delegates change.
+        for iteration in 0..<20 {
+            weak var releasedView: EditorTextView?
+            autoreleasepool {
+                let view = EditorTextView.makeTextKit2TextView()
+                releasedView = view
+                let surface = EditorContainerView(textView: view)
+                let coordinator = EditorCoordinator(
+                    configuration: EditorConfiguration(),
+                    onTextEdit: { _ in XCTFail("Removed editor published an edit") }
+                )
+                let window = NSWindow(
+                    contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                    styleMask: [.titled, .closable], backing: .buffered, defer: false
+                )
+                window.isReleasedWhenClosed = false
+                window.contentView = surface
+                coordinator.attach(to: surface)
+                surface.apply(configuration: EditorConfiguration())
+                view.string = "Disposable teardown fixture \(iteration)"
+                surface.layoutSubtreeIfNeeded()
+                coordinator.detach()
+                surface.prepareForRemoval()
+                window.contentView = nil
+                window.close()
+            }
+            // Suspend the test rather than block the main thread. No local
+            // strong reference keeps the view alive during AppKit callbacks.
+            let drained = expectation(description: "Deferred editor teardown \(iteration)")
+            RunLoop.main.perform(inModes: [.default]) { drained.fulfill() }
+            await fulfillment(of: [drained], timeout: 3)
+            XCTAssertNil(releasedView, "Removed editor must not be retained indefinitely")
+        }
+    }
+
+    @MainActor
     func testEditorTeardownDisconnectsCallbacksAndIsIdempotent() async throws {
         let config = EditorConfiguration()
         let view = EditorTextView.makeTextKit2TextView()
