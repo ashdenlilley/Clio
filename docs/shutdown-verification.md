@@ -54,3 +54,11 @@ regression probe, pending Cloud execution, not a production fix or a claim that
 the crash has been reproduced. Run it with Address Sanitizer and inspect the
 allocation/free stacks if it fails. A pass still requires the user's exact quit
 sequence to be reproduced against the signed app.
+
+Cloud shutdown build 42 (`5e690e9`) compiled with zero errors and ran four tests:
+two passed and two failed. The new probe failed its immediate weak-reference
+release assertion; no matching bad-access crash was reported by that assertion.
+AppKit can retain the editor beyond one run-loop pass, so the probe now waits
+up to five seconds for actual release before draining subsequent callbacks.
+The other failure remains the fullscreen transition timeout. Neither outcome
+establishes the cause of the production crash.

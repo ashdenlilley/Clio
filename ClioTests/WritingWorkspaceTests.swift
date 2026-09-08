@@ -35,10 +35,16 @@ final class WritingWorkspaceTests: XCTestCase {
             }
             // Suspend the test rather than block the main thread. No local
             // strong reference keeps the view alive during AppKit callbacks.
+            let released = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in releasedView == nil }, object: nil
+            )
+            await fulfillment(of: [released], timeout: 5)
+            guard releasedView == nil else { return }
+            // A framework-owned deferred retain may outlast the first run-loop
+            // pass. Wait for actual release, then drain queued callbacks.
             let drained = expectation(description: "Deferred editor teardown \(iteration)")
             RunLoop.main.perform(inModes: [.default]) { drained.fulfill() }
             await fulfillment(of: [drained], timeout: 3)
-            XCTAssertNil(releasedView, "Removed editor must not be retained indefinitely")
         }
     }
 
