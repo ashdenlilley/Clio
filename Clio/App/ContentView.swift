@@ -556,6 +556,7 @@ private struct WorkspaceErrorBanner: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
+            .interactionCursor()
             .accessibilityLabel("Dismiss error")
         }
         .font(.custom(Typography.family, fixedSize: 12))
@@ -793,7 +794,7 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         let accessory = NSTitlebarAccessoryViewController()
         accessory.layoutAttribute = .left
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
-        let button = NSButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")!, target: self, action: #selector(toggleSidebar))
+        let button = InteractionButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")!, target: self, action: #selector(toggleSidebar))
         button.frame = NSRect(x: 4, y: 2, width: 30, height: 24)
         button.bezelStyle = .texturedRounded
         button.isBordered = false
@@ -849,5 +850,13 @@ private struct SurfacePresentation: ViewModifier {
         content.opacity(progress)
             .offset(y: reduceMotion ? 0 : y * (1 - progress))
             .scaleEffect(reduceMotion ? 1 : scale + (1 - scale) * progress)
+    }
+}
+
+/// AppKit titlebar controls participate in the same cursor behavior as sidebar rows.
+final class InteractionButton: NSButton {
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
     }
 }

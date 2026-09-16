@@ -990,13 +990,14 @@ final class EditorSession: Identifiable {
             try await settlePendingEditorEdits()
         }
         guard self.document === document,
-              let workspace, let documentMover else {
+              let workspace, let documentMover, let sourceURL = document.fileURL else {
             return .cancelled
         }
         let outcome = try await documentMover.move(
             document,
             from: workspace,
             to: workspace,
+            parentRelativePath: (workspace.relativePath(for: sourceURL) as NSString).deletingLastPathComponent,
             preferredFilename: filename,
             collisionChoice: collisionChoice,
             approvedCollision: approvedCollision,

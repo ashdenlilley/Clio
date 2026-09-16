@@ -180,6 +180,7 @@ struct CommandPaletteView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .interactionCursor()
                 .onHover { hovering in
                     if hovering { windowSession.selectPaletteItemFromPointer(at: index) }
                 }
@@ -249,6 +250,7 @@ struct CommandPaletteView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .interactionCursor()
                 .onHover { hovering in
                     if hovering { windowSession.selectPaletteItemFromPointer(at: index) }
                 }

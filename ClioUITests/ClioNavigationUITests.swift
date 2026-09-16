@@ -9,6 +9,40 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         super.tearDown()
     }
 
+    func testSidebarNewDocumentCancellationDoesNotAddATab() {
+        launch(scenario: "restoration")
+        let create = app.buttons["sidebar.newDocument"]
+        XCTAssertTrue(create.waitForExistence(timeout: 3))
+        let originalCount = app.buttons.matching(identifier: "sidebar.tab").count
+        create.click()
+        let cancel = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        cancel.click()
+        XCTAssertEqual(app.buttons.matching(identifier: "sidebar.tab").count, originalCount)
+    }
+
+    func testSidebarInlineRenameSupportsDoubleClickEscapeAndContextMenu() {
+        launch(scenario: "restoration")
+        let tab = app.buttons["sidebar.tab"].firstMatch
+        XCTAssertTrue(tab.waitForExistence(timeout: 3))
+        tab.doubleClick()
+        let field = app.textFields["sidebar.rename"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.typeKey("a", modifierFlags: .command)
+        field.typeText("Cancelled.md")
+        field.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(waitUntil { !field.exists })
+        XCTAssertTrue(tab.label.contains("seed.md"))
+        tab.rightClick()
+        app.menuItems["Rename"].click()
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.typeKey("a", modifierFlags: .command)
+        field.typeText("Renamed.md")
+        field.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitUntil { !field.exists && tab.label.contains("Renamed.md") })
+        XCTAssertEqual(app.textViews["editor.text"].value as? String, "Alpha beta gamma\nSecond line\n")
+    }
+
     func testCommandPaletteKeyboardSelectionAndReturn() {
         launch(scenario: "blank")
 

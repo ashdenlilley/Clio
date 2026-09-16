@@ -24,7 +24,7 @@ private struct NativeEditorFontPicker: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "Choose Font…", target: context.coordinator,
+        let button = InteractionButton(title: "Choose Font…", target: context.coordinator,
                               action: #selector(Coordinator.showFonts(_:)))
         button.bezelStyle = .rounded
         button.setAccessibilityIdentifier("settings.editorFont")
@@ -186,6 +186,7 @@ struct SettingsView: View {
                                     appState.removeWorkspace(workspace.id)
                                 }
                                 .buttonStyle(.borderless)
+                                .interactionCursor()
                             }
                         }
                     }
@@ -203,6 +204,7 @@ struct SettingsView: View {
                                 appState.removeWorkspace(failure.id)
                             }
                             .buttonStyle(.borderless)
+                            .interactionCursor()
                         }
                     }
                     .help(failure.message)

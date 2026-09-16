@@ -1778,6 +1778,46 @@ private extension AppState {
         }
     }
 
+    internal func requestNewDocument(from window: EditorWindowSession) {
+        let panel = NSSavePanel()
+        let validation = NewDocumentPanelValidation()
+        panel.delegate = validation
+        defer { withExtendedLifetime(validation) {} }
+        panel.title = "New Document"
+        panel.prompt = "Create"
+        panel.nameFieldLabel = "Name:"
+        panel.nameFieldStringValue = "Untitled.md"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "md"), .plainText].compactMap { $0 }
+        panel.directoryURL = window.activeTab?.fileURL?.deletingLastPathComponent()
+            ?? workspaceDescriptors.first?.rootURL
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try DocumentFilename.createEmptyDocument(at: url)
+            openExternalDocumentURL(url, from: window)
+            refreshWorkspaceDiscovery()
+        } catch {
+            externalFileAccessController.releaseIncomingSelection(at: url)
+            presentError("Clio couldn’t create that document. Choose an unused name and a writable folder.", underlying: error)
+        }
+    }
+
+    /// Inline rename uses the same settled-buffer transaction as the command palette.
+    internal func renameDocument(_ tab: EditorSession, to name: String) async throws {
+        guard let sourceURL = tab.fileURL else { return }
+        let filename = try DocumentFilename.validated(name, preservingExtension: sourceURL.pathExtension)
+        let sourceLocator = tab.locator
+        let outcome = try await tab.rename(to: filename)
+        if case .collision = outcome {
+            _ = try await tab.resolveCollisionNow(.cancel)
+            throw DocumentFilename.ValidationError.alreadyExists
+        }
+        await finishNavigationMutation(
+            outcome, documentID: tab.documentID,
+            sourceLocator: sourceLocator, operationName: "renamed"
+        )
+    }
+
     func rename(_ tab: EditorSession) {
         guard let sourceURL = tab.fileURL else { return }
 
@@ -2449,5 +2489,55 @@ private extension AppState {
 
     static func clamp<T: Comparable>(_ value: T, to range: ClosedRange<T>) -> T {
         min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
+/// Names entered by a person must be validated, never silently treated as paths.
+enum DocumentFilename {
+    enum ValidationError: LocalizedError {
+        case invalidName, unsupportedExtension, alreadyExists
+        var errorDescription: String? {
+            switch self {
+            case .invalidName: "Enter a filename without slashes, colons, or control characters."
+            case .unsupportedExtension: "Use a .md, .markdown, or .txt extension."
+            case .alreadyExists: "A document with that name already exists. Choose another name."
+            }
+        }
+    }
+
+    static func validated(_ proposed: String, preservingExtension extensionName: String = "md") throws -> String {
+        var name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
+              !name.contains("/"), !name.contains(":"), !name.contains("\\"),
+              name.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw ValidationError.invalidName
+        }
+        if (name as NSString).pathExtension.isEmpty {
+            name += "." + (extensionName.isEmpty ? "md" : extensionName)
+        }
+        guard Workspace.documentExtensions.contains((name as NSString).pathExtension.lowercased()) else {
+            throw ValidationError.unsupportedExtension
+        }
+        return name
+    }
+
+    static func createEmptyDocument(at url: URL) throws {
+        guard try validated(url.lastPathComponent) == url.lastPathComponent else {
+            throw ValidationError.invalidName
+        }
+        // The save panel grants the exact destination, not arbitrary sibling files.
+        // Exclusive creation also closes the race after the panel's existence check.
+        try Data().write(to: url, options: .withoutOverwriting)
+    }
+}
+
+private final class NewDocumentPanelValidation: NSObject, NSOpenSavePanelDelegate {
+    func panel(_ sender: Any, validate url: URL) throws {
+        guard try DocumentFilename.validated(url.lastPathComponent) == url.lastPathComponent else {
+            throw DocumentFilename.ValidationError.invalidName
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            throw DocumentFilename.ValidationError.alreadyExists
+        }
     }
 }

@@ -30,7 +30,10 @@ On first launch, approve a workspace folder. The default is `~/Documents/Clio`.
 Recovery copies are kept in `~/Documents/Clio Recovery` for seven days. Documents
 in an iCloud-synced Documents folder follow your macOS sync settings.
 
-**New Document** opens a tab in the current window. **New Window** opens a blank
+The sidebar’s **New Document** button asks for a name and location, then opens the
+created file. Double-click a sidebar document name or choose **Rename** from its
+context menu to rename it. Expand folders to follow the connected file tree.
+**Command-N** opens an untitled tab in the current window. **New Window** opens a blank
 document in a separate window. Type `/` for commands or use **Command-K**.
 Focus mode dims surrounding text; typewriter mode keeps the typing line at an
 adjustable position. Manually scrolling releases that position until you type.

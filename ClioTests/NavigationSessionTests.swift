@@ -6,6 +6,67 @@ private struct NavigationTrashFailure: Error {}
 
 @MainActor
 final class NavigationSessionTests: XCTestCase {
+    func testDocumentFilenameValidationRejectsPathsAndPreservesExtensions() throws {
+        XCTAssertEqual(try DocumentFilename.validated("  Draft  "), "Draft.md")
+        XCTAssertEqual(try DocumentFilename.validated("Draft", preservingExtension: "txt"), "Draft.txt")
+        XCTAssertEqual(try DocumentFilename.validated("日本語.markdown"), "日本語.markdown")
+        for name in ["", "  ", ".", "..", "../escape", "nested/file.md", "bad:name", "hidden\nname", ".hidden.md", "image.png"] {
+            XCTAssertThrowsError(try DocumentFilename.validated(name), name)
+        }
+    }
+
+    func testExplicitDocumentCreationNeverOverwritesExistingBytes() throws {
+        try withTemporaryDirectory { folder in
+            let nested = folder.appendingPathComponent("Drafts", isDirectory: true)
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            let url = nested.appendingPathComponent("New.md")
+            try DocumentFilename.createEmptyDocument(at: url)
+            XCTAssertEqual(try Data(contentsOf: url), Data())
+            try Data("Keep these bytes".utf8).write(to: url)
+            XCTAssertThrowsError(try DocumentFilename.createEmptyDocument(at: url))
+            XCTAssertEqual(try String(contentsOf: url), "Keep these bytes")
+            XCTAssertThrowsError(try DocumentFilename.createEmptyDocument(at: folder.appendingPathComponent("missing/New.md")))
+        }
+    }
+
+    func testInlineRenamePreservesNestedFolderIdentityAndRejectsCollision() async throws {
+        try await withTemporaryDirectory { folder in
+            let nested = folder.appendingPathComponent("Drafts", isDirectory: true)
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            let source = nested.appendingPathComponent("source.md")
+            let occupied = nested.appendingPathComponent("occupied.md")
+            try Data("Original prose".utf8).write(to: source)
+            try Data("Another document".utf8).write(to: occupied)
+            let defaults = makeDefaults()
+            let catalog = makeCatalog(defaults: defaults)
+            let descriptor = try catalog.addAuthorizedFolder(folder)
+            let workspace = try XCTUnwrap(catalog.workspace(id: descriptor.id))
+            let appState = isolatedAppState(defaults: defaults, workspaceCatalog: catalog, searchIndex: RecordingSearchIndex())
+            let window = EditorWindowSession(request: .newDocument())
+            window.connect(to: appState)
+            let tab = try XCTUnwrap(window.activeTab)
+            try tab.activate(documentURL: source, in: workspace, workspaceID: descriptor.id,
+                             registry: appState.documentRegistry, conflictResolver: appState.conflictResolver,
+                             documentMover: appState.documentMover)
+            let identity = tab.documentID
+            do {
+                try await appState.renameDocument(tab, to: "occupied.md")
+                XCTFail("Duplicate names must remain editable without replacing anything")
+            } catch {
+                XCTAssertTrue(error is DocumentFilename.ValidationError)
+            }
+            XCTAssertNil(tab.pendingCollision)
+            XCTAssertEqual(try String(contentsOf: occupied), "Another document")
+            XCTAssertEqual(tab.fileURL?.resolvingSymlinksInPath(), source.resolvingSymlinksInPath())
+            try await appState.renameDocument(tab, to: "Renamed")
+            XCTAssertEqual(tab.fileURL?.resolvingSymlinksInPath(), nested.appendingPathComponent("Renamed.md").resolvingSymlinksInPath())
+            XCTAssertEqual(tab.documentID, identity)
+            XCTAssertEqual(try String(contentsOf: nested.appendingPathComponent("Renamed.md")), "Original prose")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Renamed.md").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        }
+    }
+
     func testNewDocumentAddsAnInAppTabAndKeepsOneTabWhenClosed() {
         let window = EditorWindowSession(request: .newDocument())
         let originalID = window.activeTabID

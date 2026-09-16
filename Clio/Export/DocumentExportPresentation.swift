@@ -800,6 +800,7 @@ private struct ExportCompletionView: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
+            .interactionCursor()
             .accessibilityLabel("Dismiss export confirmation")
         }
         .font(.custom(Typography.family, fixedSize: 11))
