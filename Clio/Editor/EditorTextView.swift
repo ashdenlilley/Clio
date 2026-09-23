@@ -27,6 +27,12 @@ final class EditorTextView: NSTextView {
     var onKeyEventEnded: (() -> Void)?
     var onMarkdownAction: ((MarkdownEditorAction) -> Bool)?
 
+    /// Called after plain text is pasted normally, with the text and the range
+    /// it landed in. Structure recovery needs a network round trip, so the
+    /// paste itself stays synchronous and any reformatting arrives afterwards
+    /// as a separate, separately undoable edit.
+    var onPlainTextPasted: ((String, NSRange) -> Void)?
+
     private var retainedTextKitStack: AnyObject?
     private let blockCaret = CALayer()
     private var isProcessingKeyEvent = false
@@ -90,9 +96,19 @@ final class EditorTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        if let value = NSPasteboard.general.string(forType: .string),
-           onMarkdownAction?(.paste(value)) == true { return }
+        guard let value = NSPasteboard.general.string(forType: .string) else {
+            super.paste(sender)
+            return
+        }
+        // A URL pasted over a selection becomes a link synchronously and is
+        // already structured, so it never reaches structure recovery.
+        if onMarkdownAction?(.paste(value)) == true { return }
+        let start = selectedRange().location
         super.paste(sender)
+        let inserted = NSRange(location: start, length: (value as NSString).length)
+        guard NSMaxRange(inserted) <= (string as NSString).length,
+              (string as NSString).substring(with: inserted) == value else { return }
+        onPlainTextPasted?(value, inserted)
     }
 
     override func scrollWheel(with event: NSEvent) {

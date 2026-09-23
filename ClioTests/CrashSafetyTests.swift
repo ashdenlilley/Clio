@@ -173,11 +173,15 @@ final class CrashSafetyTests: XCTestCase {
   }
 
   func testSIGKILLSubprocessPersistsJournalAndAtomicCandidate() throws {
-    let physicalHome = try XCTUnwrap(
-      FileManager.default.homeDirectory(forUser: NSUserName())
-    )
-    let root = physicalHome
-      .appendingPathComponent("Library/Containers/olympus.clio.mac/Data/tmp", isDirectory: true)
+    // The probe inherits this host's sandbox, so both processes must be able to
+    // reach this root. Under the signed sandboxed Cloud host
+    // `NSTemporaryDirectory()` already resolves to the app container's `tmp`,
+    // which is exactly the shared path that needs; under an unsigned local host
+    // neither process is sandboxed and it resolves to an ordinary temporary
+    // directory. Naming the physical container path instead only works for the
+    // first case: an unsigned host does not own that container, and macOS
+    // denies it with EPERM.
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("ClioCrashSafety-\(UUID().uuidString)", isDirectory: true)
     let workspaceURL = root.appendingPathComponent("Workspace", isDirectory: true)
     let journalURL = root.appendingPathComponent("Journal", isDirectory: true)

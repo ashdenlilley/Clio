@@ -33,6 +33,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var displayedConflict: DocumentConflict?
     @State private var conflictEditorSession: EditorSession?
+    @State private var pasteStructure = PasteStructureController()
     @FocusState private var settingsDoneFocused: Bool
 
     private var motion: WindowMotionAdapter { windowSession.motion }
@@ -197,6 +198,14 @@ struct ContentView: View {
                 },
                 onSlashCommand: { presentation in
                     windowSession.presentInlineSlashPalette(presentation)
+                },
+                onPlainTextPasted: { pasted, range, textView in
+                    pasteStructure.recover(
+                        pasted: pasted,
+                        range: range,
+                        in: textView,
+                        using: appState.intelligence
+                    )
                 },
                 minimap: windowSession.minimap,
                 onEditorReady: { [weak editorSession] in editorSession?.mcpTextView = $0 }

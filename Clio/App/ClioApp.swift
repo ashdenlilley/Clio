@@ -151,7 +151,7 @@ final class QuitViewLifetime {
             if let delegate = window.delegate { retain(delegate) }
             capture(window.contentView)
             // A window's shared field editor need not be in its content tree.
-            capture(window.fieldEditor(false, for: nil) as? NSView)
+            capture(window.fieldEditor(false, for: nil))
             if let responder = window.firstResponder { retain(responder) }
         }
     }

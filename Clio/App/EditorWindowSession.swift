@@ -75,6 +75,21 @@ final class EditorWindowSession: Identifiable {
     @ObservationIgnored
     private var searchTask: Task<Void, Never>?
 
+    /// The assisted match for `intentQuery`, when one was found. Held
+    /// alongside the query it belongs to so a stale answer can never be
+    /// applied to text the writer has since changed.
+    private(set) var intentResult: CommandIntentResult?
+    private(set) var intentQuery = ""
+    private(set) var isResolvingIntent = false
+
+    @ObservationIgnored
+    private var intentTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var cachedLiteralNeedle: String?
+    @ObservationIgnored
+    private var cachedLiteralCommands: [ClioCommandDescriptor] = []
+
     @ObservationIgnored
     private var horizontalGestureDistance: CGFloat = 0
 
@@ -134,6 +149,7 @@ final class EditorWindowSession: Identifiable {
 
     deinit {
         searchTask?.cancel()
+        intentTask?.cancel()
     }
 
     var activeTab: EditorSession? {
@@ -141,14 +157,67 @@ final class EditorWindowSession: Identifiable {
         return tabs.first { $0.id == activeTabID } ?? tabs.first
     }
 
-    var filteredCommands: [ClioCommandDescriptor] {
+    /// The palette's own substring match. Instant, offline, and unchanged:
+    /// it decides the list whenever it finds anything at all.
+    ///
+    /// Memoized on the command token. SwiftUI reads this once per row while the
+    /// palette is open, and each miss costs three locale-aware substring
+    /// searches per command; recomputing it per row turned one keystroke into
+    /// hundreds of them. The cache is `@ObservationIgnored`, so reading
+    /// `paletteQuery` above is still what registers the dependency.
+    var literalCommands: [ClioCommandDescriptor] {
         let needle = ClioCommandParser.commandToken(in: paletteQuery)
-        guard !needle.isEmpty else { return ClioCommandDescriptor.all }
-        return ClioCommandDescriptor.all.filter {
-            $0.command.rawValue.localizedCaseInsensitiveContains(needle)
-                || $0.title.localizedCaseInsensitiveContains(needle)
-                || $0.detail.localizedCaseInsensitiveContains(needle)
+        if let cachedLiteralNeedle, cachedLiteralNeedle == needle {
+            return cachedLiteralCommands
         }
+        let matches: [ClioCommandDescriptor]
+        if needle.isEmpty {
+            matches = ClioCommandDescriptor.all
+        } else {
+            matches = ClioCommandDescriptor.all.filter {
+                $0.command.rawValue.localizedCaseInsensitiveContains(needle)
+                    || $0.title.localizedCaseInsensitiveContains(needle)
+                    || $0.detail.localizedCaseInsensitiveContains(needle)
+            }
+        }
+        cachedLiteralNeedle = needle
+        cachedLiteralCommands = matches
+        return matches
+    }
+
+    /// Falls back to an assisted match only where the palette would otherwise
+    /// show nothing. Typing a command name never reaches the network, and a
+    /// writer who is offline or has the feature off sees exactly what they saw
+    /// before: an empty list.
+    var filteredCommands: [ClioCommandDescriptor] {
+        let literal = literalCommands
+        guard literal.isEmpty, let intentResult, intentQuery == paletteQuery else {
+            return literal
+        }
+        let byID = Dictionary(
+            uniqueKeysWithValues: ClioCommandDescriptor.all.map { ($0.command, $0) }
+        )
+        return intentResult.ranked.compactMap { byID[$0] }
+    }
+
+    /// Whether the visible list came from an assisted match rather than from
+    /// the writer's own typing. The palette says so rather than presenting a
+    /// guess as if it were a literal match.
+    var isShowingIntentMatch: Bool {
+        literalCommands.isEmpty && intentResult != nil && intentQuery == paletteQuery
+    }
+
+    /// The slash name a palette row shows, carrying any argument an assisted
+    /// match filled in so "send this to my editor in Word" reads back as
+    /// `/export docx` before the writer commits to it.
+    func paletteRowTitle(for descriptor: ClioCommandDescriptor) -> String {
+        guard isShowingIntentMatch, let intentResult,
+              intentResult.invocation.command == descriptor.command,
+              !intentResult.invocation.arguments.isEmpty else {
+            return descriptor.command.slashName
+        }
+        return ([descriptor.command.slashName] + intentResult.invocation.arguments)
+            .joined(separator: " ")
     }
 
     var selectedPaletteItemAnchor: String? {
@@ -353,6 +422,7 @@ final class EditorWindowSession: Identifiable {
         }
         paletteErrorMessage = nil
         isSearching = false
+        clearCommandIntent()
         // SwiftUI's field editor relinquishes focus after its presentation
         // update. Request a guarded follow-up without restoring the old range.
         focusRestorationGeneration &+= 1
@@ -372,6 +442,8 @@ final class EditorWindowSession: Identifiable {
         paletteSelectionIndex = 0
         if paletteMode == .search {
             updateSearch()
+        } else {
+            updateCommandIntent()
         }
     }
 
@@ -427,6 +499,12 @@ final class EditorWindowSession: Identifiable {
     func invocation(for command: ClioCommandID) throws -> ClioCommandInvocation {
         let token = ClioCommandParser.commandToken(in: paletteQuery).lowercased()
         guard token == command.rawValue else {
+            // An assisted match may have filled an argument from the request,
+            // such as the format in "send this to my editor in Word".
+            if let intentResult, intentQuery == paletteQuery,
+               intentResult.invocation.command == command {
+                return intentResult.invocation
+            }
             return ClioCommandInvocation(command: command, arguments: [])
         }
         let trimmed = paletteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -452,6 +530,74 @@ final class EditorWindowSession: Identifiable {
                 context: context
             )
         }
+    }
+}
+
+extension EditorWindowSession {
+    /// Asks for an assisted match, but only where the palette has nothing of
+    /// its own to show.
+    ///
+    /// The order of these guards is the privacy contract: the literal filter
+    /// runs first, and a request is built only once it has come up empty and
+    /// the feature is switched on with a key in place.
+    func updateCommandIntent() {
+        intentTask?.cancel()
+        isResolvingIntent = false
+        let query = paletteQuery
+        guard isPalettePresented, paletteMode == .commands else {
+            clearCommandIntent()
+            return
+        }
+        guard literalCommands.isEmpty else {
+            clearCommandIntent()
+            return
+        }
+        guard let appState, appState.intelligence.isReady else {
+            clearCommandIntent()
+            return
+        }
+        let request = ClioCommandParser.commandToken(in: query).isEmpty
+            ? query.trimmingCharacters(in: .whitespacesAndNewlines)
+            : String(query.drop(while: { $0 == "/" }))
+        guard request.count >= 3 else {
+            clearCommandIntent()
+            return
+        }
+
+        let context = commandIntentContext()
+        isResolvingIntent = true
+        intentTask = Task { @MainActor [weak self, weak appState] in
+            // The writer is still typing. Settle before spending a request.
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self, let appState else { return }
+            let result = await appState.intelligence.resolveCommand(
+                for: request,
+                context: context
+            )
+            guard !Task.isCancelled, self.paletteQuery == query else { return }
+            self.isResolvingIntent = false
+            self.intentResult = result
+            self.intentQuery = query
+            self.selectPaletteItem(at: 0)
+        }
+    }
+
+    func commandIntentContext() -> CommandIntentContext {
+        CommandIntentContext(
+            hasOpenDocument: activeTab != nil,
+            documentExistsOnDisk: activeTab?.fileURL != nil,
+            isFocusModeEnabled: appState?.isFocusModeEnabled ?? false,
+            isTypewriterEnabled: appState?.isTypewriterModeEnabled ?? false,
+            isSidebarVisible: isSidebarVisible
+        )
+    }
+
+    func clearCommandIntent() {
+        intentTask?.cancel()
+        intentTask = nil
+        isResolvingIntent = false
+        intentResult = nil
+        intentQuery = ""
     }
 }
 

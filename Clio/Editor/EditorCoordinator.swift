@@ -7,6 +7,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
+    private var onPlainTextPasted: (@MainActor (String, NSRange, NSTextView) -> Void)?
     private var isRestoringLiteralSlash = false
     private let minimap: EditorMinimapModel?
     private weak var surface: EditorContainerView?
@@ -41,12 +42,14 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         viewport: Binding<EditorViewportState>? = nil,
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
         onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
+        onPlainTextPasted: (@MainActor (String, NSRange, NSTextView) -> Void)? = nil,
         minimap: EditorMinimapModel? = nil
     ) {
         self.viewport = viewport
         self.configuration = configuration
         self.onTextEdit = onTextEdit
         self.onSlashCommand = onSlashCommand
+        self.onPlainTextPasted = onPlainTextPasted
         self.minimap = minimap
     }
 
@@ -95,6 +98,10 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             guard let self, let textView else { return false }
             return self.markdownEditingController.perform(action, in: textView)
         }
+        surface.textView.onPlainTextPasted = { [weak self, weak textView = surface.textView] text, range in
+            guard let self, let textView else { return }
+            self.onPlainTextPasted?(text, range, textView)
+        }
         surface.onViewportSizeChanged = { [weak self, weak surface] in
             guard let self, let surface else { return }
             self.minimap?.reservesNativeScroller = surface.reservesNativeScroller
@@ -137,11 +144,13 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             textView.onKeyEventBegan = nil
             textView.onKeyEventEnded = nil
             textView.onMarkdownAction = nil
+            textView.onPlainTextPasted = nil
         }
         surface?.onViewportSizeChanged = nil
         minimap?.navigate = nil
         viewport = nil
         onSlashCommand = nil
+        onPlainTextPasted = nil
         onTextEdit = { _ in }
         surface = nil
     }
@@ -152,11 +161,13 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         configuration: EditorConfiguration,
         viewport: Binding<EditorViewportState>? = nil,
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
-        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil
+        onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
+        onPlainTextPasted: (@MainActor (String, NSRange, NSTextView) -> Void)? = nil
     ) {
         self.onTextEdit = onTextEdit
         self.viewport = viewport
         self.onSlashCommand = onSlashCommand
+        self.onPlainTextPasted = onPlainTextPasted
         guard let surface else { return }
 
         let configurationChanged = self.configuration != configuration

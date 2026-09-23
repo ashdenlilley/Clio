@@ -92,7 +92,12 @@ final class MCPRouter {
         guard let name = params["name"] as? String,
               let definition = MCPTools.definitions.first(where: { $0["name"] as? String == name }),
               let arguments = params["arguments"] as? [String: Any],
-              Self.validate(arguments, schema: definition["inputSchema"] as! [String: Any]) else {
+              // Never force this cast. Every shipped definition carries an
+              // object schema, but this is the one path a remote client feeds,
+              // and a malformed definition must answer with an error rather
+              // than trap the whole app.
+              let schema = definition["inputSchema"] as? [String: Any],
+              Self.validate(arguments, schema: schema) else {
             return response(id: id, error: -32602, message: "Invalid tool arguments")
         }
         let key = operationKey(sessionID, id)

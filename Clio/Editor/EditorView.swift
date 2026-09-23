@@ -57,6 +57,7 @@ struct EditorView: NSViewRepresentable {
     private var configuration: EditorConfiguration
     private var onTextEdit: @MainActor (MarkdownTextEdit) -> Void
     private var onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
+    private var onPlainTextPasted: (@MainActor (String, NSRange, NSTextView) -> Void)?
     private var minimap: EditorMinimapModel?
     private var onEditorReady: (@MainActor (NSTextView) -> Void)?
 
@@ -67,6 +68,7 @@ struct EditorView: NSViewRepresentable {
         configuration: EditorConfiguration = EditorConfiguration(),
         onTextEdit: @escaping @MainActor (MarkdownTextEdit) -> Void,
         onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)? = nil,
+        onPlainTextPasted: (@MainActor (String, NSRange, NSTextView) -> Void)? = nil,
         minimap: EditorMinimapModel? = nil,
         onEditorReady: (@MainActor (NSTextView) -> Void)? = nil
     ) {
@@ -76,6 +78,7 @@ struct EditorView: NSViewRepresentable {
         self.configuration = configuration
         self.onTextEdit = onTextEdit
         self.onSlashCommand = onSlashCommand
+        self.onPlainTextPasted = onPlainTextPasted
         self.minimap = minimap
         self.onEditorReady = onEditorReady
     }
@@ -86,6 +89,7 @@ struct EditorView: NSViewRepresentable {
             viewport: viewport,
             onTextEdit: onTextEdit,
             onSlashCommand: onSlashCommand,
+            onPlainTextPasted: onPlainTextPasted,
             minimap: minimap
         )
     }
@@ -100,7 +104,8 @@ struct EditorView: NSViewRepresentable {
             configuration: configuration,
             viewport: viewport,
             onTextEdit: onTextEdit,
-            onSlashCommand: onSlashCommand
+            onSlashCommand: onSlashCommand,
+            onPlainTextPasted: onPlainTextPasted
         )
         onEditorReady?(textView)
         return surface
@@ -114,7 +119,8 @@ struct EditorView: NSViewRepresentable {
             configuration: configuration,
             viewport: viewport,
             onTextEdit: onTextEdit,
-            onSlashCommand: onSlashCommand
+            onSlashCommand: onSlashCommand,
+            onPlainTextPasted: onPlainTextPasted
         )
     }
 

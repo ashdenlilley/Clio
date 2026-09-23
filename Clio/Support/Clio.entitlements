@@ -4,6 +4,10 @@
 <dict>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Outbound requests are made only by IntelligenceService, which is
+	     off until the writer enables assisted commands in Settings. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.files.bookmarks.app-scope</key>

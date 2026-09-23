@@ -103,6 +103,38 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertFalse(MCPRouter.validID(NSNull()))
     }
 
+    func testEveryShippedToolCarriesAnObjectSchema() {
+        // The router reads `inputSchema` on the one path a remote client feeds.
+        // It no longer force-casts, so a malformed definition answers -32602
+        // rather than trapping; this keeps the shipped definitions honest so
+        // that path stays unreachable in practice.
+        XCTAssertFalse(MCPTools.definitions.isEmpty)
+        for definition in MCPTools.definitions {
+            let name = definition["name"] as? String
+            XCTAssertNotNil(name, "every tool needs a name")
+            XCTAssertNotNil(
+                definition["inputSchema"] as? [String: Any],
+                "\(name ?? "unnamed") must carry an object inputSchema"
+            )
+        }
+    }
+
+    func testMalformedArgumentsAreRejectedRatherThanTrapping() {
+        // `validate` must be total over arbitrary client input: no shape of
+        // arguments or schema may crash it.
+        let schema = MCPTools.definitions
+            .first { $0["name"] as? String == "read_document" }?["inputSchema"] as? [String: Any]
+        let readDocument = try? XCTUnwrap(schema)
+        XCTAssertNotNil(readDocument)
+
+        XCTAssertFalse(MCPRouter.validate(["workspaceID": NSNull()], schema: readDocument ?? [:]))
+        XCTAssertFalse(MCPRouter.validate(["workspaceID": "w", "documentID": "d"], schema: [:]))
+        XCTAssertFalse(
+            MCPRouter.validate(["unexpected": "value"], schema: ["properties": "not-an-object"])
+        )
+        XCTAssertTrue(MCPRouter.validate([:], schema: ["required": ["a"], "properties": [:]]) == false)
+    }
+
     func testServiceDefaultsOffAndQuitDoesNotRegisterLoginOrOpenKeychain() {
         let app = isolatedAppState()
         XCTAssertFalse(app.mcpService.enabled)

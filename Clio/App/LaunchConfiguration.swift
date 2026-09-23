@@ -83,7 +83,9 @@ private extension ClioLaunchConfiguration {
             searchIndex: index,
             documentRegistry: DocumentBufferRegistry(identityStore: identities),
             exportRecoveryCheckpointStore: ExportRecoveryCheckpointStore(rootURL: rootURL.appendingPathComponent(".export-checkpoints")),
-            exportRecoveryCatalog: ExportRecoveryCatalog(rootURL: rootURL.appendingPathComponent(".export-recovery"))
+            exportRecoveryCatalog: ExportRecoveryCatalog(rootURL: rootURL.appendingPathComponent(".export-recovery")),
+            // Never read or write the real Keychain from a UI test run.
+            intelligenceKeyStore: .inMemory()
         )
 
         ClioLaunchDiagnostics.mark("isolated-app-state-ready")

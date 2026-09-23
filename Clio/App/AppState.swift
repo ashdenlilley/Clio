@@ -6,36 +6,9 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class AppState: ClioCommandDispatching {
-    enum AccentPreset: String, CaseIterable, Identifiable, Sendable {
-        case clio
-        case system
-        case blue, purple, pink, red, orange, yellow, graphite
-        case green
-        case amber
-        case cyan
-
-        var id: Self { self }
-
-        var title: String {
-            rawValue.capitalized
-        }
-
-        var nsColor: NSColor {
-            switch self {
-            case .clio: Palette.accent
-            case .system: .controlAccentColor
-            case .blue: .systemBlue
-            case .purple: .systemPurple
-            case .pink: .systemPink
-            case .red: .systemRed
-            case .orange, .amber: .systemOrange
-            case .yellow: .systemYellow
-            case .green: .systemGreen
-            case .graphite: .systemGray
-            case .cyan: .systemCyan
-            }
-        }
-    }
+    /// Moved to `EditorPreferences`. Kept so `AppState.AccentPreset`
+    /// still names the same type everywhere it is already written.
+    typealias AccentPreset = EditorPreferences.AccentPreset
 
     private(set) var workspace: Workspace?
     private(set) var workspaceErrorMessage: String?
@@ -50,47 +23,55 @@ final class AppState: ClioCommandDispatching {
     let discoverySettings: WorkspaceDiscoverySettings
     private(set) var pendingExportRecoveries: [ExportRecoveryItem] = []
 
-    var editorFontName: String = "Hack-Regular" {
-        didSet { defaults.set(editorFontName, forKey: "editor.fontName") }
-    }
-    var fontSize: Double = 14 {
-        didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
-    }
+    /// Presentation preferences live in `EditorPreferences`. These forward so
+    /// that `appState.fontSize` and `$appState.accent` keep working at the
+    /// call sites and in bindings; observation tracks through to the real
+    /// property on the other object.
+    let preferences: EditorPreferences
 
-    var measure: Int = 72 {
-        didSet { defaults.set(measure, forKey: Keys.measure) }
+    var editorFontName: String {
+        get { preferences.editorFontName }
+        set { preferences.editorFontName = newValue }
     }
-
-    var lineHeight: Double = 1.65 {
-        didSet { defaults.set(lineHeight, forKey: Keys.lineHeight) }
+    var fontSize: Double {
+        get { preferences.fontSize }
+        set { preferences.fontSize = newValue }
     }
-
-    var typewriterAnchor: Double = 0.45 {
-        didSet { defaults.set(typewriterAnchor, forKey: Keys.typewriterAnchor) }
+    var measure: Int {
+        get { preferences.measure }
+        set { preferences.measure = newValue }
     }
-
-    var focusDimmingOpacity: Double = 0.28 {
-        didSet { defaults.set(focusDimmingOpacity, forKey: Keys.focusDimmingOpacity) }
+    var lineHeight: Double {
+        get { preferences.lineHeight }
+        set { preferences.lineHeight = newValue }
     }
-
-    var isSpellCheckingEnabled = true {
-        didSet { defaults.set(isSpellCheckingEnabled, forKey: Keys.spellChecking) }
+    var typewriterAnchor: Double {
+        get { preferences.typewriterAnchor }
+        set { preferences.typewriterAnchor = newValue }
     }
-
-    var accent: AccentPreset = .clio {
-        didSet { defaults.set(accent.rawValue, forKey: Keys.accent) }
+    var focusDimmingOpacity: Double {
+        get { preferences.focusDimmingOpacity }
+        set { preferences.focusDimmingOpacity = newValue }
     }
-
-    var isTypewriterModeEnabled = true {
-        didSet { defaults.set(isTypewriterModeEnabled, forKey: Keys.typewriterMode) }
+    var isSpellCheckingEnabled: Bool {
+        get { preferences.isSpellCheckingEnabled }
+        set { preferences.isSpellCheckingEnabled = newValue }
     }
-
-    var isFocusModeEnabled = true {
-        didSet { defaults.set(isFocusModeEnabled, forKey: Keys.focusMode) }
+    var accent: AccentPreset {
+        get { preferences.accent }
+        set { preferences.accent = newValue }
     }
-
-    var isChromeFadeEnabled = true {
-        didSet { defaults.set(isChromeFadeEnabled, forKey: Keys.chromeFade) }
+    var isTypewriterModeEnabled: Bool {
+        get { preferences.isTypewriterModeEnabled }
+        set { preferences.isTypewriterModeEnabled = newValue }
+    }
+    var isFocusModeEnabled: Bool {
+        get { preferences.isFocusModeEnabled }
+        set { preferences.isFocusModeEnabled = newValue }
+    }
+    var isChromeFadeEnabled: Bool {
+        get { preferences.isChromeFadeEnabled }
+        set { preferences.isChromeFadeEnabled = newValue }
     }
 
     @ObservationIgnored
@@ -163,6 +144,18 @@ final class AppState: ClioCommandDispatching {
     private var editorWindows: [EditorWindowSession] = []
 
     @ObservationIgnored lazy var mcpService = ClioMCPService(appState: self, defaults: defaults)
+
+    @ObservationIgnored lazy var intelligence = IntelligenceService(
+        defaults: defaults,
+        loadAPIKey: intelligenceKeyStore.load,
+        storeAPIKey: intelligenceKeyStore.store
+    )
+
+    /// Where the TypeSafe key lives. The Keychain in a real launch; an
+    /// in-memory store under UI testing, which isolates defaults, the
+    /// workspace and the index the same way. Without this a UI test would read
+    /// whatever key the developer running it happens to have stored.
+    @ObservationIgnored private let intelligenceKeyStore: IntelligenceKeyStore
 
     var mcpWindows: [EditorWindowSession] { editorWindows }
     var mcpSessions: [EditorSession] { editorSessions }
@@ -242,9 +235,12 @@ final class AppState: ClioCommandDispatching {
         parentFolderSelection: (@MainActor (URL) -> URL?)? = nil,
         activationWillOpen: (@MainActor (URL) async -> Void)? = nil,
         exportRecoveryCheckpointStore: any ExportRecoveryCheckpointing = ExportRecoveryCheckpointStore.shared,
-        exportRecoveryCatalog: any ExportTransactionRecoveryCataloging = ExportRecoveryCatalog.shared
+        exportRecoveryCatalog: any ExportTransactionRecoveryCataloging = ExportRecoveryCatalog.shared,
+        intelligenceKeyStore: IntelligenceKeyStore = .keychain
     ) {
         self.defaults = defaults
+        self.intelligenceKeyStore = intelligenceKeyStore
+        self.preferences = EditorPreferences(defaults: defaults)
         self.fileManager = fileManager
         self.crashRecoveryJournal = crashRecoveryJournal
         self.externalFileAccessController = externalFileAccessController
@@ -295,52 +291,6 @@ final class AppState: ClioCommandDispatching {
             }
         )
 
-        editorFontName = defaults.string(forKey: "editor.fontName") ?? "Hack-Regular"
-        fontSize = Self.clamp(
-            Self.double(forKey: Keys.fontSize, default: 14, in: defaults),
-            to: 12...20
-        )
-        measure = Self.clamp(
-            Self.integer(forKey: Keys.measure, default: 72, in: defaults),
-            to: 60...90
-        )
-        lineHeight = Self.clamp(
-            Self.double(forKey: Keys.lineHeight, default: 1.65, in: defaults),
-            to: 1.2...2.0
-        )
-        typewriterAnchor = Self.clamp(
-            Self.double(forKey: Keys.typewriterAnchor, default: 0.45, in: defaults),
-            to: 0.3...0.6
-        )
-        focusDimmingOpacity = Self.clamp(
-            Self.double(forKey: Keys.focusDimmingOpacity, default: 0.28, in: defaults),
-            to: 0.1...0.6
-        )
-
-        isSpellCheckingEnabled = Self.bool(
-            forKey: Keys.spellChecking,
-            default: true,
-            in: defaults
-        )
-        isTypewriterModeEnabled = Self.bool(
-            forKey: Keys.typewriterMode,
-            default: true,
-            in: defaults
-        )
-        isFocusModeEnabled = Self.bool(
-            forKey: Keys.focusMode,
-            default: true,
-            in: defaults
-        )
-        isChromeFadeEnabled = Self.bool(
-            forKey: Keys.chromeFade,
-            default: true,
-            in: defaults
-        )
-        if let storedAccent = defaults.string(forKey: Keys.accent),
-           let accent = AccentPreset(rawValue: storedAccent) {
-            self.accent = accent
-        }
         appStateReference.value = self
 
         if let initialWorkspace {
@@ -413,11 +363,11 @@ final class AppState: ClioCommandDispatching {
     }
 
     func adjustFontSize(by amount: Double) {
-        fontSize = Self.clamp(fontSize + amount, to: 12...20)
+        preferences.adjustFontSize(by: amount)
     }
 
     func resetFontSize() {
-        fontSize = 14
+        preferences.resetFontSize()
     }
 
     func register(_ session: EditorSession) {
@@ -1778,46 +1728,6 @@ private extension AppState {
         }
     }
 
-    internal func requestNewDocument(from window: EditorWindowSession) {
-        let panel = NSSavePanel()
-        let validation = NewDocumentPanelValidation()
-        panel.delegate = validation
-        defer { withExtendedLifetime(validation) {} }
-        panel.title = "New Document"
-        panel.prompt = "Create"
-        panel.nameFieldLabel = "Name:"
-        panel.nameFieldStringValue = "Untitled.md"
-        panel.canCreateDirectories = true
-        panel.allowedContentTypes = [UTType(filenameExtension: "md"), .plainText].compactMap { $0 }
-        panel.directoryURL = window.activeTab?.fileURL?.deletingLastPathComponent()
-            ?? workspaceDescriptors.first?.rootURL
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try DocumentFilename.createEmptyDocument(at: url)
-            openExternalDocumentURL(url, from: window)
-            refreshWorkspaceDiscovery()
-        } catch {
-            externalFileAccessController.releaseIncomingSelection(at: url)
-            presentError("Clio couldn’t create that document. Choose an unused name and a writable folder.", underlying: error)
-        }
-    }
-
-    /// Inline rename uses the same settled-buffer transaction as the command palette.
-    internal func renameDocument(_ tab: EditorSession, to name: String) async throws {
-        guard let sourceURL = tab.fileURL else { return }
-        let filename = try DocumentFilename.validated(name, preservingExtension: sourceURL.pathExtension)
-        let sourceLocator = tab.locator
-        let outcome = try await tab.rename(to: filename)
-        if case .collision = outcome {
-            _ = try await tab.resolveCollisionNow(.cancel)
-            throw DocumentFilename.ValidationError.alreadyExists
-        }
-        await finishNavigationMutation(
-            outcome, documentID: tab.documentID,
-            sourceLocator: sourceLocator, operationName: "renamed"
-        )
-    }
-
     func rename(_ tab: EditorSession) {
         guard let sourceURL = tab.fileURL else { return }
 
@@ -1970,16 +1880,6 @@ private extension AppState {
     }
 
     enum Keys {
-        static let fontSize = "editor.fontSize"
-        static let measure = "editor.measure"
-        static let lineHeight = "editor.lineHeight"
-        static let typewriterAnchor = "editor.typewriterAnchor"
-        static let focusDimmingOpacity = "editor.focusDimmingOpacity"
-        static let spellChecking = "editor.spellChecking"
-        static let accent = "appearance.accent"
-        static let typewriterMode = "mode.typewriter"
-        static let focusMode = "mode.focus"
-        static let chromeFade = "mode.chromeFade"
         static let workspaceBookmark = "workspace.securityScopedBookmark"
         static let legacyWorkspaceID = "workspace.securityScopedBookmark.id"
         static let recoveryBookmark = "recovery.securityScopedBookmark"
@@ -2463,33 +2363,9 @@ private extension AppState {
         workspaceErrorMessage = "\(guidance)\n\n\(error.localizedDescription)"
     }
 
-    static func bool(
-        forKey key: String,
-        default defaultValue: Bool,
-        in defaults: UserDefaults
-    ) -> Bool {
-        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
-    }
 
-    static func double(
-        forKey key: String,
-        default defaultValue: Double,
-        in defaults: UserDefaults
-    ) -> Double {
-        defaults.object(forKey: key) == nil ? defaultValue : defaults.double(forKey: key)
-    }
 
-    static func integer(
-        forKey key: String,
-        default defaultValue: Int,
-        in defaults: UserDefaults
-    ) -> Int {
-        defaults.object(forKey: key) == nil ? defaultValue : defaults.integer(forKey: key)
-    }
 
-    static func clamp<T: Comparable>(_ value: T, to range: ClosedRange<T>) -> T {
-        min(max(value, range.lowerBound), range.upperBound)
-    }
 }
 
 /// Names entered by a person must be validated, never silently treated as paths.
@@ -2539,5 +2415,51 @@ private final class NewDocumentPanelValidation: NSObject, NSOpenSavePanelDelegat
         if FileManager.default.fileExists(atPath: url.path) {
             throw DocumentFilename.ValidationError.alreadyExists
         }
+    }
+}
+
+/// Document actions the sidebar and command palette call directly.
+/// These are deliberately not in the private extension above: they are part
+/// of the surface other views use.
+@MainActor
+extension AppState {
+    func requestNewDocument(from window: EditorWindowSession) {
+        let panel = NSSavePanel()
+        let validation = NewDocumentPanelValidation()
+        panel.delegate = validation
+        defer { withExtendedLifetime(validation) {} }
+        panel.title = "New Document"
+        panel.prompt = "Create"
+        panel.nameFieldLabel = "Name:"
+        panel.nameFieldStringValue = "Untitled.md"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "md"), .plainText].compactMap { $0 }
+        panel.directoryURL = window.activeTab?.fileURL?.deletingLastPathComponent()
+            ?? workspaceDescriptors.first?.rootURL
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try DocumentFilename.createEmptyDocument(at: url)
+            openExternalDocumentURL(url, from: window)
+            refreshWorkspaceDiscovery()
+        } catch {
+            externalFileAccessController.releaseIncomingSelection(at: url)
+            presentError("Clio couldn’t create that document. Choose an unused name and a writable folder.", underlying: error)
+        }
+    }
+
+    /// Inline rename uses the same settled-buffer transaction as the command palette.
+    func renameDocument(_ tab: EditorSession, to name: String) async throws {
+        guard let sourceURL = tab.fileURL else { return }
+        let filename = try DocumentFilename.validated(name, preservingExtension: sourceURL.pathExtension)
+        let sourceLocator = tab.locator
+        let outcome = try await tab.rename(to: filename)
+        if case .collision = outcome {
+            _ = try await tab.resolveCollisionNow(.cancel)
+            throw DocumentFilename.ValidationError.alreadyExists
+        }
+        await finishNavigationMutation(
+            outcome, documentID: tab.documentID,
+            sourceLocator: sourceLocator, operationName: "renamed"
+        )
     }
 }

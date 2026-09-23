@@ -162,8 +162,24 @@ struct CommandPaletteView: View {
         if let error = windowSession.paletteErrorMessage {
             EmptyPaletteRow(message: error)
         } else if windowSession.filteredCommands.isEmpty {
-            EmptyPaletteRow(message: "No matching command")
+            EmptyPaletteRow(
+                message: windowSession.isResolvingIntent
+                    ? "Working out what you mean…"
+                    : "No matching command"
+            )
         } else {
+            if windowSession.isShowingIntentMatch {
+                // Say plainly that this list is a reading of the request
+                // rather than something the writer typed. Nothing runs until
+                // they choose it.
+                Text("Best guess at what you meant")
+                    .font(.custom(Typography.family, fixedSize: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("palette.intentHint")
+            }
             ForEach(
                 Array(windowSession.filteredCommands.enumerated()),
                 id: \.element.id
@@ -174,7 +190,7 @@ struct CommandPaletteView: View {
                 } label: {
                     PaletteRow(
                         icon: descriptor.systemImage,
-                        title: descriptor.command.slashName,
+                        title: windowSession.paletteRowTitle(for: descriptor),
                         detail: descriptor.title,
                         isSelected: index == windowSession.paletteSelectionIndex
                     )
