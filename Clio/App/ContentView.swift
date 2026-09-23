@@ -773,6 +773,13 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         guard !hasAppliedInitialState else { return }
         hasAppliedInitialState = true
 
+        // UI-test hook only: pins the window to a deterministic size so tests
+        // can exercise minimum-size layout without simulating a corner drag.
+        if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] == "1",
+           let size = ClioUITestWindowSize.parse(ProcessInfo.processInfo.environment["CLIO_UI_TEST_WINDOW_SIZE"]) {
+            window.setContentSize(size)
+        }
+
         if windowSession.isFullScreenEnabled,
            !window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)

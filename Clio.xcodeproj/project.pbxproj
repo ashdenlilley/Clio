@@ -82,6 +82,7 @@
 		71B30C2444B205ADBF4A6F88 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A3B7D30D6E143FEA49D242B6 /* AppIcon.icon */; };
 		729013C11EF015BD21B455F9 /* ExportRecoveryCheckpointStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7FE18284C58BCC7AB935172 /* ExportRecoveryCheckpointStoreTests.swift */; };
 		73489E91B2967B8C635BEA24 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAE9FC44759A142DD86BC038 /* SettingsView.swift */; };
+		7536700DD53B33249318A3DA /* ClioUITestWindowSizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 638D6FD721B8B15D9F3C4362 /* ClioUITestWindowSizeTests.swift */; };
 		77E296B574D0984F3A6C8C2A /* DocumentRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F69C1948D2B708A8A173C3 /* DocumentRevision.swift */; };
 		781B2FB91A8408BDB00D80D4 /* MCPHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57901D8955829D389B188405 /* MCPHTTPServer.swift */; };
 		78731B2EF1742FD0E6C633E4 /* Autosaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 410AAD26C2D6CBAEE8AF89B1 /* Autosaver.swift */; };
@@ -138,6 +139,7 @@
 		BE194C2E78F211F41D464F10 /* ExportRecoveryCheckpointStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFD03FAF438CE6BB1B01201C /* ExportRecoveryCheckpointStore.swift */; };
 		C343BDD49ED7D7E2AC4A584C /* ChromeMotionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFF0A0A3AA76FCD6E5BA8F8C /* ChromeMotionController.swift */; };
 		C69C28D42A88B120A007F883 /* GitIgnoreMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0033457428D3EA40B0EEC891 /* GitIgnoreMatcher.swift */; };
+		C75D7D22792F2FBCE8521458 /* ClioUITestWindowSize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A41DD5F91F491CA4F74D1CA /* ClioUITestWindowSize.swift */; };
 		C9947693A4FFFE5188312E8F /* SecurityScopedFileAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD2255F9C3D02A6FA24BC764 /* SecurityScopedFileAccess.swift */; };
 		CA9DE2201D2542289A567BF8 /* CrashTestDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500E1A749ABD1908442F6676 /* CrashTestDriver.swift */; };
 		CAECF1DAC2D43801DF40CE7F /* HTMLDocumentExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9650953C7A8B696457D59F6B /* HTMLDocumentExporter.swift */; };
@@ -244,6 +246,7 @@
 		2575DE6C24F214FFF5CC901C /* ExportPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPresentationTests.swift; sourceTree = "<group>"; };
 		2606EAA75DBB43ED79C5DFA6 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = Clio/Resources/Fonts; sourceTree = SOURCE_ROOT; };
 		2A40D0ABAC28CC72BBBB0FDE /* WorkspaceIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIndexTests.swift; sourceTree = "<group>"; };
+		2A41DD5F91F491CA4F74D1CA /* ClioUITestWindowSize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioUITestWindowSize.swift; sourceTree = "<group>"; };
 		2B4A27027A03B8AB582271EC /* MarkdownBackgroundWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBackgroundWork.swift; sourceTree = "<group>"; };
 		2B9446C2F8F8D25C96C739A8 /* MarkdownCodeTokenizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownCodeTokenizer.swift; sourceTree = "<group>"; };
 		2CCDB596184D4C790E38796D /* EditorPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPreferences.swift; sourceTree = "<group>"; };
@@ -276,6 +279,7 @@
 		5F5B7B4D78A3D10B6323FBF0 /* ExportSettingsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSettingsPage.swift; sourceTree = "<group>"; };
 		5FAF1A6CD8347E63941C9BA3 /* malformed.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = malformed.md; sourceTree = "<group>"; };
 		6033E78AF1C9AE90EC1A3042 /* ClioIntelligenceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioIntelligenceUITests.swift; sourceTree = "<group>"; };
+		638D6FD721B8B15D9F3C4362 /* ClioUITestWindowSizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioUITestWindowSizeTests.swift; sourceTree = "<group>"; };
 		645B4D1ABF7E41D868B35BA8 /* WorkspaceDiscoverySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiscoverySettings.swift; sourceTree = "<group>"; };
 		649E735AD7C8AA7D52C6E363 /* PDFDocumentExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDocumentExporter.swift; sourceTree = "<group>"; };
 		64F69C1948D2B708A8A173C3 /* DocumentRevision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRevision.swift; sourceTree = "<group>"; };
@@ -634,6 +638,7 @@
 				DBD5DDE2792171FBE86B2AED /* AppPreferences.swift */,
 				37F231E037B0C6D9E33330AC /* AppState.swift */,
 				E6B7D4086EC1BC509AB0F39D /* ClioApp.swift */,
+				2A41DD5F91F491CA4F74D1CA /* ClioUITestWindowSize.swift */,
 				6E753253648B9FCFDF42C8CC /* CommandPaletteView.swift */,
 				E8A83B5BCD660F9C1DDBDC4D /* Commands.swift */,
 				95FBD8965B599CB501B83254 /* ContentView.swift */,
@@ -703,6 +708,7 @@
 				5951908261381D4FC7B083A2 /* Fixtures */,
 				94F757CBB61BBC200C412288 /* AppPreferencesTests.swift */,
 				2F710F7CDE141F9CF769FD50 /* AppStateTests.swift */,
+				638D6FD721B8B15D9F3C4362 /* ClioUITestWindowSizeTests.swift */,
 				DDD83589B757361BBB1A0C6B /* ContractTests.swift */,
 				CE0395A9DD7ECE0D431EA770 /* CrashSafetyTests.swift */,
 				783DA77BAC6EF567A7165F6A /* DataSafetyAuditTests.swift */,
@@ -1005,6 +1011,7 @@
 				C343BDD49ED7D7E2AC4A584C /* ChromeMotionController.swift in Sources */,
 				F8610375304C1F9410CC61C4 /* ClioApp.swift in Sources */,
 				647AA662E8516AF0A5247B9B /* ClioMCPService.swift in Sources */,
+				C75D7D22792F2FBCE8521458 /* ClioUITestWindowSize.swift in Sources */,
 				12FDC9B01D98254F7B78ED2A /* CommandIntentResolver.swift in Sources */,
 				11F260236FDB63AA82063598 /* CommandIntentSpec.swift in Sources */,
 				5E9060BC6AA0223CD29C2C51 /* CommandPaletteView.swift in Sources */,
@@ -1109,6 +1116,7 @@
 			files = (
 				0BBA72B8664FC21806046ECF /* AppPreferencesTests.swift in Sources */,
 				09041C9D26FB0103FCC39427 /* AppStateTests.swift in Sources */,
+				7536700DD53B33249318A3DA /* ClioUITestWindowSizeTests.swift in Sources */,
 				B7D2D3C32DA0AFB3AD54B71B /* ContractTests.swift in Sources */,
 				B7004DB966171C7BC7A36B88 /* CrashSafetyTests.swift in Sources */,
 				F2D1858C8AFD6DE27EA4A881 /* DataSafetyAuditTests.swift in Sources */,

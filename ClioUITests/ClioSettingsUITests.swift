@@ -1,5 +1,3 @@
-import AppKit
-import ApplicationServices
 import XCTest
 
 /// Covers the categorised Settings panel introduced with Liquid Glass: every
@@ -45,39 +43,17 @@ final class ClioSettingsUITests: XCTestCase {
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    /// Sets the frontmost Clio window's size through the public Accessibility
-    /// API rather than simulating a corner-drag gesture, as a fallback for
-    /// hosts where the coordinate drag doesn't take. AppKit still clamps the
-    /// request to the window's real `minSize`, so this exercises the same
-    /// 480×400 floor a user hits by dragging the corner — it does not bypass
-    /// any product behaviour. It is a safe no-op (returns `false`) on a host
-    /// that hasn't granted the calling process Accessibility access.
-    @discardableResult
-    private func setFrontmostWindowSize(_ size: CGSize) -> Bool {
-        // A stale instance from an earlier test run can still be present
-        // (terminated but not yet reaped, or hidden), so try every running
-        // match rather than just the first, and skip any with no windows.
-        let candidates = NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == "olympus.clio.mac"
-        }
-        for runningApp in candidates {
-            let axApp = AXUIElementCreateApplication(runningApp.processIdentifier)
-            var windowsValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-                  let axWindows = windowsValue as? [AXUIElement],
-                  !axWindows.isEmpty
-            else { continue }
-            var mutableSize = size
-            guard let axSize = AXValueCreate(.cgSize, &mutableSize) else { continue }
-            var didResize = false
-            for axWindow in axWindows {
-                if AXUIElementSetAttributeValue(axWindow, kAXSizeAttribute as CFString, axSize) == .success {
-                    didResize = true
-                }
-            }
-            if didResize { return true }
-        }
-        return false
+    /// Terminates the shared `app` and relaunches it with the given extra
+    /// launch environment, on top of the standard UI-testing environment.
+    private func relaunch(extraEnvironment: [String: String]) {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchEnvironment["CLIO_UI_TESTING"] = "1"
+        app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
+        for (key, value) in extraEnvironment { app.launchEnvironment[key] = value }
+        app.launch()
+        app.windows.firstMatch.hover()
+        XCTAssertTrue(app.textViews["editor.text"].waitForExistence(timeout: 5))
     }
 
     func testEveryCategoryShowsARepresentativeControl() {
@@ -122,41 +98,27 @@ final class ClioSettingsUITests: XCTestCase {
     }
 
     func testSettingsFitsTheMinimumWindow() {
-        let window = app.windows.firstMatch
-
-        // Baseline at the window's default (wide) size: the category list is
-        // not compact, so an unselected category's title renders as visible
-        // text alongside its icon.
+        // Baseline at the shared setUp's default (wide) window: the category
+        // list is not compact, so capture the row width to compare against
+        // the compact layout below.
         openSettings("editor")
         XCTAssertTrue(app.buttons["Done"].isHittable)
         XCTAssertTrue(app.switches["settings.editor.minimap"].waitForExistence(timeout: 3))
-        let workspacesButton = app.buttons["settings.category.workspaces"]
-        XCTAssertTrue(workspacesButton.waitForExistence(timeout: 3))
-        let expandedWidth = workspacesButton.frame.width
+        let expandedWidth = app.buttons["settings.category.workspaces"].frame.width
         app.typeKey(.escape, modifierFlags: [])
 
-        // Drag the bottom-right corner inward; the window's minimum size stops it at 480×400.
-        func windowIsAtMinimum() -> Bool {
-            // Allow slack above the content minimum (480×400) for the
-            // titlebar and any backing-scale rounding.
-            let f = app.windows.firstMatch.frame
-            return f.width <= 500 && f.height <= 440
-        }
-        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
-        corner.press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
-        if !waitUntil(timeout: 3, condition: windowIsAtMinimum) {
-            // The corner drag doesn't take on every host (some CI/sandbox
-            // configurations don't deliver a resize-tracking drag through
-            // synthetic coordinate events); fall back to the Accessibility
-            // API, which is a no-op if the host hasn't granted it.
-            setFrontmostWindowSize(CGSize(width: 100, height: 100))
-        }
+        // Simulating a corner-drag resize is unreliable across hosts, and a
+        // UI test must not drive the app through the Accessibility API or
+        // System Events. Instead, relaunch pinned to the window's 480×400
+        // minimum via the UI-test-only CLIO_UI_TEST_WINDOW_SIZE launch hook
+        // (see ClioUITestWindowSize / WindowProbeView.configureWindowIfNeeded
+        // in ContentView.swift), which is only ever honoured when
+        // CLIO_UI_TESTING == "1".
+        relaunch(extraEnvironment: ["CLIO_UI_TEST_WINDOW_SIZE": "480x400"])
+        let window = app.windows.firstMatch
         XCTAssertTrue(
-            waitUntil(timeout: 3, condition: windowIsAtMinimum),
-            "The window must shrink to its 480×400 minimum (was \(app.windows.firstMatch.frame)); "
-                + "on this host neither the corner-drag gesture nor AXUIElementSetAttributeValue could "
-                + "resize the window (AXIsProcessTrusted=\(AXIsProcessTrusted())) — grant Accessibility "
-                + "access to the UI-test host process to run this assertion"
+            waitUntil(timeout: 3, condition: { window.frame.width <= 500 && window.frame.height <= 440 }),
+            "CLIO_UI_TEST_WINDOW_SIZE=480x400 must pin the window to its 480×400 minimum (was \(window.frame))"
         )
 
         openSettings("editor")
@@ -166,9 +128,10 @@ final class ClioSettingsUITests: XCTestCase {
         // Below 600pt the category list collapses to icon-only: the
         // unselected category's button and identifier remain, but its row
         // narrows from the full 176pt list to the 52pt icon-only list.
-        XCTAssertTrue(workspacesButton.exists)
-        XCTAssertTrue(workspacesButton.isHittable)
-        let compactWidth = workspacesButton.frame.width
+        let compactButton = app.buttons["settings.category.workspaces"]
+        XCTAssertTrue(compactButton.exists)
+        XCTAssertTrue(compactButton.isHittable)
+        let compactWidth = compactButton.frame.width
         XCTAssertLessThan(
             compactWidth, expandedWidth * 0.6,
             "Compact mode must narrow the category row, not just shrink the panel (expanded \(expandedWidth), compact \(compactWidth))"
