@@ -11,6 +11,8 @@ final class ClioSettingsUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = false
         app = XCUIApplication()
+        // Never restore or save AppKit window state (fullscreen tests leave it).
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
         app.launch()
@@ -48,6 +50,8 @@ final class ClioSettingsUITests: XCTestCase {
     private func relaunch(extraEnvironment: [String: String]) {
         app.terminate()
         app = XCUIApplication()
+        // Never restore or save AppKit window state (fullscreen tests leave it).
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
         for (key, value) in extraEnvironment { app.launchEnvironment[key] = value }

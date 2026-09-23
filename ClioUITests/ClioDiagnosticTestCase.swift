@@ -86,6 +86,8 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
 
     private func exerciseQuit(menu: Bool, closeWindow: Bool, fullscreen: Bool) throws {
         let app = XCUIApplication()
+        // Never restore or save AppKit window state (fullscreen tests leave it).
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
         app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
@@ -179,6 +181,8 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
 final class ClioLaunchUITests: ClioDiagnosticTestCase {
     func testLaunchReachesForegroundAndEditor() {
         let app = XCUIApplication()
+        // Never restore or save AppKit window state (fullscreen tests leave it).
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
         app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString
