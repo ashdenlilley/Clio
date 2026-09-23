@@ -220,15 +220,18 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         window.buttons["sidebar.toggle"].click()
         assertFullscreenState(false, for: window, timeout: 3)
         assertTypingLineSupportsMouseSelection(editor)
-        window.typeKey("f", modifierFlags: [.control, .command])
+        toggleFullScreen(in: app)
         assertFullscreenState(true, for: window)
         assertTypingLineSupportsMouseSelection(editor)
         // A coordinate drag exercises hit testing, not accessibility select-all.
+        // Use the macOS mouse API: press(forDuration:thenDragTo:) is a touch
+        // gesture that testmanagerd replays through a virtual HID service,
+        // which WindowServer can refuse, delivering no events to the app.
         // The current typing line is at the configured 45% vertical anchor.
         let viewport = app.descendants(matching: .any)["editor.surface.no-focus-ring"]
         let start = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
         let end = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
-        start.press(forDuration: 0.1, thenDragTo: end)
+        start.click(forDuration: 0.1, thenDragTo: end)
         editor.rightClick()
         assertEditorCopyContextMenu(editor)
         app.typeKey(.escape, modifierFlags: [])
@@ -236,7 +239,8 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         screenshot.name = "Fullscreen block caret and native selection"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        window.typeKey("f", modifierFlags: [.control, .command])
+        settleTypewriterAnchor(editor)
+        toggleFullScreen(in: app)
         assertFullscreenState(false, for: window)
         assertTypingLineSupportsMouseSelection(editor)
         editor.click()
@@ -252,7 +256,7 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         let start = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
         let end = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
         start.click()
-        start.press(forDuration: 0.1, thenDragTo: end)
+        start.click(forDuration: 0.1, thenDragTo: end)
         editor.rightClick()
         assertEditorCopyContextMenu(editor)
         app.typeKey(.escape, modifierFlags: [])
@@ -262,13 +266,28 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
                           "Mouse drag must select text, not merely leave an insertion point")
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(waitUntil { editor.value as? String == original })
-        // Return to the end and settle the typewriter anchor for the next phase.
+        settleTypewriterAnchor(editor)
+    }
+
+    /// A mouse press suspends typewriter scrolling until the writer types
+    /// again, so the typing line stays wherever the click left it. Return to
+    /// the end with an edit (then undo it) so the next phase starts with the
+    /// typing line back at the anchor.
+    private func settleTypewriterAnchor(_ editor: XCUIElement) {
+        let original = editor.value as? String
         app.typeKey(.downArrow, modifierFlags: .command)
         app.typeText(" ")
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(waitUntil { editor.value as? String == original })
-        let settleStarted = Date()
-        XCTAssertTrue(waitUntil(timeout: 3) { Date().timeIntervalSince(settleStarted) >= 2.2 })
+        // The edit starts the typewriter's eased return scroll. The text view's
+        // AX frame tracks the scroll offset, so wait until it stops moving
+        // between predicate polls (about one second apart).
+        var lastFrame = CGRect.null
+        XCTAssertTrue(waitUntil(timeout: 6) {
+            let frame = editor.frame
+            defer { lastFrame = frame }
+            return frame == lastFrame
+        }, "The typewriter scroll must settle before the next phase")
     }
 
     private func assertEditorCopyContextMenu(
@@ -291,6 +310,10 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
 
     private func launch(scenario: String) {
         app = XCUIApplication()
+        // Fullscreen tests leave AppKit restorable window state for this
+        // bundle; never restore (or save) it, or the next launch reopens a
+        // fullscreen window with no titlebar controls.
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["CLIO_UI_TESTING"] = "1"
         app.launchEnvironment["CLIO_UI_LAUNCH_DIAGNOSTICS"] = "1"
         app.launchEnvironment["CLIO_UI_TEST_ID"] = UUID().uuidString

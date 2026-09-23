@@ -251,6 +251,16 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
 
     private var settledScrollScheduled = false
 
+    /// Never ask the text view for `layoutManager`: that getter permanently
+    /// switches a TextKit 2 view to TextKit 1, leaving `textLayoutManager`
+    /// nil and disabling typewriter scrolling and focus dimming. A detached
+    /// layout manager computes the same font metric without side effects.
+    private static let lineMetrics = NSLayoutManager()
+
+    private static func defaultLineHeight(for font: NSFont) -> CGFloat {
+        lineMetrics.defaultLineHeight(for: font)
+    }
+
     private func scheduleSettledTypewriterScroll() {
         guard !settledScrollScheduled else { return }
         settledScrollScheduled = true
@@ -527,9 +537,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
             if clamped.fractionalYOffset > 0 {
                 let font = surface.textView.font
                     ?? Typography.font(size: self.configuration.resolvedFontSize, name: self.configuration.fontName)
-                let lineHeight = surface.textView.layoutManager?
-                    .defaultLineHeight(for: font)
-                    ?? font.boundingRectForFont.height
+                let lineHeight = Self.defaultLineHeight(for: font)
                 var point = surface.scrollView.contentView.bounds.origin
                 point.y += lineHeight * clamped.fractionalYOffset
                 surface.scrollView.contentView.scroll(to: point)
@@ -562,11 +570,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate {
         guard let viewport else { return }
         let font = textView.font
             ?? Typography.font(size: configuration.resolvedFontSize, name: configuration.fontName)
-        let lineHeight = max(
-            1,
-            textView.layoutManager?.defaultLineHeight(for: font)
-                ?? font.boundingRectForFont.height
-        )
+        let lineHeight = max(1, Self.defaultLineHeight(for: font))
         let clippedLineHeight = visibleRect.minY
             .truncatingRemainder(dividingBy: lineHeight)
         let fractionalOffset = min(

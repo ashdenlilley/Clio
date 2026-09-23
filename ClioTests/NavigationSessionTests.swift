@@ -1310,6 +1310,48 @@ final class NavigationSessionTests: XCTestCase {
             XCTAssertEqual(window.activeTab?.draftText, "# Render smoke test")
         }
     }
+
+    /// Reading `NSTextView.layoutManager` permanently switches a TextKit 2
+    /// view to TextKit 1, after which the typewriter scroller (which needs
+    /// `textLayoutManager`) silently stops scrolling for the whole session.
+    @MainActor
+    func testViewportCaptureKeepsTextKit2AndTypingReachesTypewriterAnchor() {
+        let configuration = EditorConfiguration(isFocusModeEnabled: false)
+        var viewportState = EditorViewportState(
+            selection: UTF16Range(location: 0, length: 0),
+            topVisibleUTF16Offset: 0,
+            fractionalYOffset: 0.5
+        )
+        let viewport = Binding(get: { viewportState }, set: { viewportState = $0 })
+        let coordinator = EditorCoordinator(configuration: configuration, onTextEdit: { _ in })
+        let textView = EditorTextView.makeTextKit2TextView()
+        let surface = EditorContainerView(textView: textView)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 668), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        coordinator.attach(to: surface)
+        coordinator.update(
+            text: "",
+            contentGeneration: BufferGeneration(bufferID: UUID(), revision: 0),
+            configuration: configuration,
+            viewport: viewport,
+            onTextEdit: { _ in }
+        )
+        surface.layoutSubtreeIfNeeded()
+        // Let the deferred viewport restoration and capture run.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertNotNil(textView.textLayoutManager, "Viewport capture must not force TextKit 1")
+
+        textView.insertText("Alpha beta gamma\nSecond line", replacementRange: NSRange(location: 0, length: 0))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertNotNil(textView.textLayoutManager, "Typing must not force TextKit 1")
+        let screen = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+        let caret = textView.convert(window.convertFromScreen(screen), from: nil)
+        let clip = surface.scrollView.contentView
+        XCTAssertEqual(caret.midY - clip.bounds.minY, clip.bounds.height * configuration.resolvedTypewriterAnchor, accuracy: 2,
+                       "The typing line must sit at the typewriter anchor")
+    }
 }
 
 private actor RecordingSearchIndex: SearchIndexing {
