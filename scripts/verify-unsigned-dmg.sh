@@ -107,15 +107,49 @@ ARCHITECTURES="$(clio_normalized_architectures "${EXECUTABLE_PATH}")"
 [[ ! -e "${APP_PATH}/Contents/_CodeSignature" ]] \
     || clio_die "unsigned preview unexpectedly contains a bundle resource signature"
 
-SIGNING_DESCRIPTION="$(codesign -dv --verbose=4 "${APP_PATH}" 2>&1)" \
-    || clio_die "could not inspect the executable's linker signature"
-grep -q '^Signature=adhoc$' <<<"${SIGNING_DESCRIPTION}" \
-    || clio_die "main executable is not linker-ad-hoc signed"
-grep -q '^TeamIdentifier=not set$' <<<"${SIGNING_DESCRIPTION}" \
-    || clio_die "unsigned preview unexpectedly contains a TeamIdentifier"
-if grep -q '^Authority=' <<<"${SIGNING_DESCRIPTION}"; then
-    clio_die "unsigned preview unexpectedly contains a signing authority"
-fi
+# Every Mach-O in the bundle must be on this reviewed list. The MCP bridge is a
+# standalone tool embedded by the Clio target (project.yml, Contents/Helpers);
+# adding any other nested code needs its own signing/dependency review here.
+HELPER_PATH="${APP_PATH}/Contents/Helpers/ClioMCPBridge"
+APPROVED_MACHO_PATHS="$(printf '%s\n' "${EXECUTABLE_PATH}" "${HELPER_PATH}" | LC_ALL=C sort)"
+
+[[ -f "${HELPER_PATH}" && -x "${HELPER_PATH}" && ! -L "${HELPER_PATH}" ]] \
+    || clio_die "ClioMCPBridge helper is missing, non-executable, or a symlink"
+
+# The same unsigned-internal state is required of every approved Mach-O: a
+# universal linker-ad-hoc signature with no team or authority, linking only
+# system libraries.
+verify_unsigned_macho() {
+    local path="$1"
+    local label="$2"
+    local architectures signing_description unexpected_dependencies
+
+    architectures="$(clio_normalized_architectures "${path}")"
+    [[ "${architectures}" == "${EXPECTED_ARCHITECTURES}" ]] \
+        || clio_die "${label}: expected exactly ${EXPECTED_ARCHITECTURES}, found ${architectures}"
+
+    signing_description="$(codesign -dv --verbose=4 "${path}" 2>&1)" \
+        || clio_die "${label}: could not inspect the linker signature"
+    grep -q '^Signature=adhoc$' <<<"${signing_description}" \
+        || clio_die "${label}: not linker-ad-hoc signed"
+    grep -q '^TeamIdentifier=not set$' <<<"${signing_description}" \
+        || clio_die "${label}: unsigned preview unexpectedly contains a TeamIdentifier"
+    if grep -q '^Authority=' <<<"${signing_description}"; then
+        clio_die "${label}: unsigned preview unexpectedly contains a signing authority"
+    fi
+
+    unexpected_dependencies="$(
+        otool -L "${path}" \
+            | awk '/^[[:space:]]/ { print $1 }' \
+            | grep -Ev '^(/System/Library/|/usr/lib/)' \
+            || true
+    )"
+    [[ -z "${unexpected_dependencies}" ]] || {
+        echo "error: ${label} links unexpected non-system libraries:" >&2
+        echo "${unexpected_dependencies}" >&2
+        exit 1
+    }
+}
 
 set +e
 BUNDLE_VERIFY_DESCRIPTION="$(codesign --verify --deep --strict "${APP_PATH}" 2>&1)"
@@ -135,23 +169,17 @@ MACHO_PATHS="$(
         }' \
         | LC_ALL=C sort -u
 )"
-[[ "${MACHO_PATHS}" == "${EXECUTABLE_PATH}" ]] || {
-    echo "error: unexpected nested Mach-O code requires an explicit signing/dependency audit:" >&2
+[[ "${MACHO_PATHS}" == "${APPROVED_MACHO_PATHS}" ]] || {
+    echo "error: nested Mach-O code differs from the reviewed set and requires an explicit signing/dependency audit:" >&2
+    echo "found:" >&2
     echo "${MACHO_PATHS}" >&2
+    echo "expected:" >&2
+    echo "${APPROVED_MACHO_PATHS}" >&2
     exit 1
 }
 
-UNEXPECTED_DEPENDENCIES="$(
-    otool -L "${EXECUTABLE_PATH}" \
-        | awk '/^[[:space:]]/ { print $1 }' \
-        | grep -Ev '^(/System/Library/|/usr/lib/)' \
-        || true
-)"
-[[ -z "${UNEXPECTED_DEPENDENCIES}" ]] || {
-    echo "error: executable links unexpected non-system libraries:" >&2
-    echo "${UNEXPECTED_DEPENDENCIES}" >&2
-    exit 1
-}
+verify_unsigned_macho "${EXECUTABLE_PATH}" "main executable"
+verify_unsigned_macho "${HELPER_PATH}" "ClioMCPBridge helper"
 
 RESOURCE_ROOT="${APP_PATH}/Contents/Resources"
 HACK_LICENSE="${RESOURCE_ROOT}/Fonts/LICENSE-Hack.md"
@@ -217,4 +245,4 @@ ATTACHED=0
 rmdir "${MOUNT_DIR}"
 trap - EXIT INT TERM
 
-echo "Verified unsigned-internal Clio ${VERSION} (${BUILD}; ${BUNDLE_ID}) [${ARCHITECTURES}; ad-hoc linker signature; system libraries only]"
+echo "Verified unsigned-internal Clio ${VERSION} (${BUILD}; ${BUNDLE_ID}) [${ARCHITECTURES}; app + MCP helper; ad-hoc linker signatures; system libraries only]"
