@@ -37,6 +37,9 @@ struct ClioApp: App {
             )
             .environment(applicationDelegate.appState)
             .preferredColorScheme(.dark)
+            // The window's own background, titlebar included. Without it
+            // macOS 26 paints the titlebar band in the system window colour.
+            .containerBackground(Color(nsColor: Palette.background), for: .window)
         } defaultValue: {
             applicationDelegate.initialWindowRequest
         }
