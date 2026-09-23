@@ -1,3 +1,5 @@
+import AppKit
+import ApplicationServices
 import XCTest
 
 /// Covers the categorised Settings panel introduced with Liquid Glass: every
@@ -30,6 +32,52 @@ final class ClioSettingsUITests: XCTestCase {
     private func attach(_ name: String) {
         let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         shot.name = name; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3,
+        condition: @escaping () -> Bool
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in condition() },
+            object: nil
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Sets the frontmost Clio window's size through the public Accessibility
+    /// API rather than simulating a corner-drag gesture, as a fallback for
+    /// hosts where the coordinate drag doesn't take. AppKit still clamps the
+    /// request to the window's real `minSize`, so this exercises the same
+    /// 480×400 floor a user hits by dragging the corner — it does not bypass
+    /// any product behaviour. It is a safe no-op (returns `false`) on a host
+    /// that hasn't granted the calling process Accessibility access.
+    @discardableResult
+    private func setFrontmostWindowSize(_ size: CGSize) -> Bool {
+        // A stale instance from an earlier test run can still be present
+        // (terminated but not yet reaped, or hidden), so try every running
+        // match rather than just the first, and skip any with no windows.
+        let candidates = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == "olympus.clio.mac"
+        }
+        for runningApp in candidates {
+            let axApp = AXUIElementCreateApplication(runningApp.processIdentifier)
+            var windowsValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+                  let axWindows = windowsValue as? [AXUIElement],
+                  !axWindows.isEmpty
+            else { continue }
+            var mutableSize = size
+            guard let axSize = AXValueCreate(.cgSize, &mutableSize) else { continue }
+            var didResize = false
+            for axWindow in axWindows {
+                if AXUIElementSetAttributeValue(axWindow, kAXSizeAttribute as CFString, axSize) == .success {
+                    didResize = true
+                }
+            }
+            if didResize { return true }
+        }
+        return false
     }
 
     func testEveryCategoryShowsARepresentativeControl() {
@@ -75,12 +123,56 @@ final class ClioSettingsUITests: XCTestCase {
 
     func testSettingsFitsTheMinimumWindow() {
         let window = app.windows.firstMatch
-        // Drag the bottom-right corner inward; the window's minimum size stops it at 480×400.
-        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
-        corner.press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
+
+        // Baseline at the window's default (wide) size: the category list is
+        // not compact, so an unselected category's title renders as visible
+        // text alongside its icon.
         openSettings("editor")
         XCTAssertTrue(app.buttons["Done"].isHittable)
         XCTAssertTrue(app.switches["settings.editor.minimap"].waitForExistence(timeout: 3))
+        let workspacesButton = app.buttons["settings.category.workspaces"]
+        XCTAssertTrue(workspacesButton.waitForExistence(timeout: 3))
+        let expandedWidth = workspacesButton.frame.width
+        app.typeKey(.escape, modifierFlags: [])
+
+        // Drag the bottom-right corner inward; the window's minimum size stops it at 480×400.
+        func windowIsAtMinimum() -> Bool {
+            // Allow slack above the content minimum (480×400) for the
+            // titlebar and any backing-scale rounding.
+            let f = app.windows.firstMatch.frame
+            return f.width <= 500 && f.height <= 440
+        }
+        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
+        corner.press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
+        if !waitUntil(timeout: 3, condition: windowIsAtMinimum) {
+            // The corner drag doesn't take on every host (some CI/sandbox
+            // configurations don't deliver a resize-tracking drag through
+            // synthetic coordinate events); fall back to the Accessibility
+            // API, which is a no-op if the host hasn't granted it.
+            setFrontmostWindowSize(CGSize(width: 100, height: 100))
+        }
+        XCTAssertTrue(
+            waitUntil(timeout: 3, condition: windowIsAtMinimum),
+            "The window must shrink to its 480×400 minimum (was \(app.windows.firstMatch.frame)); "
+                + "on this host neither the corner-drag gesture nor AXUIElementSetAttributeValue could "
+                + "resize the window (AXIsProcessTrusted=\(AXIsProcessTrusted())) — grant Accessibility "
+                + "access to the UI-test host process to run this assertion"
+        )
+
+        openSettings("editor")
+        XCTAssertTrue(app.buttons["Done"].isHittable)
+        XCTAssertTrue(app.switches["settings.editor.minimap"].waitForExistence(timeout: 3))
+
+        // Below 600pt the category list collapses to icon-only: the
+        // unselected category's button and identifier remain, but its row
+        // narrows from the full 176pt list to the 52pt icon-only list.
+        XCTAssertTrue(workspacesButton.exists)
+        XCTAssertTrue(workspacesButton.isHittable)
+        let compactWidth = workspacesButton.frame.width
+        XCTAssertLessThan(
+            compactWidth, expandedWidth * 0.6,
+            "Compact mode must narrow the category row, not just shrink the panel (expanded \(expandedWidth), compact \(compactWidth))"
+        )
         attach("Settings at minimum window")
     }
 }
