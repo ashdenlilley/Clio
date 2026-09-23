@@ -37,7 +37,9 @@ struct WritingSettingsPage: View {
             Section("Text") {
                 Toggle("Check spelling", isOn: $appState.isSpellCheckingEnabled)
                 Toggle("Check grammar", isOn: $preferences.isGrammarCheckingEnabled)
+                    .disabled(!appState.isSpellCheckingEnabled)
                     .accessibilityIdentifier("settings.writing.grammar")
+                SettingsFootnote("Grammar checking only runs while spelling is checked; AppKit performs it alongside spellchecking, not on its own.")
                 Toggle("Smart quotes and dashes", isOn: $preferences.isSmartPunctuationEnabled)
                     .accessibilityIdentifier("settings.writing.smartPunctuation")
                 SettingsFootnote("Off by default so Markdown stays literal: smart quotes change the characters written to disk.")

@@ -74,7 +74,7 @@ struct WorkspacesSettingsPage: View {
             Section("Recovery") {
                 LabeledContent("Recovery folder") {
                     HStack {
-                        Text(appState.recoveryFolderURL?.path ?? "Not authorized")
+                        Text(recoveryFolderDisplayText)
                             .lineLimit(1).truncationMode(.middle)
                             .foregroundStyle(.secondary)
                             .help(appState.recoveryFolderURL?.path ?? "")
@@ -119,5 +119,15 @@ struct WorkspacesSettingsPage: View {
         .onChange(of: discovery.policy) { _, _ in
             appState.discoveryPolicyDidChange()
         }
+    }
+
+    /// The recovery folder is authorized as soon as it is set (its path is
+    /// never cleared), so a stale-looking path never survives an access
+    /// failure: `needsRecoveryAuthorization` always wins the display.
+    private var recoveryFolderDisplayText: String {
+        if appState.needsRecoveryAuthorization {
+            return "Access required"
+        }
+        return appState.recoveryFolderURL?.path ?? ""
     }
 }
