@@ -163,9 +163,18 @@ final class AppStateTests: XCTestCase {
 
     func testCancellingRecoveryFolderChangeLeavesStateUntouched() {
         let state = isolatedAppState(defaults: makeDefaults(), folderPanelRunner: { _ in nil })
+        let pathBeforeCancellation = state.recoveryFolderPath
         state.changeRecoveryFolder()
         XCTAssertFalse(state.needsRecoveryAuthorization)
         XCTAssertNil(state.workspaceErrorMessage)
+        XCTAssertEqual(state.recoveryFolderPath, pathBeforeCancellation)
+    }
+
+    func testCancellingRecoveryFolderBannerFlowFlagsAuthorizationNeeded() {
+        let state = isolatedAppState(defaults: makeDefaults(), folderPanelRunner: { _ in nil })
+        state.chooseRecoveryFolder()
+        XCTAssertTrue(state.needsRecoveryAuthorization)
+        XCTAssertNotNil(state.workspaceErrorMessage)
     }
 
     private func makeDefaults() -> UserDefaults {
