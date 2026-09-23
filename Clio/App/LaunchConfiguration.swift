@@ -96,7 +96,10 @@ private extension ClioLaunchConfiguration {
                 appState: appState,
                 initialWindowRequest: .newDocument()
             )
-        case "restoration", "shutdown":
+        case "restoration", "shutdown", "missing-restore":
+            // "missing-restore" restores a tab whose file is gone, so the
+            // detached-document banner shows (visual audit only).
+            let restoredPath = environment["CLIO_UI_TEST_SCENARIO"] == "missing-restore" ? "missing.md" : "seed.md"
             let tabID = UUID()
             var request = EditorWindowRequest.mostRecent()
             request.restoration = EditorWindowRestorationState(
@@ -107,9 +110,9 @@ private extension ClioLaunchConfiguration {
                         documentID: DocumentID(),
                         locator: try DocumentLocator(
                             workspaceID: descriptor.id,
-                            relativePath: "seed.md"
+                            relativePath: restoredPath
                         ),
-                        preferredFilename: "seed.md",
+                        preferredFilename: restoredPath,
                         viewport: EditorViewportState(
                             selection: UTF16Range(location: 5, length: 0),
                             topVisibleUTF16Offset: 0,
