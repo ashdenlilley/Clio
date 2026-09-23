@@ -5,7 +5,7 @@ All notable changes to Clio are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Only canonical
 `vMAJOR.MINOR.PATCH` tags publish a release.
 
-## [Unreleased]
+## [1.1.0] - 2026-09-23
 
 ### Added
 
@@ -27,6 +27,19 @@ All notable changes to Clio are recorded here. The format follows
 
 - **Minimum macOS raised to 26.** This drops support for macOS 14 through 25;
   Liquid Glass has no fallback rendering path for earlier systems.
+- The status line is now a floating capsule at the bottom of the window, and
+  notices appear as inset cards beside the sidebar rather than full-width bars.
+
+### Fixed
+
+- The Amber accent no longer renders the same colour as Orange.
+- The titlebar band is black like the rest of the window instead of grey.
+
+### Known limitations
+
+- Glass surfaces have not yet been checked by hand with Reduce Transparency or
+  Reduce Motion turned on, and the conflict sheet has not been reviewed under
+  glass. See [the glass audit](docs/ui-glass-audit.md).
 
 ## [1.0.0] - 2026-09-20
 
