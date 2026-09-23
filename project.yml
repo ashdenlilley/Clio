@@ -70,8 +70,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: olympus.clio.mac
         PRODUCT_NAME: Clio
-        MARKETING_VERSION: 1.1.0
-        CURRENT_PROJECT_VERSION: 12
+        MARKETING_VERSION: 1.1.1
+        CURRENT_PROJECT_VERSION: 13
         INFOPLIST_FILE: Clio/Support/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: Clio/Support/Clio.entitlements

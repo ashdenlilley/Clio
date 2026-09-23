@@ -5,6 +5,18 @@ All notable changes to Clio are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Only canonical
 `vMAJOR.MINOR.PATCH` tags publish a release.
 
+## [1.1.1] - 2026-09-24
+
+### Fixed
+
+- Renaming a document in Finder shortly after Clio saved it could be seen as a
+  deletion plus a new file, detaching the open document from its file. The
+  workspace watcher now reads each file's identity in the same lookup as its
+  other details, so a rename is reported as a move.
+- Unsigned internal DMG builds verify the embedded MCP bridge helper instead of
+  rejecting it. It is held to the same checks as the app: universal, ad-hoc
+  linker signature, no team or signing authority, system libraries only.
+
 ## [1.1.0] - 2026-09-23
 
 ### Added
