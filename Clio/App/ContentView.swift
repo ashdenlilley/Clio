@@ -51,30 +51,7 @@ struct ContentView: View {
                     editorSession.refreshDerivedStateForCurrentRevision()
                 }
                 .overlay(alignment: .top) {
-                    if editorSession.requiresExplicitRestore {
-                        DetachedDocumentBanner(
-                            filename: editorSession.filename,
-                            canRestore: editorSession.canRestoreAtPreviousLocation,
-                            restore: editorSession.saveNow
-                        )
-                    } else if let recovery = appState.pendingExportRecoveries.first {
-                        ExportRecoveryBanner(
-                            item: recovery,
-                            remainingCount: appState.pendingExportRecoveries.count,
-                            reveal: { appState.revealExportRecovery(recovery) },
-                            discard: { appState.discardExportRecovery(recovery) }
-                        )
-                    } else if let errorMessage = editorSession.errorMessage
-                        ?? appState.crashRecoveryMessage
-                        ?? appState.workspaceErrorMessage {
-                        WorkspaceErrorBanner(
-                            message: errorMessage,
-                            dismiss: {
-                                editorSession.dismissError()
-                                appState.dismissTransientMessage()
-                            }
-                        )
-                    }
+                    banner(for: editorSession)
                 }
             } else {
                 WorkspaceSetupView()
@@ -183,6 +160,51 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder private func banner(for editorSession: EditorSession) -> some View {
+        if editorSession.requiresExplicitRestore {
+            DetachedDocumentBanner(
+                filename: editorSession.filename,
+                canRestore: editorSession.canRestoreAtPreviousLocation,
+                restore: editorSession.saveNow
+            )
+        } else if let recovery = appState.pendingExportRecoveries.first {
+            ExportRecoveryBanner(
+                item: recovery,
+                remainingCount: appState.pendingExportRecoveries.count,
+                reveal: { appState.revealExportRecovery(recovery) },
+                discard: { appState.discardExportRecovery(recovery) }
+            )
+        } else if let errorMessage = editorSession.errorMessage
+            ?? appState.crashRecoveryMessage
+            ?? appState.workspaceErrorMessage {
+            WorkspaceErrorBanner(
+                message: errorMessage,
+                dismiss: {
+                    editorSession.dismissError()
+                    appState.dismissTransientMessage()
+                }
+            )
+        }
+    }
+
+    /// Floating capsule over the bottom of the editor. Kept out of
+    /// `editorPane`'s expression so the type checker stays within budget.
+    @ViewBuilder private func statusCapsule(_ editorSession: EditorSession) -> some View {
+        if appState.preferences.showsStatusLine {
+            StatusLine(
+                relativePath: editorSession.relativePath,
+                wordCountLabel: editorSession.wordCountLabel,
+                wordCount: editorSession.wordCount,
+                fontSize: appState.fontSize,
+                showsReadingTime: appState.preferences.showsReadingTime,
+                showsSpeakingTime: appState.preferences.showsSpeakingTime
+            )
+            .modifier(ContextChromeMotion(motion: motion))
+            .padding(.bottom, 10)
+            .padding(.horizontal, 48) // keeps clear of the 32pt minimap
+        }
+    }
+
     private func editorPane(_ editorSession: EditorSession) -> some View {
         let onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
         if appState.preferences.isSlashCommandEnabled {
@@ -206,47 +228,36 @@ struct ContentView: View {
             isSmartPunctuationEnabled: appState.preferences.isSmartPunctuationEnabled,
             autoWrapsSelection: appState.preferences.autoWrapsSelection
         )
-        return VStack(spacing: 0) {
-            EditorView(
-                text: editorSession.draftText,
-                contentGeneration: editorSession.bufferGeneration,
-                viewport: Binding(
-                    get: { editorSession.viewportState },
-                    set: { editorSession.updateViewport($0) }
-                ),
-                configuration: configuration,
-                onTextEdit: { edit in
-                    windowSession.noteEditorEdit(edit)
-                },
-                onSlashCommand: onSlashCommand,
-                onPlainTextPasted: { pasted, range, textView in
-                    pasteStructure.recover(
-                        pasted: pasted,
-                        range: range,
-                        in: textView,
-                        using: appState.intelligence
-                    )
-                },
-                minimap: windowSession.minimap,
-                onEditorReady: { [weak editorSession] in editorSession?.mcpTextView = $0 }
-            )
-            .overlay(alignment: .topTrailing) {
-                if appState.preferences.showsMinimap {
-                    EditorMinimapOverlay().frame(width: 32)
-                }
-            }
-
-            if appState.preferences.showsStatusLine {
-                StatusLine(
-                    relativePath: editorSession.relativePath,
-                    wordCountLabel: editorSession.wordCountLabel,
-                    wordCount: editorSession.wordCount,
-                    fontSize: appState.fontSize,
-                    showsReadingTime: appState.preferences.showsReadingTime,
-                    showsSpeakingTime: appState.preferences.showsSpeakingTime
+        return EditorView(
+            text: editorSession.draftText,
+            contentGeneration: editorSession.bufferGeneration,
+            viewport: Binding(
+                get: { editorSession.viewportState },
+                set: { editorSession.updateViewport($0) }
+            ),
+            configuration: configuration,
+            onTextEdit: { edit in
+                windowSession.noteEditorEdit(edit)
+            },
+            onSlashCommand: onSlashCommand,
+            onPlainTextPasted: { pasted, range, textView in
+                pasteStructure.recover(
+                    pasted: pasted,
+                    range: range,
+                    in: textView,
+                    using: appState.intelligence
                 )
-                .modifier(ContextChromeMotion(motion: motion))
+            },
+            minimap: windowSession.minimap,
+            onEditorReady: { [weak editorSession] in editorSession?.mcpTextView = $0 }
+        )
+        .overlay(alignment: .topTrailing) {
+            if appState.preferences.showsMinimap {
+                EditorMinimapOverlay().frame(width: 32)
             }
+        }
+        .overlay(alignment: .bottom) {
+            statusCapsule(editorSession)
         }
         .background(Color(nsColor: Palette.background))
     }
@@ -283,9 +294,8 @@ struct ContentView: View {
             if state.conflictBanner.presentation > 0 {
                 VStack {
                     Label("Outside changes need your decision. Autosave is paused.", systemImage: "exclamationmark.triangle")
-                        .padding(12)
                         .frame(maxWidth: .infinity)
-                        .background(Color(nsColor: Palette.backgroundRaised))
+                        .modifier(BannerCard())
                         .modifier(SurfacePresentation(progress: state.conflictBanner.presentation, y: -8, scale: 1, reduceMotion: reduceMotion))
                     Spacer()
                 }
@@ -344,8 +354,8 @@ struct ContentView: View {
                     ConflictResolutionView(conflict: conflict, isResolving: editorSession.isResolvingConflict, resolve: editorSession.resolveConflict)
                 }
                     .frame(width: min(560, availableSize.width - 32), height: min(520, availableSize.height - 32))
-                    .background(Color(nsColor: Palette.background))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clioGlass(.panel)
                     .modifier(SurfacePresentation(progress: state.conflict.presentation, y: 8, scale: 0.99, reduceMotion: reduceMotion))
             }
         }
@@ -422,23 +432,20 @@ private struct ExportRecoveryBanner: View {
             }
             Spacer(minLength: 8)
             Button("Show in Finder", action: reveal)
+                .buttonStyle(.glassProminent)
             if item.kind == .completedDestination {
                 Button("Dismiss", action: discard)
+                    .buttonStyle(.glass)
             } else {
                 Button("Discard", role: .destructive) {
                     isConfirmingDiscard = true
                 }
+                .buttonStyle(.glass)
             }
         }
         .font(.custom(Typography.family, fixedSize: 12))
         .foregroundStyle(Color(nsColor: Palette.foreground))
-        .padding(12)
-        .background(Color(nsColor: Palette.backgroundRaised))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: Palette.hairline))
-                .frame(height: 1)
-        }
+        .modifier(BannerCard())
         .alert("Discard recovered export?", isPresented: $isConfirmingDiscard) {
             Button("Cancel", role: .cancel) {}
             Button("Discard", role: .destructive, action: discard)
@@ -467,6 +474,18 @@ private struct ExportRecoveryBanner: View {
     }
 }
 
+/// Floating glass card for top-of-window notices, inset from the window edges.
+private struct BannerCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .clioGlass(.card)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+    }
+}
+
 private struct DetachedDocumentBanner: View {
     let filename: String
     let canRestore: Bool
@@ -482,18 +501,13 @@ private struct DetachedDocumentBanner: View {
             Spacer(minLength: 8)
             if canRestore {
                 Button("Restore Document", action: restore)
+                    .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .font(.custom(Typography.family, fixedSize: 12))
         .foregroundStyle(Color(nsColor: Palette.foreground))
-        .padding(12)
-        .background(Color(nsColor: Palette.backgroundRaised))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: Palette.hairline))
-                .frame(height: 1)
-        }
+        .modifier(BannerCard())
     }
 }
 
@@ -541,14 +555,17 @@ private struct ConflictResolutionView: View {
                     .padding(12)
             }
             .frame(minHeight: 120, maxHeight: 260)
-            .background(Color(nsColor: Palette.backgroundRaised))
+            .background(Color(nsColor: Palette.background))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack {
                 Button("Load External") { resolve(.loadExternal) }
+                    .buttonStyle(.glass)
                 Button("Keep Both") { resolve(.keepBoth) }
+                    .buttonStyle(.glass)
                 Spacer()
                 Button("Keep Clio") { resolve(.keepClio) }
+                    .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
                     .focused($decisionFocused)
             }
@@ -556,7 +573,6 @@ private struct ConflictResolutionView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .contain)
         .task(id: conflict.id) {
             decisionFocused = true
@@ -590,6 +606,7 @@ private struct WorkspaceErrorBanner: View {
                     appState.chooseAnotherWorkspace()
                 }
             }
+            .buttonStyle(.glassProminent)
 
             Button {
                 dismiss()
@@ -602,13 +619,7 @@ private struct WorkspaceErrorBanner: View {
         }
         .font(.custom(Typography.family, fixedSize: 12))
         .foregroundStyle(Color(nsColor: Palette.foreground))
-        .padding(12)
-        .background(Color(nsColor: Palette.backgroundRaised))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: Palette.hairline))
-                .frame(height: 1)
-        }
+        .modifier(BannerCard())
     }
 }
 
@@ -630,13 +641,13 @@ private struct StatusLine: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 8) {
             Text(relativePath)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .layoutPriority(1)
 
-            Spacer(minLength: 40)
+            Text("·")
 
             Text(statistics)
                 .fixedSize()
@@ -644,9 +655,10 @@ private struct StatusLine: View {
         }
         .font(.custom(Typography.family, fixedSize: fontSize * 0.85))
         .foregroundStyle(Color(nsColor: Palette.muted))
-        .padding(.horizontal, 18)
-        .frame(height: Metrics.statusHeight)
-        .background(Color(nsColor: Palette.background))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .fixedSize(horizontal: false, vertical: true)
+        .clioGlass(.capsule)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(relativePath), \(statistics)")
     }
@@ -692,6 +704,7 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
     private var dragEndMonitor: Any?
     private var titlebarAccessory: NSTitlebarAccessoryViewController?
     private var sidebarButton: NSButton?
+    private var sidebarGlass: NSView?
     private var pointerIsHidden = false
 
     override func viewDidMoveToWindow() {
@@ -798,8 +811,10 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
             }
         }
         forwardedWindowDelegate = nil
+        sidebarGlass?.removeFromSuperview()
         titlebarAccessory = nil
         sidebarButton = nil
+        sidebarGlass = nil
     }
 
     override func responds(to selector: Selector!) -> Bool {
@@ -852,17 +867,21 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         accessory.layoutAttribute = .left
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
         let button = InteractionButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")!, target: self, action: #selector(toggleSidebar))
-        button.frame = NSRect(x: 4, y: 2, width: 30, height: 24)
         button.bezelStyle = .texturedRounded
         button.isBordered = false
         button.refusesFirstResponder = true
         button.setAccessibilityIdentifier("sidebar.toggle")
         button.setAccessibilityRole(.button)
-        container.addSubview(button)
+        let glass = NSGlassEffectView(frame: NSRect(x: 4, y: 2, width: 30, height: 24))
+        glass.cornerRadius = 12
+        glass.contentView = button
+        button.frame = glass.bounds
+        container.addSubview(glass)
         accessory.view = container
         window.addTitlebarAccessoryViewController(accessory)
         titlebarAccessory = accessory
         sidebarButton = button
+        sidebarGlass = glass
         updateNativeChrome()
     }
 
@@ -871,10 +890,16 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
     private func updateNativeChrome() {
         guard let window, let session = windowSession else { return }
         let progress = session.motion.chrome.titlebar.presentation
+        let isVisible = progress > 0.001
         for button in [window.standardWindowButton(.closeButton), window.standardWindowButton(.miniaturizeButton), window.standardWindowButton(.zoomButton), sidebarButton].compactMap({ $0 }) {
-            if button.alphaValue != progress { button.alphaValue = progress }
-            if button.isEnabled != (progress > 0.001) { button.isEnabled = progress > 0.001 }
-            if button.isHidden != (progress <= 0.001) { button.isHidden = progress <= 0.001 }
+            if button.isEnabled != isVisible { button.isEnabled = isVisible }
+        }
+        // The sidebar button fades with its glass backing, not on its own,
+        // so the capsule never lingers empty.
+        let fadingViews: [NSView] = [window.standardWindowButton(.closeButton), window.standardWindowButton(.miniaturizeButton), window.standardWindowButton(.zoomButton), sidebarGlass ?? sidebarButton].compactMap { $0 }
+        for view in fadingViews {
+            if view.alphaValue != progress { view.alphaValue = progress }
+            if view.isHidden != !isVisible { view.isHidden = !isVisible }
         }
         let label = session.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
         if sidebarButton?.toolTip != label {

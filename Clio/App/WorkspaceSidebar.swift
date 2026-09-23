@@ -18,7 +18,7 @@ struct WorkspaceSidebar: View {
             .interactionCursor()
             .accessibilityIdentifier("sidebar.newDocument")
             .padding(8)
-            Divider()
+            Divider().opacity(0.3)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
@@ -37,11 +37,10 @@ struct WorkspaceSidebar: View {
                 }
             }
         }
-        .frame(width: 252)
-        .background(Color(nsColor: Palette.backgroundRaised))
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(Color(nsColor: Palette.hairline)).frame(width: 1)
-        }
+        .frame(width: 244)
+        .clioGlass(.panel)
+        .padding(.leading, 8)
+        .padding(.vertical, 8)
         .contextMenu {
             Button(windowSession.isSidebarPinned ? "Unpin Sidebar" : "Pin Sidebar") {
                 windowSession.setSidebarPinned(!windowSession.isSidebarPinned)
@@ -263,7 +262,12 @@ private struct SidebarDocumentRow: View {
         }
         .font(.custom(Typography.family, fixedSize: 12))
         .padding(.horizontal, 3)
-        .background(isSelected ? Color(nsColor: Palette.hairline).opacity(0.7) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(appState.accent.color.opacity(ClioGlass.selectedTintOpacity))
+            }
+        }
         .onChange(of: rowFocused || isRenaming) { _, focused in windowSession.setSidebarFocused(focused) }
         .onChange(of: nameFocused) { _, focused in
             if !focused && isRenaming && !isSaving { cancelRename() }

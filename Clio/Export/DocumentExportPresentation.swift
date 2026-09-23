@@ -734,6 +734,7 @@ private struct ExportOptionsView: View {
                     }
                     Spacer()
                     Button("Page Setup…", action: presentation.presentPageSetup)
+                        .buttonStyle(.glass)
                 }
             } else {
                 Text("Remote content is never loaded while exporting. Your source Markdown is unchanged.")
@@ -753,9 +754,11 @@ private struct ExportOptionsView: View {
 
             HStack {
                 Button("Cancel", role: .cancel, action: presentation.cancelOptions)
+                    .buttonStyle(.glass)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Choose Destination…", action: presentation.confirmOptions)
+                    .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -780,12 +783,7 @@ private struct ExportActivityView: View {
         .font(.custom(Typography.family, fixedSize: 11))
         .padding(.horizontal, 12)
         .frame(height: 38)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(Color(nsColor: Palette.hairline), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
+        .clioGlass(.card)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.statusText)
     }
@@ -812,12 +810,7 @@ private struct ExportCompletionView: View {
         .font(.custom(Typography.family, fixedSize: 11))
         .padding(.horizontal, 12)
         .frame(height: 38)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(Color(nsColor: Palette.hairline), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
+        .clioGlass(.card)
     }
 }
 

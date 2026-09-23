@@ -23,6 +23,7 @@ struct CommandPaletteView: View {
     @Environment(EditorWindowSession.self) private var windowSession
     @FocusState private var isQueryFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.clioAccent) private var accent
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,6 +75,7 @@ struct CommandPaletteView: View {
                         )
                     )
                     .toggleStyle(.button)
+                    .buttonStyle(.glass)
                     .controlSize(.small)
                     .help("Include ignored documents and explain the matching rule")
                 }
@@ -114,13 +116,7 @@ struct CommandPaletteView: View {
             }
         }
         .frame(width: maximumWidth)
-        .background(Color(nsColor: Palette.backgroundRaised))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: Palette.hairline), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.7), radius: 28, y: 12)
+        .clioGlass(.panel)
         .task(id: windowSession.isPalettePresented && windowSession.motion.surfaceState.activeSurfaceStack.last == .palette) {
             guard windowSession.isPalettePresented,
                   windowSession.motion.surfaceState.activeSurfaceStack.last == .palette else {
@@ -192,7 +188,8 @@ struct CommandPaletteView: View {
                         icon: descriptor.systemImage,
                         title: windowSession.paletteRowTitle(for: descriptor),
                         detail: descriptor.title,
-                        isSelected: index == windowSession.paletteSelectionIndex
+                        isSelected: index == windowSession.paletteSelectionIndex,
+                        accent: accent
                     )
                 }
                 .buttonStyle(.plain)
@@ -260,8 +257,8 @@ struct CommandPaletteView: View {
                     .contentShape(Rectangle())
                     .background {
                         if index == windowSession.paletteSelectionIndex {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(nsColor: Palette.hairline).opacity(0.8))
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(accent.opacity(ClioGlass.selectedTintOpacity))
                         }
                     }
                 }
@@ -285,6 +282,7 @@ private struct PaletteRow: View {
     let title: String
     let detail: String
     let isSelected: Bool
+    let accent: Color
 
     var body: some View {
         HStack(spacing: 10) {
@@ -303,8 +301,8 @@ private struct PaletteRow: View {
         .contentShape(Rectangle())
         .background {
             if isSelected {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: Palette.hairline).opacity(0.8))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(accent.opacity(ClioGlass.selectedTintOpacity))
             }
         }
     }

@@ -20,13 +20,13 @@ struct WorkspaceSetupView: View {
                 Button("Use Documents/Clio") {
                     appState.chooseDefaultWorkspace()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(appState.accent.color)
 
                 Button("Choose a Folder…") {
                     appState.chooseAnotherWorkspace()
                 }
-                .buttonStyle(.link)
+                .buttonStyle(.glass)
             }
 
             if let errorMessage = appState.workspaceErrorMessage {
@@ -40,7 +40,7 @@ struct WorkspaceSetupView: View {
                     Button("Dismiss") {
                         appState.dismissWorkspaceError()
                     }
-                    .buttonStyle(.link)
+                    .buttonStyle(.glass)
                 }
                 .font(.custom(Typography.family, fixedSize: 12))
                 .fixedSize(horizontal: false, vertical: true)
