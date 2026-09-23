@@ -15,9 +15,15 @@ final class ClioNavigationUITests: ClioDiagnosticTestCase {
         XCTAssertTrue(create.waitForExistence(timeout: 3))
         let originalCount = app.buttons.matching(identifier: "sidebar.tab").count
         create.click()
-        let cancel = app.buttons["Cancel"].firstMatch
+        // NSSavePanel mirrors Cancel/Create into the Touch Bar on Macs that
+        // have one, so an app-wide "Cancel" query can resolve to an
+        // unclickable Touch Bar button. Scope to the panel's own button.
+        let panel = app.dialogs["save-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 3))
+        let cancel = panel.buttons["CancelButton"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         cancel.click()
+        XCTAssertTrue(waitUntil { !panel.exists }, "Cancel must dismiss the New Document panel")
         XCTAssertEqual(app.buttons.matching(identifier: "sidebar.tab").count, originalCount)
     }
 
