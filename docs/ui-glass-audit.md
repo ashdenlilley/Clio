@@ -27,8 +27,8 @@ banner.
 
 | # | Surface | Checklist item | Finding | Result |
 |---|---------|----------------|---------|--------|
-| 1 | Window titlebar | Black base | A 32 pt band in the system window colour (about `#1F1F1F`) sat above the black editor, since the SDK 26 bump. The SwiftUI window container painted its default background behind the transparent titlebar. | Fixed (c5e4044): `.containerBackground(Palette.background, for: .window)` on the editor scene. The whole window, titlebar included, is black; traffic lights and the glass sidebar button float over it. |
-| 2 | Banners over sidebar | 1 glass-on-glass, 4 text contrast | The banner card spanned the full window width, so its glass lay over the sidebar glass and the two surfaces' text overlapped ("New Document" under the banner message), windowed and in full screen. | Fixed (bc2af3c): banners take a leading inset that follows the sidebar's presentation progress, so they sit beside the panel and slide back to full width when it hides. |
+| 1 | Window titlebar | Black base | A 32 pt band in the system window colour (about `#1F1F1F`) sat above the black editor, since the SDK 26 bump. The SwiftUI window container painted its default background behind the transparent titlebar. | Fixed (c5e4044): `.containerBackground(Color(nsColor: Palette.background), for: .window)` on the editor scene. The whole window, titlebar included, is black; traffic lights and the glass sidebar button float over it. |
+| 2 | Banners over sidebar | 1 glass-on-glass, 4 text contrast | The banner card spanned the full window width, so its glass lay over the sidebar glass and the two surfaces' text overlapped ("New Document" under the banner message), windowed and in full screen. | Fixed (bc2af3c, shared geometry e631cbe): banners take a leading inset that follows the sidebar's presentation progress, so they sit beside the panel and slide back to full width when it hides. Under Reduce Motion the inset snaps instead of sliding. |
 | 3 | Export options sheet | 2 clipped content | The segmented format picker (equal-width segments plus an inline label on macOS 26) was wider than the 460 pt sheet, pushing the title, page setup and Cancel off the left edge. | Fixed (bc2af3c): picker label hidden; sheet 540 pt wide. |
 | 4 | Sidebar panel | 1, 3 | Over black the panel reads as a neutral dark glass slab. When the sidebar overlays (unpinned) the editor, the text under it shows as a soft blur. | Accepted: this is `.regular` glass sampling what is behind it. Once the grey titlebar was gone the panel no longer reads as a flat slab against a grey band. Pinning keeps text clear of it (existing layout). No tint change. |
 | 5 | Palette, search, Settings over the sidebar or text | 1, 4 | The panel refracts the sidebar edge and faint text behind it. | Accepted: the scrim darkens the background and panel text stays clearly legible. |
@@ -37,9 +37,17 @@ banner.
 | 8 | Banner at minimum width (480 pt) with sidebar | 7 | With the sidebar inset the banner is narrow and wraps to several lines. It stays readable and doesn't overlap anything. | Pass (tall, accepted). |
 | 9 | Settings at 480 × 400 | 8 | The category column collapses to icons, controls aren't truncated and Done is reachable. | Pass. |
 | 10 | Full screen | 10 | The sidebar and banners start 8–12 pt from the top edge with no titlebar gap. The banner sits beside the sidebar. | Pass (after fix 2). |
-| 11 | Minimum window status capsule | 1 | At 480 pt the overlay sidebar covers the left part of the capsule. | Open (minor): the overlay sidebar covers the capsule by design. Pinning or hiding the sidebar clears it. |
+| 11 | Status capsule beside the sidebar | 1 glass-on-glass | At 480 pt the overlay sidebar's glass lay over the capsule's glass. | Fixed (e631cbe): the capsule takes the same sidebar clearance as the banners. When the full line cannot fit, it drops the path and then truncates the statistics, so it stays beside the sidebar and clear of the minimap. |
 | 12 | Reduce Transparency | 9 | Needs the system setting turned on. | Not captured: needs someone to turn the setting on. |
 | 13 | Reduce Motion | 5, 9 | Needs the system setting turned on. | Not captured: needs someone to turn the setting on. |
+
+**Ruling: layering versus nesting.** Persistent chrome (the sidebar, top
+banners, the status capsule) never overlaps other glass. The banners and the
+capsule share one clearance (`SidebarLayout.chromeClearance`), which is
+derived from the sidebar panel's own width. Modal surfaces (Settings, the
+command palette, workspace search, the conflict sheet) may cover the sidebar.
+They appear over the dimming scrim, so that is layering with scrim separation,
+not nested glass. It is what findings 5 and 9 describe.
 
 The caret sometimes has a small round glass badge beside it in the
 screenshots. That is the system text-insertion (input source) indicator, not
@@ -58,7 +66,7 @@ Clio chrome.
 | Settings (7 categories) | A | P | P | P | — | — | — | P | N | — |
 | Export sheet | P | F | P | P | — | — | — | — | N | — |
 | Detached-document banner | F | P | P | F | — | — | P | — | N | F |
-| Status capsule | O | P | P | P | P | P | — | — | N | P |
+| Status capsule | F | P | P | P | P | P | — | — | N | P |
 | Conflict strip and sheet | N | N | N | N | N | — | N | — | N | N |
 
 The conflict strip and sheet were not captured. Seeding an outside-change

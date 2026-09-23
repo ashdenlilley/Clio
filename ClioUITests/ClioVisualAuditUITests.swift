@@ -167,6 +167,8 @@ final class ClioVisualAuditUITests: XCTestCase {
         launch(scenario: "missing-restore", windowSize: "480x400")
         pause(3)
         shot("17 detached banner minimum window")
+        app.typeKey("s", modifierFlags: [.control, .command]); pause(1)
+        shot("17b detached banner minimum window sidebar hidden")
     }
 
     func testCaptureMinimumWindow() {
