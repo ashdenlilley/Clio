@@ -52,6 +52,7 @@ struct ContentView: View {
                 }
                 .overlay(alignment: .top) {
                     banner(for: editorSession)
+                        .modifier(SidebarClearance())
                 }
             } else {
                 WorkspaceSetupView()
@@ -494,6 +495,20 @@ private struct ExportRecoveryBanner: View {
     }
 }
 
+/// Keeps top-of-window banners beside the sidebar panel instead of layering
+/// their glass over its glass (which stacked both surfaces' text). Reads the
+/// sidebar's motion in its own body so only the banner re-renders per frame.
+private struct SidebarClearance: ViewModifier {
+    @Environment(EditorWindowSession.self) private var session
+    /// Sidebar panel trailing edge (8pt inset + 244pt panel) plus an 8pt gap,
+    /// less the banner card's own 12pt window inset.
+    static let inset: CGFloat = 248
+
+    func body(content: Content) -> some View {
+        content.padding(.leading, Self.inset * session.motion.sidebarProgress)
+    }
+}
+
 /// Floating glass card for top-of-window notices, inset from the window edges.
 private struct BannerCard: ViewModifier {
     func body(content: Content) -> some View {
@@ -773,11 +788,23 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
         guard !hasAppliedInitialState else { return }
         hasAppliedInitialState = true
 
+        // UI tests share the app's defaults domain for window frames; never
+        // save one, or a resized/full-screen test skews later launches.
+        if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] == "1" {
+            window.setFrameAutosaveName("")
+        }
+
         // UI-test hook only: pins the window to a deterministic size so tests
         // can exercise minimum-size layout without simulating a corner drag.
         if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] == "1",
            let size = ClioUITestWindowSize.parse(ProcessInfo.processInfo.environment["CLIO_UI_TEST_WINDOW_SIZE"]) {
             window.setContentSize(size)
+            // AppKit state restoration can apply a saved (even zoomed) frame
+            // after this first pass; re-pin once it has run.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak window] in
+                guard let window, !window.styleMask.contains(.fullScreen) else { return }
+                window.setContentSize(size)
+            }
         }
 
         if windowSession.isFullScreenEnabled,

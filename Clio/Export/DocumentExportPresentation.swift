@@ -723,6 +723,9 @@ private struct ExportOptionsView: View {
                 Text("Plain Text (.txt)").tag(ExportFormat.txt)
             }
             .pickerStyle(.segmented)
+            // macOS 26 segments share one width and show the label inline;
+            // hidden label + the wider sheet keep every segment inside it.
+            .labelsHidden()
 
             if presentation.selectedFormat == .pdf {
                 HStack {
@@ -763,7 +766,7 @@ private struct ExportOptionsView: View {
             }
         }
         .padding(24)
-        .frame(width: 460)
+        .frame(width: 540)
     }
 }
 
