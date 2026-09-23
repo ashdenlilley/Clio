@@ -52,6 +52,7 @@
 		42542FDC7AAE0D091D7C1A7D /* MCPAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5533DC79C89C386851825AA /* MCPAccessTests.swift */; };
 		43EACBE10154E9495A76D164 /* CrashRecoveryJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8625C9328CDB9E6341DF2BD /* CrashRecoveryJournal.swift */; };
 		485F8D44A53A27E421EB4B27 /* MarkdownSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF899F1015754266E7E750C /* MarkdownSource.swift */; };
+		48AACFC5EBFA63437F9E5648 /* GlassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FAD7E81BE7C4995BD16F6E /* GlassTests.swift */; };
 		4CA339FBB514DF4232B8123C /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE367A19CA5B87458595B6EF /* MarkdownParserTests.swift */; };
 		4F8D200FC34C5631B43CCE4D /* LaunchDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE1C19EAC88802C684AB629 /* LaunchDiagnostics.swift */; };
 		5325C08B78BE3D458C14EE2C /* WritingTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA261BECED368C2FC630D14 /* WritingTime.swift */; };
@@ -142,6 +143,7 @@
 		D52EF06A503EF76BCCB737AF /* IntelligenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 886002AEC112D11357C56574 /* IntelligenceService.swift */; };
 		D6F6B1BBF4C26DADFE93E719 /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7787A2B4B70C9AF2C14ABFF4 /* Metrics.swift */; };
 		D7A49D25891536E1B67FB60F /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCC075AEFDED74E31BBF7810 /* ConflictResolver.swift */; };
+		D8415874F3C480E0A914A991 /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D092326C29B706A56432F /* Glass.swift */; };
 		D86598CA5BAE8951968F6D77 /* ExperienceContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F817871E775686B218220C3F /* ExperienceContracts.swift */; };
 		D8B9E38BD660DD196E4A6594 /* MarkdownExportContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 060BCF40DFDC79277E925D28 /* MarkdownExportContracts.swift */; };
 		DB8F636BE05F57DFCF150051 /* MCPProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2BA0A366E945589FAE28C8 /* MCPProtocolTests.swift */; };
@@ -246,6 +248,7 @@
 		410AAD26C2D6CBAEE8AF89B1 /* Autosaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Autosaver.swift; sourceTree = "<group>"; };
 		41DF2780D2B934F7142F262C /* RecoveryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryStore.swift; sourceTree = "<group>"; };
 		4212B1B2844F9B9576D273EE /* WorkspaceContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContracts.swift; sourceTree = "<group>"; };
+		42FAD7E81BE7C4995BD16F6E /* GlassTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassTests.swift; sourceTree = "<group>"; };
 		430FC8A872E2ABDDE68D1D05 /* MCPDocumentAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDocumentAccess.swift; sourceTree = "<group>"; };
 		438A5C287432476396F197D0 /* WorkspaceSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSetupView.swift; sourceTree = "<group>"; };
 		4553B2CB1DCA7EB7A258A9B2 /* EditorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSession.swift; sourceTree = "<group>"; };
@@ -258,6 +261,7 @@
 		56120630C97C7C93B907B0AF /* MotionStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionStateMachineTests.swift; sourceTree = "<group>"; };
 		57901D8955829D389B188405 /* MCPHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPHTTPServer.swift; sourceTree = "<group>"; };
 		58100AF092D04B1319D0AAD5 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
+		5A1D092326C29B706A56432F /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		5FAF1A6CD8347E63941C9BA3 /* malformed.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = malformed.md; sourceTree = "<group>"; };
 		6033E78AF1C9AE90EC1A3042 /* ClioIntelligenceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioIntelligenceUITests.swift; sourceTree = "<group>"; };
 		645B4D1ABF7E41D868B35BA8 /* WorkspaceDiscoverySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiscoverySettings.swift; sourceTree = "<group>"; };
@@ -585,6 +589,7 @@
 		A77D27D26DC75CD2A87BF92F /* Design */ = {
 			isa = PBXGroup;
 			children = (
+				5A1D092326C29B706A56432F /* Glass.swift */,
 				7787A2B4B70C9AF2C14ABFF4 /* Metrics.swift */,
 				4838DDA36FA0C9F82A75B005 /* Palette.swift */,
 				CC6B8EE04048FEAE6FD45E1F /* Typography.swift */,
@@ -685,6 +690,7 @@
 				46374AD2CE9940638656CE5F /* ExportTests.swift */,
 				EE9650B91D65E0FC40310E5E /* FilesystemHardeningTests.swift */,
 				96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */,
+				42FAD7E81BE7C4995BD16F6E /* GlassTests.swift */,
 				8D61688C027D6BF04442FE9E /* IntelligenceTests.swift */,
 				A1F6A1A0A329671FB95FC6DC /* LineMinimapTests.swift */,
 				D37AE6760E23A721CE0A399F /* MarkdownConformanceTests.swift */,
@@ -998,6 +1004,7 @@
 				41CC32D25466B5147C662557 /* ExportSupport.swift in Sources */,
 				59C57AFAAFAF9C5C299400E4 /* FocusDimmer.swift in Sources */,
 				C69C28D42A88B120A007F883 /* GitIgnoreMatcher.swift in Sources */,
+				D8415874F3C480E0A914A991 /* Glass.swift in Sources */,
 				CAECF1DAC2D43801DF40CE7F /* HTMLDocumentExporter.swift in Sources */,
 				20FD29D05435FE4A174206F6 /* IncrementalMarkdownHighlighter.swift in Sources */,
 				8663D2B4C90638B36B0C2CDD /* IntelligenceContracts.swift in Sources */,
@@ -1079,6 +1086,7 @@
 				8F1CC708EE71925510CC322E /* ExportTests.swift in Sources */,
 				A06789B427E6989D65245B46 /* FilesystemHardeningTests.swift in Sources */,
 				F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */,
+				48AACFC5EBFA63437F9E5648 /* GlassTests.swift in Sources */,
 				0C43165E3DC03BE52006FC58 /* IntelligenceTests.swift in Sources */,
 				8989171418295D589BB376D7 /* LineMinimapTests.swift in Sources */,
 				42542FDC7AAE0D091D7C1A7D /* MCPAccessTests.swift in Sources */,

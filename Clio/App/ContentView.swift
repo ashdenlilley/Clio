@@ -89,6 +89,7 @@ struct ContentView: View {
             minHeight: Metrics.minimumWindowHeight
         )
         .background(Color(nsColor: Palette.background))
+        .environment(\.clioAccent, appState.accent.color)
         .background(
             WindowChromeProbe(
                 windowSession: windowSession,
