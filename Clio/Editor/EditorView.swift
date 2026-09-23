@@ -18,6 +18,10 @@ struct EditorConfiguration: Equatable {
     var isFocusModeEnabled: Bool
     var focusDimmingOpacity: CGFloat
     var accent: AppState.AccentPreset
+    var caretStyle: CaretStyle
+    var isGrammarCheckingEnabled: Bool
+    var isSmartPunctuationEnabled: Bool
+    var autoWrapsSelection: Bool
 
     init(
         fontSize: CGFloat = Typography.baseSize,
@@ -29,7 +33,11 @@ struct EditorConfiguration: Equatable {
         typewriterAnchor: CGFloat = 0.45,
         isFocusModeEnabled: Bool = true,
         focusDimmingOpacity: CGFloat = 0.28,
-        accent: AppState.AccentPreset = .clio
+        accent: AppState.AccentPreset = .clio,
+        caretStyle: CaretStyle = .block,
+        isGrammarCheckingEnabled: Bool = false,
+        isSmartPunctuationEnabled: Bool = false,
+        autoWrapsSelection: Bool = true
     ) {
         self.fontSize = fontSize
         self.fontName = fontName
@@ -41,6 +49,10 @@ struct EditorConfiguration: Equatable {
         self.isFocusModeEnabled = isFocusModeEnabled
         self.focusDimmingOpacity = focusDimmingOpacity
         self.accent = accent
+        self.caretStyle = caretStyle
+        self.isGrammarCheckingEnabled = isGrammarCheckingEnabled
+        self.isSmartPunctuationEnabled = isSmartPunctuationEnabled
+        self.autoWrapsSelection = autoWrapsSelection
     }
 
     var resolvedFontSize: CGFloat { min(max(fontSize, 12), 20) }

@@ -38,6 +38,8 @@ final class EditorTextView: NSTextView {
     private var isProcessingKeyEvent = false
     private(set) var isApplyingLiteralReplacement = false
     var managesTypingScroll = false
+    private(set) var caretStyle: CaretStyle = .block
+    private(set) var autoWrapsSelection = true
 
     static func makeTextKit2TextView() -> EditorTextView {
         let stack = EditorTextKitStack()
@@ -75,7 +77,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
-        if selectedRange().length > 0,
+        if autoWrapsSelection, selectedRange().length > 0,
            let value = insertString as? String,
            let style = wrapStyle(forTypedMarker: value),
            onMarkdownAction?(.wrap(style)) == true {
@@ -156,6 +158,17 @@ final class EditorTextView: NSTextView {
         color: NSColor,
         turnedOn flag: Bool
     ) {
+        if caretStyle == .line {
+            // Never leave the block overlay showing under the standard caret:
+            // this runs on every blink, so a runtime switch away from .block
+            // cannot leave a stale block layer visible.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            blockCaret.isHidden = true
+            CATransaction.commit()
+            super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
+            return
+        }
         // AppKit owns blink timing. A retained overlay owns the wider block:
         // never paint outside AppKit's narrow caret invalidation rectangle.
         // Moving/resizing the editor therefore cannot leave painted ghost bars.
@@ -187,6 +200,8 @@ final class EditorTextView: NSTextView {
         insertionPointColor = configuration.accent.nsColor
         selectedTextAttributes = [.backgroundColor: configuration.accent.nsColor.withAlphaComponent(0.55)]
         managesTypingScroll = configuration.isTypewriterScrollingEnabled
+        caretStyle = configuration.caretStyle
+        autoWrapsSelection = configuration.autoWrapsSelection
         invalidateBlockCaret()
         focusRingType = .none
 
@@ -200,14 +215,14 @@ final class EditorTextView: NSTextView {
         usesRuler = false
         isRulerVisible = false
 
-        isAutomaticQuoteSubstitutionEnabled = false
-        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticQuoteSubstitutionEnabled = configuration.isSmartPunctuationEnabled
+        isAutomaticDashSubstitutionEnabled = configuration.isSmartPunctuationEnabled
         isAutomaticTextReplacementEnabled = false
         isAutomaticSpellingCorrectionEnabled = false
         isAutomaticTextCompletionEnabled = false
         isAutomaticLinkDetectionEnabled = false
         isAutomaticDataDetectionEnabled = false
-        isGrammarCheckingEnabled = false
+        isGrammarCheckingEnabled = configuration.isGrammarCheckingEnabled
         isContinuousSpellCheckingEnabled = configuration.isSpellCheckingEnabled
         smartInsertDeleteEnabled = false
 

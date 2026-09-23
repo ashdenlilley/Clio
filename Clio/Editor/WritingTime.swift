@@ -10,3 +10,17 @@ enum WritingTime {
         return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s"
     }
 }
+
+enum StatusLineText {
+    static func statistics(
+        wordCountLabel: String,
+        wordCount: Int,
+        showsReadingTime: Bool,
+        showsSpeakingTime: Bool
+    ) -> String {
+        var parts = [wordCountLabel]
+        if showsReadingTime { parts.append("Read \(WritingTime.label(words: wordCount, wordsPerMinute: 250))") }
+        if showsSpeakingTime { parts.append("Speak \(WritingTime.label(words: wordCount, wordsPerMinute: 140))") }
+        return parts.joined(separator: " · ")
+    }
+}

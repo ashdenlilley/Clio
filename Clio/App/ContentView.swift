@@ -93,7 +93,8 @@ struct ContentView: View {
         .background(
             WindowChromeProbe(
                 windowSession: windowSession,
-                editorSession: windowSession.activeTab
+                editorSession: windowSession.activeTab,
+                hidesPointerWhileTyping: appState.preferences.hidesPointerWhileTyping
             )
         )
         .overlay(alignment: .bottomTrailing) {
@@ -174,7 +175,29 @@ struct ContentView: View {
     }
 
     private func editorPane(_ editorSession: EditorSession) -> some View {
-        VStack(spacing: 0) {
+        let onSlashCommand: (@MainActor (SlashCommandPresentation) -> Void)?
+        if appState.preferences.isSlashCommandEnabled {
+            onSlashCommand = { presentation in windowSession.presentInlineSlashPalette(presentation) }
+        } else {
+            onSlashCommand = nil
+        }
+        let configuration = EditorConfiguration(
+            fontSize: CGFloat(appState.fontSize),
+            fontName: appState.editorFontName,
+            measure: appState.measure,
+            lineHeightMultiple: CGFloat(appState.lineHeight),
+            isSpellCheckingEnabled: appState.isSpellCheckingEnabled,
+            isTypewriterScrollingEnabled: appState.isTypewriterModeEnabled,
+            typewriterAnchor: CGFloat(appState.typewriterAnchor),
+            isFocusModeEnabled: appState.isFocusModeEnabled,
+            focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity),
+            accent: appState.accent,
+            caretStyle: appState.preferences.caretStyle,
+            isGrammarCheckingEnabled: appState.preferences.isGrammarCheckingEnabled,
+            isSmartPunctuationEnabled: appState.preferences.isSmartPunctuationEnabled,
+            autoWrapsSelection: appState.preferences.autoWrapsSelection
+        )
+        return VStack(spacing: 0) {
             EditorView(
                 text: editorSession.draftText,
                 contentGeneration: editorSession.bufferGeneration,
@@ -182,24 +205,11 @@ struct ContentView: View {
                     get: { editorSession.viewportState },
                     set: { editorSession.updateViewport($0) }
                 ),
-                configuration: EditorConfiguration(
-                    fontSize: CGFloat(appState.fontSize),
-                    fontName: appState.editorFontName,
-                    measure: appState.measure,
-                    lineHeightMultiple: CGFloat(appState.lineHeight),
-                    isSpellCheckingEnabled: appState.isSpellCheckingEnabled,
-                    isTypewriterScrollingEnabled: appState.isTypewriterModeEnabled,
-                    typewriterAnchor: CGFloat(appState.typewriterAnchor),
-                    isFocusModeEnabled: appState.isFocusModeEnabled,
-                    focusDimmingOpacity: CGFloat(appState.focusDimmingOpacity),
-                    accent: appState.accent
-                ),
+                configuration: configuration,
                 onTextEdit: { edit in
                     windowSession.noteEditorEdit(edit)
                 },
-                onSlashCommand: { presentation in
-                    windowSession.presentInlineSlashPalette(presentation)
-                },
+                onSlashCommand: onSlashCommand,
                 onPlainTextPasted: { pasted, range, textView in
                     pasteStructure.recover(
                         pasted: pasted,
@@ -211,15 +221,23 @@ struct ContentView: View {
                 minimap: windowSession.minimap,
                 onEditorReady: { [weak editorSession] in editorSession?.mcpTextView = $0 }
             )
-            .overlay(alignment: .topTrailing) { EditorMinimapOverlay().frame(width: 32) }
+            .overlay(alignment: .topTrailing) {
+                if appState.preferences.showsMinimap {
+                    EditorMinimapOverlay().frame(width: 32)
+                }
+            }
 
-            StatusLine(
-                relativePath: editorSession.relativePath,
-                wordCountLabel: editorSession.wordCountLabel,
-                wordCount: editorSession.wordCount,
-                fontSize: appState.fontSize
-            )
-            .modifier(ContextChromeMotion(motion: motion))
+            if appState.preferences.showsStatusLine {
+                StatusLine(
+                    relativePath: editorSession.relativePath,
+                    wordCountLabel: editorSession.wordCountLabel,
+                    wordCount: editorSession.wordCount,
+                    fontSize: appState.fontSize,
+                    showsReadingTime: appState.preferences.showsReadingTime,
+                    showsSpeakingTime: appState.preferences.showsSpeakingTime
+                )
+                .modifier(ContextChromeMotion(motion: motion))
+            }
         }
         .background(Color(nsColor: Palette.background))
     }
@@ -586,6 +604,17 @@ private struct StatusLine: View {
     let wordCountLabel: String
     let wordCount: Int
     let fontSize: Double
+    let showsReadingTime: Bool
+    let showsSpeakingTime: Bool
+
+    private var statistics: String {
+        StatusLineText.statistics(
+            wordCountLabel: wordCountLabel,
+            wordCount: wordCount,
+            showsReadingTime: showsReadingTime,
+            showsSpeakingTime: showsSpeakingTime
+        )
+    }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -596,7 +625,7 @@ private struct StatusLine: View {
 
             Spacer(minLength: 40)
 
-            Text("\(wordCountLabel) · Read \(WritingTime.label(words: wordCount, wordsPerMinute: 250)) · Speak \(WritingTime.label(words: wordCount, wordsPerMinute: 140))")
+            Text(statistics)
                 .fixedSize()
                 .accessibilityIdentifier("editor.statistics")
         }
@@ -606,18 +635,20 @@ private struct StatusLine: View {
         .frame(height: Metrics.statusHeight)
         .background(Color(nsColor: Palette.background))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(relativePath), \(wordCountLabel), reading time \(WritingTime.label(words: wordCount, wordsPerMinute: 250)), speaking time \(WritingTime.label(words: wordCount, wordsPerMinute: 140))")
+        .accessibilityLabel("\(relativePath), \(statistics)")
     }
 }
 
 private struct WindowChromeProbe: NSViewRepresentable {
     let windowSession: EditorWindowSession
     let editorSession: EditorSession?
+    let hidesPointerWhileTyping: Bool
 
     func makeNSView(context: Context) -> WindowProbeView {
         let view = WindowProbeView()
         view.windowSession = windowSession
         view.editorSession = editorSession
+        view.hidesPointerWhileTyping = hidesPointerWhileTyping
         view.configureWindowIfNeeded()
         return view
     }
@@ -625,6 +656,8 @@ private struct WindowChromeProbe: NSViewRepresentable {
     func updateNSView(_ view: WindowProbeView, context: Context) {
         view.windowSession = windowSession
         view.editorSession = editorSession
+        view.hidesPointerWhileTyping = hidesPointerWhileTyping
+        view.restorePointerIfDisabled()
         view.configureWindowIfNeeded()
     }
 
@@ -638,6 +671,7 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     weak var windowSession: EditorWindowSession?
     weak var editorSession: EditorSession?
+    var hidesPointerWhileTyping = true
 
     private var hasAppliedInitialState = false
     private var forwardedWindowDelegate: NSWindowDelegate?
@@ -834,10 +868,14 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
             sidebarButton?.toolTip = label
             sidebarButton?.setAccessibilityLabel(label)
         }
-        if session.motion.chrome.pointer.target == 0,
+        if hidesPointerWhileTyping, session.motion.chrome.pointer.target == 0,
            session.motion.chrome.pointer.presentation <= 0.001, window.isKeyWindow {
             if !pointerIsHidden { NSCursor.hide(); pointerIsHidden = true }
         } else { restorePointer() }
+    }
+
+    func restorePointerIfDisabled() {
+        if !hidesPointerWhileTyping { restorePointer() }
     }
 
     private func restorePointer() {
