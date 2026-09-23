@@ -126,6 +126,9 @@ final class ClioIntelligenceUITests: ClioDiagnosticTestCase {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 5))
         window.typeKey(",", modifierFlags: .command)
+        let category = app.buttons["settings.category.assisted"]
+        XCTAssertTrue(category.waitForExistence(timeout: 3))
+        category.click()
     }
 
     private func launch(scenario: String) {

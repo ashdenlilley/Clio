@@ -172,6 +172,7 @@
 		F7BFFF89C1366107D71F99F1 /* TransientSurfaceMotionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD255F76358AFDC256DB68E /* TransientSurfaceMotionController.swift */; };
 		F8610375304C1F9410CC61C4 /* ClioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6B7D4086EC1BC509AB0F39D /* ClioApp.swift */; };
 		FAD2A9FF20EADCB75DF68D86 /* MarkdownInlineParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F47B1CD2E86D632BED61BC84 /* MarkdownInlineParser.swift */; };
+		FC7B3BC824AEAFACA357DF71 /* ClioSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5159D6F9524091F56BB56198 /* ClioSettingsUITests.swift */; };
 		FCBF9C7EDDE3D9867A361F5B /* WorkspaceIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D82CD28A2B384E6D4B2CB4C /* WorkspaceIndexCoordinator.swift */; };
 		FE76CDDFE4122BEC2B83DFE0 /* WritingWorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5364CE1384CC5228DAC880 /* WritingWorkspaceTests.swift */; };
 /* End PBXBuildFile section */
@@ -267,6 +268,7 @@
 		4838DDA36FA0C9F82A75B005 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		500E1A749ABD1908442F6676 /* CrashTestDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashTestDriver.swift; sourceTree = "<group>"; };
 		50C99434863D996F1BED11BF /* ExportFileGrantWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportFileGrantWriter.swift; sourceTree = "<group>"; };
+		5159D6F9524091F56BB56198 /* ClioSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioSettingsUITests.swift; sourceTree = "<group>"; };
 		56120630C97C7C93B907B0AF /* MotionStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionStateMachineTests.swift; sourceTree = "<group>"; };
 		57901D8955829D389B188405 /* MCPHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPHTTPServer.swift; sourceTree = "<group>"; };
 		58100AF092D04B1319D0AAD5 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
@@ -437,6 +439,7 @@
 				6033E78AF1C9AE90EC1A3042 /* ClioIntelligenceUITests.swift */,
 				01B9E54F910D6A753ED29027 /* ClioMotionUITests.swift */,
 				BD98DC71C30B4B143881D2EF /* ClioNavigationUITests.swift */,
+				5159D6F9524091F56BB56198 /* ClioSettingsUITests.swift */,
 			);
 			path = ClioUITests;
 			sourceTree = "<group>";
@@ -964,6 +967,7 @@
 				9AFEB4124A5B22F9413C3C33 /* ClioIntelligenceUITests.swift in Sources */,
 				8694987D18E2BD0E878479D4 /* ClioMotionUITests.swift in Sources */,
 				8ACFA7C68EF74A3824835260 /* ClioNavigationUITests.swift in Sources */,
+				FC7B3BC824AEAFACA357DF71 /* ClioSettingsUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
