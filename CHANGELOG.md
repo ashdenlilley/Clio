@@ -34,7 +34,7 @@ All notable changes to Clio are recorded here. The format follows
 
 - The Amber accent no longer renders the same colour as Orange.
 - The titlebar band is black like the rest of the window instead of grey.
-- Typewriter scrolling and focus dimming work again. Saving the editor's
+- Typewriter scrolling and focus dimming now work. Saving the editor's
   scroll position switched the text view to the older TextKit 1 layout
   system, which quietly turned both features off for the rest of the session.
 
