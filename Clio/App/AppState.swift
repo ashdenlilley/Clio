@@ -27,6 +27,11 @@ final class AppState: ClioCommandDispatching {
     /// Where conflict and replacement recovery copies are written, when known.
     var recoveryFolderURL: URL? { recoveryFolderPath.map { URL(fileURLWithPath: $0) } }
 
+    /// A Settings page asked for from outside a window (the menu bar's MCP
+    /// item). Held until a window claims it, because the window may not exist
+    /// yet when the request is made.
+    private(set) var pendingSettingsRequest: SettingsCategory?
+
     let workspaceCatalog: WorkspaceCatalog
     let discoverySettings: WorkspaceDiscoverySettings
     private(set) var pendingExportRecoveries: [ExportRecoveryItem] = []
@@ -1038,6 +1043,19 @@ final class AppState: ClioCommandDispatching {
             }
         }
         return true
+    }
+
+    func requestSettings(_ category: SettingsCategory) {
+        appPreferences.lastSettingsCategory = category
+        pendingSettingsRequest = category
+    }
+
+    /// Hands a pending request to one window: the key window, or the only
+    /// window when none is key. `windowID` is for diagnostics only.
+    func consumeSettingsRequest(for windowID: UUID, isKeyOrOnlyWindow: Bool) -> SettingsCategory? {
+        guard isKeyOrOnlyWindow, let category = pendingSettingsRequest else { return nil }
+        pendingSettingsRequest = nil
+        return category
     }
 
     func focusWindow(_ id: UUID) {

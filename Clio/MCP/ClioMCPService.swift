@@ -68,7 +68,6 @@ final class ClioMCPService {
     @ObservationIgnored private lazy var tools = MCPTools(app: app, access: access)
     @ObservationIgnored private lazy var router = MCPRouter(access: access, tools: tools)
     @ObservationIgnored private var loaded = false
-    @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored var openEditor: (() -> Void)? {
         didSet { tools.openEditor = openEditor }
     }
@@ -203,61 +202,23 @@ final class ClioMCPService {
         refreshLoginStatus()
     }
 
-    func showSettings() {
-        do { try loadCredentials() } catch { errorMessage = "Allow Keychain access to manage MCP clients." }
-        refreshLoginStatus()
-        if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
-                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = "Clio MCP"
-            window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: MCPSettingsView(service: self, app: app))
-            window.center(); settingsWindow = window
+    /// Loads stored clients and login state for the Local MCP settings page.
+    /// Called whenever the page appears, however Settings was opened.
+    /// UI tests skip the Keychain read (as `startConfigured` does): an
+    /// ad-hoc-signed build would raise a blocking access prompt.
+    func prepareSettingsPage() {
+        if ProcessInfo.processInfo.environment["CLIO_UI_TESTING"] != "1" {
+            do { try loadCredentials() } catch { errorMessage = "Allow Keychain access to manage MCP clients." }
         }
-        NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
+        refreshLoginStatus()
     }
-}
 
-struct MCPSettingsView: View {
-    @Bindable var service: ClioMCPService
-    let app: AppState
-    @State private var name = ""
-    @State private var selected: Set<WorkspaceID> = []
-
-    var body: some View {
-        Form {
-            Toggle("Enable local MCP", isOn: Binding(get: { service.enabled }, set: { service.setEnabled($0) }))
-            Text(service.status).font(.caption)
-            Text("Endpoint: http://127.0.0.1:19847/mcp").textSelection(.enabled)
-            Text("Available only while Clio runs. Authorized clients can read and change selected folders, including unsaved text. Only deletion asks for confirmation. Browser/hosted connections are not enabled.")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Open Clio at login without a window", isOn: Binding(get: { service.loginEnabled }, set: { service.setLoginEnabled($0) }))
-            Text(service.loginStatus).font(.caption)
-            Section("Authorize a client") {
-                TextField("Client name", text: $name)
-                ForEach(app.workspaceDescriptors) { workspace in
-                    Toggle(workspace.displayName, isOn: Binding(
-                        get: { selected.contains(workspace.id) },
-                        set: { if $0 { selected.insert(workspace.id) } else { selected.remove(workspace.id) } }))
-                }
-                Button("Authorize selected folders") {
-                    service.addClient(name: name, workspaces: selected)
-                    if service.errorMessage == nil { name = ""; selected = [] }
-                }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || selected.isEmpty)
-            }
-            Section("Authorized clients (\(service.connectedSessions) sessions)") {
-                ForEach(service.clients) { client in
-                    HStack {
-                        Text(client.name)
-                        Spacer()
-                        Button("Copy token") { service.copyToken(client.id) }
-                        Button("Desktop config") { service.copyDesktopConfiguration(client.id) }
-                        Button("Remove") { service.revoke(client.id) }
-                    }
-                }
-                Text("Tokens are credentials. Paste only into your client's local configuration. Clipboard clears after 60 seconds; do not share tokens in chat or logs.").font(.caption)
-            }
-            if let error = service.errorMessage { Text(error).foregroundStyle(.red) }
-        }.formStyle(.grouped).padding().frame(minWidth: 480, minHeight: 460)
+    /// The menu bar's "MCP Settings…": brings up an editor window and opens
+    /// its Settings panel on the Local MCP page.
+    func showSettings() {
+        prepareSettingsPage()
+        NSApp.activate(ignoringOtherApps: true)
+        openEditor?()
+        app.requestSettings(.localMCP)
     }
 }

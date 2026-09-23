@@ -119,6 +119,15 @@ struct ContentView: View {
         .onChange(of: windowSession.isSettingsPresented) { _, presented in
             motion.synchronizeSurface(.settings, presented: presented, viewport: windowSession.activeTab?.viewportState ?? .zero)
         }
+        .onChange(of: appState.pendingSettingsRequest, initial: true) { _, _ in
+            claimSettingsRequest()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            // A request made while no window was key waits for the next one.
+            guard let window = notification.object as? NSWindow,
+                  clioEditorSessionID(for: window) == windowSession.id else { return }
+            claimSettingsRequest()
+        }
         .onChange(of: windowSession.activeTab?.activeConflict?.id, initial: true) { _, id in
             synchronizeConflict()
         }
@@ -258,6 +267,15 @@ struct ContentView: View {
         motion.synchronizeSurface(.conflict, presented: true, viewport: session.viewportState)
     }
 
+    private func claimSettingsRequest() {
+        guard appState.pendingSettingsRequest != nil else { return }
+        let editorWindows = NSApp.windows.filter(isClioEditorWindow)
+        let isKey = NSApp.keyWindow.flatMap(clioEditorSessionID(for:)) == windowSession.id
+        if appState.consumeSettingsRequest(for: windowSession.id, isKeyOrOnlyWindow: isKey || editorWindows.count <= 1) != nil {
+            windowSession.isSettingsPresented = true
+        }
+    }
+
     private var transientSurfaces: some View {
         GeometryReader { geometry in
           let state = motion.surfaceState
@@ -309,19 +327,14 @@ struct ContentView: View {
                     .modifier(SurfacePresentation(progress: state.palette.presentation, y: -6, scale: 0.985, reduceMotion: reduceMotion))
             }
         case .settings:
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Settings").font(.headline)
-                    Spacer()
-                    Button("Done") { windowSession.isSettingsPresented = false }
-                        .keyboardShortcut(.cancelAction)
-                        .focused($settingsDoneFocused)
-                }.padding(16)
-                SettingsView()
-            }
-            .frame(width: min(500, availableSize.width - 32), height: min(650, availableSize.height - 32))
-            .background(Color(nsColor: Palette.background))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            let width = min(760, availableSize.width - 32)
+            SettingsView(
+                done: { windowSession.isSettingsPresented = false },
+                doneFocus: $settingsDoneFocused,
+                compact: width < 600
+            )
+            .frame(width: width, height: min(620, availableSize.height - 32))
+            .clioGlass(.panel)
             .modifier(SurfacePresentation(progress: state.settings.presentation, y: 8, scale: 0.99, reduceMotion: reduceMotion))
             .onAppear { settingsDoneFocused = true }
             .onChange(of: windowSession.isSettingsPresented) { _, presented in settingsDoneFocused = presented }

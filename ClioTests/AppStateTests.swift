@@ -19,6 +19,16 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.accent, .clio)
     }
 
+    func testSettingsRequestIsConsumedByExactlyOneWindow() {
+        let state = isolatedAppState()
+        state.requestSettings(.localMCP)
+        let first = UUID(), second = UUID()
+        XCTAssertNil(state.consumeSettingsRequest(for: second, isKeyOrOnlyWindow: false))
+        XCTAssertEqual(state.consumeSettingsRequest(for: first, isKeyOrOnlyWindow: true), .localMCP)
+        XCTAssertNil(state.consumeSettingsRequest(for: second, isKeyOrOnlyWindow: true))
+        XCTAssertEqual(state.appPreferences.lastSettingsCategory, .localMCP)
+    }
+
     func testClioAccentUsesRequestedSRGBComponents() throws {
         let color = try XCTUnwrap(Palette.accent.usingColorSpace(.sRGB))
         XCTAssertEqual(color.redComponent, 57.0 / 255, accuracy: 0.000001)
