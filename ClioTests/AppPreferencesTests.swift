@@ -53,4 +53,18 @@ final class AppPreferencesTests: XCTestCase {
         XCTAssertEqual(p.defaultExportFormat, .pdf)
         XCTAssertEqual(p.lastSettingsCategory, .general)
     }
+
+    func testNewWindowsUseSidebarDefaultsWithoutRestoration() {
+        let session = EditorWindowSession(request: .newDocument(), sidebarVisibleByDefault: false, sidebarPinnedByDefault: true)
+        XCTAssertFalse(session.isSidebarVisible)
+        XCTAssertTrue(session.isSidebarPinned)
+    }
+
+    func testRestoredWindowsIgnoreSidebarDefaults() {
+        var request = EditorWindowRequest.newDocument()
+        request.restoration = EditorWindowRestorationState(id: request.id, tabs: [], activeTabID: nil, isSidebarVisible: true, isSidebarPinned: false, isFullScreen: false)
+        let session = EditorWindowSession(request: request, sidebarVisibleByDefault: false, sidebarPinnedByDefault: true)
+        XCTAssertTrue(session.isSidebarVisible)
+        XCTAssertFalse(session.isSidebarPinned)
+    }
 }

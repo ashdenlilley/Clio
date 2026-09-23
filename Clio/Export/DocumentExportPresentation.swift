@@ -280,6 +280,9 @@ final class DocumentExportPresentation {
     @ObservationIgnored
     private var retryRequest: ExportRequest?
 
+    @ObservationIgnored
+    private let defaultFormat: @MainActor () -> ExportFormat
+
     convenience init() {
         self.init(
             coordinator: DocumentExportCoordinator(),
@@ -293,12 +296,14 @@ final class DocumentExportPresentation {
         coordinator: DocumentExportCoordinator,
         printSettingsStore: PDFPrintSettingsStore,
         panelPresenter: any ExportPanelPresenting,
-        recoveryCatalog: any ExportRecoveryCataloging
+        recoveryCatalog: any ExportRecoveryCataloging,
+        defaultFormat: @escaping @MainActor () -> ExportFormat = { .pdf }
     ) {
         self.coordinator = coordinator
         self.printSettingsStore = printSettingsStore
         self.panelPresenter = panelPresenter
         self.recoveryCatalog = recoveryCatalog
+        self.defaultFormat = defaultFormat
     }
 
     var phase: DocumentExportPhase { coordinator.phase }
@@ -386,6 +391,7 @@ final class DocumentExportPresentation {
             } else {
                 failure = nil
                 completedReceipt = nil
+                selectedFormat = defaultFormat()
                 isOptionsPresented = true
             }
         } catch {

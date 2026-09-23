@@ -350,6 +350,19 @@ final class ExportPresentationTests: XCTestCase {
         let restored = PDFPrintSettingsStore(defaults: defaults)
         XCTAssertEqual(restored.settings, custom)
     }
+
+    func testOptionsSheetStartsOnTheDefaultFormat() {
+        let presentation = DocumentExportPresentation(
+            coordinator: DocumentExportCoordinator(),
+            printSettingsStore: PDFPrintSettingsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!),
+            panelPresenter: NativeExportPanelPresenter(),
+            recoveryCatalog: ExportRecoveryCatalog.shared,
+            defaultFormat: { .html }
+        )
+        presentation.requestExport()
+        XCTAssertTrue(presentation.isOptionsPresented)
+        XCTAssertEqual(presentation.selectedFormat, .html)
+    }
 }
 
 @MainActor

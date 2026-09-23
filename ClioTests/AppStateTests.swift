@@ -151,6 +151,13 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(tags["public.mime-type"] as? String, "text/markdown")
     }
 
+    func testCancellingRecoveryFolderChangeLeavesStateUntouched() {
+        let state = isolatedAppState(defaults: makeDefaults(), folderPanelRunner: { _ in nil })
+        state.changeRecoveryFolder()
+        XCTAssertFalse(state.needsRecoveryAuthorization)
+        XCTAssertNil(state.workspaceErrorMessage)
+    }
+
     private func makeDefaults() -> UserDefaults {
         let suiteName = "ClioTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

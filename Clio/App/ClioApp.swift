@@ -59,7 +59,11 @@ private struct EditorWindowRoot: View {
         self.appState = appState
         let initialRequest = request.wrappedValue
         _windowSession = State(
-            initialValue: EditorWindowSession(request: initialRequest)
+            initialValue: EditorWindowSession(
+                request: initialRequest,
+                sidebarVisibleByDefault: appState.appPreferences.showsSidebarInNewWindows,
+                sidebarPinnedByDefault: appState.appPreferences.pinsSidebarInNewWindows
+            )
         )
     }
 
@@ -208,7 +212,7 @@ final class ClioApplicationDelegate: NSObject, NSApplicationDelegate {
 
     init(appState: AppState) {
         self.appState = appState
-        initialWindowRequest = .mostRecent()
+        initialWindowRequest = appState.appPreferences.initialWindowRequest()
         super.init()
     }
 

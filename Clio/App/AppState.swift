@@ -19,6 +19,14 @@ final class AppState: ClioCommandDispatching {
     private(set) var isCrashRecoveryDurabilityCompromised = false
     private(set) var isRefreshingWorkspaces = false
 
+    /// Mirrors `recoveryStore`'s root, which is `@ObservationIgnored` and so
+    /// cannot itself drive SwiftUI updates. Kept in sync in `init` and
+    /// `activateRecovery(from:)`.
+    private(set) var recoveryFolderPath: String?
+
+    /// Where conflict and replacement recovery copies are written, when known.
+    var recoveryFolderURL: URL? { recoveryFolderPath.map { URL(fileURLWithPath: $0) } }
+
     let workspaceCatalog: WorkspaceCatalog
     let discoverySettings: WorkspaceDiscoverySettings
     private(set) var pendingExportRecoveries: [ExportRecoveryItem] = []
@@ -101,12 +109,18 @@ final class AppState: ClioCommandDispatching {
             printSettingsStore: PDFPrintSettingsStore(defaults: defaults),
             panelPresenter: NativeExportPanelPresenter(),
             recoveryCatalog: (exportRecoveryCatalog as? any ExportRecoveryCataloging)
-                ?? CheckpointOnlyExportRecoveryCatalog()
+                ?? CheckpointOnlyExportRecoveryCatalog(),
+            defaultFormat: { [weak self] in self?.appPreferences.defaultExportFormat ?? .pdf }
         )
     }
 
     @ObservationIgnored
     private var recoveryStore: any RecoveryPersisting
+
+    /// Test seam for the recovery-folder chooser. Defaults to running the
+    /// real panel modally, identical to today's behaviour.
+    @ObservationIgnored
+    private let folderPanelRunner: @MainActor (NSOpenPanel) -> URL?
 
     @ObservationIgnored
     private var editorSessions: [EditorSession] = []
@@ -240,7 +254,10 @@ final class AppState: ClioCommandDispatching {
         activationWillOpen: (@MainActor (URL) async -> Void)? = nil,
         exportRecoveryCheckpointStore: any ExportRecoveryCheckpointing = ExportRecoveryCheckpointStore.shared,
         exportRecoveryCatalog: any ExportTransactionRecoveryCataloging = ExportRecoveryCatalog.shared,
-        intelligenceKeyStore: IntelligenceKeyStore = .keychain
+        intelligenceKeyStore: IntelligenceKeyStore = .keychain,
+        folderPanelRunner: @escaping @MainActor (NSOpenPanel) -> URL? = { panel in
+            panel.runModal() == .OK ? panel.url : nil
+        }
     ) {
         self.defaults = defaults
         self.intelligenceKeyStore = intelligenceKeyStore
@@ -250,6 +267,7 @@ final class AppState: ClioCommandDispatching {
         self.crashRecoveryJournal = crashRecoveryJournal
         self.externalFileAccessController = externalFileAccessController
         self.parentFolderSelection = parentFolderSelection
+        self.folderPanelRunner = folderPanelRunner
         self.activationWillOpen = activationWillOpen
         self.exportRecoveryCheckpointStore = exportRecoveryCheckpointStore
         self.exportRecoveryCatalog = exportRecoveryCatalog
@@ -257,6 +275,7 @@ final class AppState: ClioCommandDispatching {
             ?? Self.restoredRecoveryStore(from: defaults)
             ?? RecoveryStore()
         self.recoveryStore = activeRecoveryStore
+        self.recoveryFolderPath = activeRecoveryStore.rootURL.path
         documentRegistry = suppliedDocumentRegistry ?? DocumentBufferRegistry()
         conflictResolver = suppliedConflictResolver
             ?? ConflictResolver(recoveryStore: activeRecoveryStore)
@@ -1177,16 +1196,24 @@ final class AppState: ClioCommandDispatching {
         }
     }
 
-    func chooseRecoveryFolder() {
+    /// Settings entry point. Unlike the banner flow, cancelling here changes
+    /// nothing: the writer was not asked to authorize, only offered a change.
+    func changeRecoveryFolder() {
+        chooseRecoveryFolder(flagsCancellation: false)
+    }
+
+    func chooseRecoveryFolder(flagsCancellation: Bool = true) {
         let panel = configuredFolderPanel(
             title: "Choose Clio Recovery Folder",
             message: "Select or create “Clio Recovery” in Documents. Clio never replaces a conflicted version until its recovery copy is written here.",
             prompt: "Use Recovery Folder"
         )
         panel.directoryURL = RecoveryStore.preferredURL
-        guard panel.runModal() == .OK, let selectedURL = panel.url else {
-            needsRecoveryAuthorization = true
-            workspaceErrorMessage = "Authorize a recovery folder before resolving external edits or replacing files."
+        guard let selectedURL = folderPanelRunner(panel) else {
+            if flagsCancellation {
+                needsRecoveryAuthorization = true
+                workspaceErrorMessage = "Authorize a recovery folder before resolving external edits or replacing files."
+            }
             return
         }
         defer { selectedURL.stopAccessingSecurityScopedResource() }
@@ -2073,6 +2100,7 @@ private extension AppState {
     func activateRecovery(from bookmark: Data) throws {
         let restored = try RecoveryAuthorization.restore(bookmark: bookmark)
         recoveryStore = restored.store
+        recoveryFolderPath = restored.store.rootURL.path
         conflictResolver = ConflictResolver(recoveryStore: restored.store)
         documentMover = DocumentMover(
             recoveryStore: restored.store,

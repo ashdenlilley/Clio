@@ -99,15 +99,21 @@ final class EditorWindowSession: Identifiable {
     @ObservationIgnored
     private var isSidebarFocused = false
 
-    init(request: EditorWindowRequest) {
+    init(
+        request: EditorWindowRequest,
+        sidebarVisibleByDefault: Bool = true,
+        sidebarPinnedByDefault: Bool = false
+    ) {
         id = request.id
         isFullScreenEnabled = request.restoration?.isFullScreen
             ?? request.isFullScreen
-        isSidebarVisible = request.restoration?.isSidebarVisible ?? true
-        isSidebarPinned = request.restoration?.isSidebarPinned ?? false
+        let sidebarVisible = request.restoration?.isSidebarVisible ?? sidebarVisibleByDefault
+        let sidebarPinned = request.restoration?.isSidebarPinned ?? sidebarPinnedByDefault
+        isSidebarVisible = sidebarVisible
+        isSidebarPinned = sidebarPinned
         motion = WindowMotionAdapter(
-            sidebarVisible: request.restoration?.isSidebarVisible ?? true,
-            pinned: request.restoration?.isSidebarPinned ?? false
+            sidebarVisible: sidebarVisible,
+            pinned: sidebarPinned
         )
 
         var restoration = request.restoration

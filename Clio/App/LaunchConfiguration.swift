@@ -9,9 +9,10 @@ struct ClioLaunchConfiguration {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Self {
         guard environment["CLIO_UI_TESTING"] == "1" else {
+            let appState = AppState()
             return Self(
-                appState: AppState(),
-                initialWindowRequest: .mostRecent()
+                appState: appState,
+                initialWindowRequest: appState.appPreferences.initialWindowRequest()
             )
         }
 

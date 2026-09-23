@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 @testable import Clio
 
@@ -20,7 +21,8 @@ func isolatedAppState(
     parentFolderSelection: (@MainActor (URL) -> URL?)? = nil,
     activationWillOpen: (@MainActor (URL) async -> Void)? = nil,
     exportRecoveryCheckpointStore: (any ExportRecoveryCheckpointing)? = nil,
-    exportRecoveryCatalog: (any ExportTransactionRecoveryCataloging)? = nil
+    exportRecoveryCatalog: (any ExportTransactionRecoveryCataloging)? = nil,
+    folderPanelRunner: (@MainActor (NSOpenPanel) -> URL?)? = nil
 ) -> AppState {
     let root = fileManager.temporaryDirectory
         .appendingPathComponent("ClioAppStateTests-\(UUID().uuidString)", isDirectory: true)
@@ -49,6 +51,7 @@ func isolatedAppState(
         parentFolderSelection: parentFolderSelection,
         activationWillOpen: activationWillOpen,
         exportRecoveryCheckpointStore: exportRecoveryCheckpointStore ?? ExportRecoveryCheckpointStore(rootURL: root.appendingPathComponent("ExportCheckpoints")),
-        exportRecoveryCatalog: exportRecoveryCatalog ?? ExportRecoveryCatalog(rootURL: root.appendingPathComponent("ExportRecovery"))
+        exportRecoveryCatalog: exportRecoveryCatalog ?? ExportRecoveryCatalog(rootURL: root.appendingPathComponent("ExportRecovery")),
+        folderPanelRunner: folderPanelRunner ?? { panel in panel.runModal() == .OK ? panel.url : nil }
     )
 }
