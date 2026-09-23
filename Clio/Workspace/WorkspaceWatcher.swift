@@ -210,6 +210,8 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
             .isSymbolicLinkKey,
             .contentModificationDateKey,
             .fileSizeKey,
+            .fileResourceIdentifierKey,
+            .volumeIdentifierKey,
         ]
         guard rootIsReadableDirectory() else {
             return .rootUnavailable
@@ -245,7 +247,12 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
                   ["md", "markdown", "txt"].contains(url.pathExtension.lowercased()) else {
                 continue
             }
-            let identity = PhysicalFileIdentity.authorizedFile(at: url)
+            // Use the identity from the same values as the checks above. A
+            // second lookup can race a rename and yield a path identity.
+            let identity = PhysicalFileIdentity.authorizedFile(
+                at: url,
+                resourceValues: values
+            )
             files[identity] = FileState(
                 identity: identity,
                 url: url.standardizedFileURL,
@@ -375,9 +382,9 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
 
     private func updateSnapshotEntry(at url: URL) {
         let standardized = url.standardizedFileURL
-        // Read the identity with the other values. A second lookup can race a
-        // rename and fall back to a path identity, which later turns the move
-        // into a deletion plus a creation.
+        // Read the identity in the same lookup as the other values, so a file
+        // that vanishes fails the whole read rather than yielding a path
+        // identity that a later rescan reports as deleted + created.
         guard let values = try? standardized.resourceValues(forKeys: [
             .isRegularFileKey,
             .isSymbolicLinkKey,
