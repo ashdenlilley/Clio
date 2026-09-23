@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import XCTest
 @testable import Clio
@@ -750,38 +751,74 @@ final class DataSafetyTests: XCTestCase {
         try await withDirectories { workspaceURL, _ in
             let nested = workspaceURL.appendingPathComponent("nested", isDirectory: true)
             try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
-            let watcher = WorkspaceWatcher(workspaceID: WorkspaceID(), rootURL: workspaceURL)
-            try await Task.sleep(for: .milliseconds(120))
+            let watcherReady = LockedDate()
+            let replacementSeen = LockedDate()
+            let watcher = WorkspaceWatcher(
+                workspaceID: WorkspaceID(),
+                rootURL: workspaceURL,
+                rawEventObserver: { url, flags in
+                    if url.lastPathComponent == "ready.tmp" {
+                        watcherReady.setIfUnset(Date())
+                    }
+                    if url.lastPathComponent == "one.md",
+                       flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed) != 0 {
+                        replacementSeen.setIfUnset(Date())
+                    }
+                }
+            )
+            // The initial snapshot runs on the watcher queue before any event
+            // is handled. Once an event for this non-document file arrives,
+            // one.md cannot already be in the initial snapshot.
+            try Data().write(to: workspaceURL.appendingPathComponent("ready.tmp"))
+            for _ in 0..<300 where watcherReady.value == nil {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNotNil(watcherReady.value, "watcher never handled an event")
             let stream = await watcher.events()
             let recorder = EventRecorder()
             let collector = Task {
                 for await event in stream {
-                    await recorder.record(event.kind)
+                    await recorder.record(event.kind, at: event.observedAt)
                 }
+            }
+
+            // Wait for each change to be reported before making the next one.
+            // Moves are found by diffing snapshots in a debounced rescan, so a
+            // move and a delete that land in one rescan correctly report only
+            // the deletion. Fixed sleeps let that happen under load.
+            func waitFor(
+                _ kind: WorkspaceEventKind,
+                after start: @Sendable () -> Date? = { .distantPast }
+            ) async throws -> Bool {
+                for _ in 0..<300 {
+                    if let start = start(),
+                       await recorder.contains(kind, after: start) { return true }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                return false
             }
 
             let created = nested.appendingPathComponent("one.md")
             try Data("one".utf8).write(to: created)
-            try await Task.sleep(for: .milliseconds(120))
+            let sawCreated = try await waitFor(.created)
             try Data("two".utf8).write(to: created, options: .atomic)
-            try await Task.sleep(for: .milliseconds(120))
+            // The first write can also report modified. Wait for the modified
+            // emitted after the watcher handles the atomic save's rename, or
+            // the move can overtake it and the watcher never sees the new inode
+            // at one.md. It then correctly reports deleted + created.
+            let sawModified = try await waitFor(.modified, after: { replacementSeen.value })
             let moved = nested.appendingPathComponent("two.md")
             try FileManager.default.moveItem(at: created, to: moved)
-            try await Task.sleep(for: .milliseconds(120))
+            let sawMoved = try await waitFor(.moved)
             try FileManager.default.removeItem(at: moved)
+            let sawDeleted = try await waitFor(.deleted)
 
-            for _ in 0..<300 {
-                if await recorder.contains(.created),
-                   await recorder.contains(.moved),
-                   await recorder.contains(.deleted) { break }
-                try await Task.sleep(for: .milliseconds(10))
-            }
             let kinds = await recorder.all
             collector.cancel()
-            XCTAssertTrue(kinds.contains(.created))
-            XCTAssertTrue(kinds.contains(.modified))
-            XCTAssertTrue(kinds.contains(.moved))
-            XCTAssertTrue(kinds.contains(.deleted))
+            XCTAssertTrue(sawCreated, "no created event; saw \(kinds)")
+            XCTAssertTrue(sawModified, "no modified event; saw \(kinds)")
+            XCTAssertTrue(sawMoved, "no moved event; saw \(kinds)")
+            XCTAssertTrue(sawDeleted, "no deleted event; saw \(kinds)")
         }
     }
 
@@ -1127,9 +1164,25 @@ private extension DataSafetyTests {
 
     actor EventRecorder {
         private var kinds: [WorkspaceEventKind] = []
-        func record(_ kind: WorkspaceEventKind) { kinds.append(kind) }
+        private var times: [Date] = []
+        func record(_ kind: WorkspaceEventKind, at time: Date = Date()) {
+            kinds.append(kind)
+            times.append(time)
+        }
         func contains(_ kind: WorkspaceEventKind) -> Bool { kinds.contains(kind) }
+        func contains(_ kind: WorkspaceEventKind, after start: Date) -> Bool {
+            zip(kinds, times).contains { $0.0 == kind && $0.1 >= start }
+        }
         var all: [WorkspaceEventKind] { kinds }
+    }
+
+    final class LockedDate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var date: Date?
+        var value: Date? { lock.withLock { date } }
+        func setIfUnset(_ newValue: Date) {
+            lock.withLock { if date == nil { date = newValue } }
+        }
     }
 
     actor DetailedEventRecorder {
