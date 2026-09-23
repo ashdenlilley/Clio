@@ -25,7 +25,7 @@ See the [changelog](CHANGELOG.md) for what changed.
 
 See [GitHub Releases](https://github.com/ashdenlilley/Clio/releases) for available
 builds and their notes. Download the DMG, open it, and drag Clio to Applications.
-Published release images support Apple silicon and Intel Macs running macOS 14
+Published release images support Apple silicon and Intel Macs running macOS 26
 or later.
 
 On first launch, approve a workspace folder. The default is `~/Documents/Clio`.
@@ -52,7 +52,7 @@ exactly what each one sends.
 
 Open `Clio.xcodeproj` and select the `Clio` scheme. The generated project and
 dependency lockfile are checked in. Xcode 26 is used for current release builds;
-the deployment target is macOS 14. Configure your own signing team when needed.
+the deployment target is macOS 26 (Liquid Glass). Configure your own signing team when needed.
 Release credentials are not required to work on the editor or run its tests.
 
 If you change `project.yml`, regenerate with XcodeGen 2.46 or newer:
