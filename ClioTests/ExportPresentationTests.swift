@@ -352,11 +352,14 @@ final class ExportPresentationTests: XCTestCase {
     }
 
     func testOptionsSheetStartsOnTheDefaultFormat() {
+        let suiteName = "ExportOptionsDefaultFormatTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let presentation = DocumentExportPresentation(
             coordinator: DocumentExportCoordinator(),
-            printSettingsStore: PDFPrintSettingsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!),
+            printSettingsStore: PDFPrintSettingsStore(defaults: defaults),
             panelPresenter: NativeExportPanelPresenter(),
-            recoveryCatalog: ExportRecoveryCatalog.shared,
+            recoveryCatalog: FakeExportRecoveryCatalog(),
             defaultFormat: { .html }
         )
         presentation.requestExport()

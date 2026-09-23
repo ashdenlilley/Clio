@@ -84,6 +84,14 @@ final class ClioSettingsUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["editor.statistics"].waitForExistence(timeout: 1))
     }
 
+    func testMinimapToggleHidesOverlay() {
+        XCTAssertTrue(app.descendants(matching: .any)["editor.minimap"].waitForExistence(timeout: 3))
+        openSettings("editor")
+        app.switches["settings.editor.minimap"].click()
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(app.descendants(matching: .any)["editor.minimap"].waitForExistence(timeout: 1))
+    }
+
     func testSlashCommandsOffInsertsLiteralSlash() {
         openSettings("writing")
         app.switches["settings.writing.slash"].click()
