@@ -31,6 +31,23 @@ class ClioDiagnosticTestCase: XCTestCase {
                        "The selected editor must finish transitioning to \(expected)", file: file, line: line)
     }
 
+    /// Sends AppKit's standard `toggleFullScreen:` action to the key window
+    /// through the View menu item AppKit inserts for it. The system assigns
+    /// that item's key equivalent per host (Globe-F on a Mac with a Globe
+    /// key, where Control-Command-F is unbound), so a hard-coded shortcut
+    /// can silently do nothing.
+    func toggleFullScreen(
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        app.menuBars.menuBarItems["View"].click()
+        let item = app.menuBars.menuItems["toggleFullScreen:"]
+        XCTAssertTrue(item.waitForExistence(timeout: 3),
+                      "AppKit's Enter/Exit Full Screen menu item must be present", file: file, line: line)
+        item.click()
+    }
+
     override func record(_ issue: XCTIssue) {
         // Record once before teardown terminates Clio. Avoid querying the app's
         // AX tree here: it may be the service that's stalled during launch.
@@ -152,7 +169,7 @@ final class ClioShutdownUITests: ClioDiagnosticTestCase {
         XCTAssertTrue(targetEditor.waitForExistence(timeout: 5))
         targetEditor.click()
         assertFullscreenState(false, for: targetWindow, timeout: 3)
-        targetWindow.typeKey("f", modifierFlags: [.command, .control])
+        toggleFullScreen(in: app)
         assertFullscreenState(true, for: targetWindow)
         // The target's own completed-state marker proves which window entered.
         // Do not query older windows now: they may be in a different Space.
