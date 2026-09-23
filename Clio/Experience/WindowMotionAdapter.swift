@@ -115,7 +115,7 @@ final class WindowMotionAdapter: NSObject {
         if phase.contains(.ended) {
             guard trackingGesture else { return false }
             trackingGesture = false
-            update { $0.endSidebarGesture(normalizedVelocity: gestureVelocity / 252) }
+            update { $0.endSidebarGesture(normalizedVelocity: gestureVelocity / SidebarLayout.trailingEdge) }
             return true
         }
         guard !phase.isEmpty else { return false }
@@ -129,11 +129,11 @@ final class WindowMotionAdapter: NSObject {
             gestureStartingProgress = chrome.sidebar.presentation
         }
         let delta = inverted ? deltaX : -deltaX
-        gestureTranslation = min((1 - gestureStartingProgress) * 252,
-                                 max(-gestureStartingProgress * 252, gestureTranslation + delta))
+        gestureTranslation = min((1 - gestureStartingProgress) * SidebarLayout.trailingEdge,
+                                 max(-gestureStartingProgress * SidebarLayout.trailingEdge, gestureTranslation + delta))
         gestureVelocity = delta / max(1.0 / 120, timestamp - gestureTimestamp)
         gestureTimestamp = timestamp
-        chrome.updateSidebarGesture(translation: gestureTranslation, sidebarWidth: 252)
+        chrome.updateSidebarGesture(translation: gestureTranslation, sidebarWidth: SidebarLayout.trailingEdge)
         refresh()
         return true
     }

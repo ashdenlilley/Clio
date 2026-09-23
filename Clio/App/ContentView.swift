@@ -52,7 +52,7 @@ struct ContentView: View {
                 }
                 .overlay(alignment: .top) {
                     banner(for: editorSession)
-                        .modifier(SidebarClearance())
+                        .modifier(SidebarClearance(existingInset: BannerCard.windowInset))
                 }
             } else {
                 WorkspaceSetupView()
@@ -188,6 +188,8 @@ struct ContentView: View {
         }
     }
 
+    private static let capsuleInset: CGFloat = 48
+
     /// Floating capsule over the bottom of the editor. Kept out of
     /// `editorPane`'s expression so the type checker stays within budget.
     @ViewBuilder private func statusCapsule(_ editorSession: EditorSession) -> some View {
@@ -203,7 +205,8 @@ struct ContentView: View {
             )
             .modifier(ContextChromePresence(motion: motion))
             .padding(.bottom, 10)
-            .padding(.horizontal, 48) // keeps clear of the 32pt minimap
+            .padding(.horizontal, Self.capsuleInset) // keeps clear of the 32pt minimap
+            .modifier(SidebarClearance(existingInset: Self.capsuleInset))
         }
     }
 
@@ -389,7 +392,7 @@ private struct MotionSidebarOverlay: View {
         let motion = session.motion
         if motion.sidebarProgress > 0 || session.isSidebarVisible {
             WorkspaceSidebar()
-                .offset(x: reduceMotion ? 0 : -252 * (1 - motion.sidebarProgress))
+                .offset(x: reduceMotion ? 0 : -SidebarLayout.trailingEdge * (1 - motion.sidebarProgress))
                 .opacity(reduceMotion ? motion.sidebarProgress : 1)
                 .allowsHitTesting(motion.chrome.sidebarAllowsHitTesting)
                 .accessibilityHidden(!motion.chrome.sidebarAllowsHitTesting)
@@ -495,28 +498,33 @@ private struct ExportRecoveryBanner: View {
     }
 }
 
-/// Keeps top-of-window banners beside the sidebar panel instead of layering
-/// their glass over its glass (which stacked both surfaces' text). Reads the
-/// sidebar's motion in its own body so only the banner re-renders per frame.
+/// Keeps persistent chrome (top banners, the status capsule) beside the
+/// sidebar panel instead of layering its glass over the sidebar's glass.
+/// Reads the sidebar's motion in its own body so only the chrome re-renders
+/// per frame. `existingInset` is the leading inset the chrome already has.
+/// Under Reduce Motion the sidebar fades in place, so the inset snaps.
 private struct SidebarClearance: ViewModifier {
+    let existingInset: CGFloat
     @Environment(EditorWindowSession.self) private var session
-    /// Sidebar panel trailing edge (8pt inset + 244pt panel) plus an 8pt gap,
-    /// less the banner card's own 12pt window inset.
-    static let inset: CGFloat = 248
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        content.padding(.leading, Self.inset * session.motion.sidebarProgress)
+        let progress = session.motion.sidebarProgress
+        let fraction = reduceMotion ? (progress > 0 ? 1 : 0) : progress
+        content.padding(.leading, max(0, SidebarLayout.chromeClearance - existingInset) * fraction)
     }
 }
 
 /// Floating glass card for top-of-window notices, inset from the window edges.
 private struct BannerCard: ViewModifier {
+    static let windowInset: CGFloat = 12
+
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .clioGlass(.card)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, Self.windowInset)
             .padding(.top, 12)
     }
 }
@@ -678,16 +686,25 @@ private struct StatusLine: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(relativePath)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .layoutPriority(1)
+        // Beside a shown sidebar at narrow widths the full line cannot fit:
+        // drop the path first, then let the statistics truncate, so the
+        // capsule never grows back under the sidebar or over the minimap.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                Text(relativePath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
 
-            Text("·")
+                Text("·")
 
+                Text(statistics)
+                    .fixedSize()
+                    .accessibilityIdentifier("editor.statistics")
+            }
             Text(statistics)
-                .fixedSize()
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .accessibilityIdentifier("editor.statistics")
         }
         .font(.custom(Typography.family, fixedSize: fontSize * 0.85))
@@ -904,7 +921,7 @@ private final class WindowProbeView: NSView, NSWindowDelegate {
                 motion.update { $0.pointerMoved(to: .init(x: location.x, y: location.y)) }
             } else if event.type == .leftMouseDown || event.type == .leftMouseDragged || event.type == .leftMouseUp {
                 motion.update { $0.noteIntentionalInteraction() }
-                if event.locationInWindow.x < 252, motion.chrome.isSidebarIntendedVisible {
+                if event.locationInWindow.x < SidebarLayout.trailingEdge, motion.chrome.isSidebarIntendedVisible {
                     motion.update { $0.recordSidebarInteraction() }
                     if event.type == .leftMouseDragged { motion.update { $0.setSidebarFileDragged(true) } }
                 }

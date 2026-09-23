@@ -37,9 +37,9 @@ struct WorkspaceSidebar: View {
                 }
             }
         }
-        .frame(width: 244)
+        .frame(width: SidebarLayout.panelWidth)
         .clioGlass(.panel)
-        .padding(.leading, 8)
+        .padding(.leading, SidebarLayout.leadingInset)
         .padding(.vertical, 8)
         .contextMenu {
             Button(windowSession.isSidebarPinned ? "Unpin Sidebar" : "Pin Sidebar") {
@@ -410,4 +410,15 @@ private struct SidebarTreeItem: Identifiable {
 
         return folders + leaves
     }
+}
+
+/// Sidebar geometry shared by the panel, its slide motion and the chrome
+/// (banners, status capsule) that must stay beside it rather than under it.
+enum SidebarLayout {
+    static let panelWidth: CGFloat = 244
+    static let leadingInset: CGFloat = 8
+    /// The panel's trailing edge in window coordinates; also its slide distance.
+    static let trailingEdge: CGFloat = leadingInset + panelWidth
+    /// Where persistent chrome may start when the sidebar is shown.
+    static let chromeClearance: CGFloat = trailingEdge + 8
 }
