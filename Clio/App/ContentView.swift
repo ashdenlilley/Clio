@@ -197,9 +197,10 @@ struct ContentView: View {
                 wordCount: editorSession.wordCount,
                 fontSize: appState.fontSize,
                 showsReadingTime: appState.preferences.showsReadingTime,
-                showsSpeakingTime: appState.preferences.showsSpeakingTime
+                showsSpeakingTime: appState.preferences.showsSpeakingTime,
+                contentOpacity: ContextChromeMotion.contentOpacityCap(reduceTransparency: reduceTransparency)
             )
-            .modifier(ContextChromeMotion(motion: motion))
+            .modifier(ContextChromePresence(motion: motion))
             .padding(.bottom, 10)
             .padding(.horizontal, 48) // keeps clear of the 32pt minimap
         }
@@ -398,9 +399,28 @@ private struct MotionSidebarOverlay: View {
 struct ContextChromeMotion: ViewModifier {
     let motion: WindowMotionAdapter
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// Resting opacity of context chrome content; full under Reduce Transparency.
+    static func contentOpacityCap(reduceTransparency: Bool) -> Double {
+        reduceTransparency ? 1 : 0.65
+    }
+
     func body(content: Content) -> some View {
         content
-            .opacity(motion.contextProgress * (reduceTransparency ? 1 : 0.65))
+            .opacity(motion.contextProgress * Self.contentOpacityCap(reduceTransparency: reduceTransparency))
+            .allowsHitTesting(motion.contextProgress > 0.001)
+            .accessibilityHidden(motion.contextProgress <= 0.001)
+    }
+}
+
+/// Fades a glass-backed context surface in and out with the chrome, without
+/// the resting opacity cap: the cap belongs to the surface's content, so the
+/// glass itself is fully present at rest and fully gone when chrome fades.
+struct ContextChromePresence: ViewModifier {
+    let motion: WindowMotionAdapter
+    func body(content: Content) -> some View {
+        content
+            .opacity(motion.contextProgress)
             .allowsHitTesting(motion.contextProgress > 0.001)
             .accessibilityHidden(motion.contextProgress <= 0.001)
     }
@@ -630,6 +650,8 @@ private struct StatusLine: View {
     let fontSize: Double
     let showsReadingTime: Bool
     let showsSpeakingTime: Bool
+    /// Applied to the text only, never the capsule glass.
+    let contentOpacity: Double
 
     private var statistics: String {
         StatusLineText.statistics(
@@ -655,6 +677,7 @@ private struct StatusLine: View {
         }
         .font(.custom(Typography.family, fixedSize: fontSize * 0.85))
         .foregroundStyle(Color(nsColor: Palette.muted))
+        .opacity(contentOpacity)
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .fixedSize(horizontal: false, vertical: true)
