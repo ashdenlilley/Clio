@@ -8,6 +8,9 @@ import SwiftUI
 /// The writing surface is never glass: glass samples what is behind it, and
 /// behind the editor is only black.
 enum GlassShape {
+    /// `.row` is reserved for a future grouped/selected glass row treatment;
+    /// currently unused because selected rows inside glass panels use accent
+    /// fills instead of glass-on-glass (Ruling 1: no glass on glass).
     case panel, card, capsule, row
 
     var cornerRadius: CGFloat? {
@@ -53,12 +56,17 @@ private struct ClioGlassModifier: ViewModifier {
 }
 
 extension View {
+    /// `selected`/`interactive` are reserved for grouped/selected glass and
+    /// currently unused: selected rows inside glass panels use accent fills
+    /// instead (Ruling 1).
     func clioGlass(_ shape: GlassShape, selected: Bool = false, interactive: Bool = false) -> some View {
         modifier(ClioGlassModifier(shape: shape, selected: selected, interactive: interactive))
     }
 }
 
 /// Groups sibling glass shapes so they blend instead of stacking when close.
+/// Reserved for a future grouped glass treatment; currently unused because no
+/// surface groups sibling glass shapes yet.
 struct ClioGlassGroup<Content: View>: View {
     let spacing: CGFloat
     @ViewBuilder let content: Content

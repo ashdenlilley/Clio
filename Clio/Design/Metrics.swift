@@ -4,7 +4,6 @@ enum Metrics {
     static let measure = 72
     static let verticalPadding: CGFloat = 64
     static let horizontalPadding: CGFloat = 32
-    static let statusHeight: CGFloat = 28
     static let blockRuleWidth: CGFloat = 2
     static let blockRuleGap: CGFloat = 12
 

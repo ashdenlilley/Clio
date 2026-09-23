@@ -7,7 +7,6 @@ import AppKit
 enum Palette {
     // Surface
     static let background = NSColor(clioHex: 0x000000)
-    static let backgroundRaised = NSColor(clioHex: 0x0A0A0A)
     static let hairline = NSColor(clioHex: 0x1C1C1C)
 
     // Text
