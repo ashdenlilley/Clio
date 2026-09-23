@@ -375,16 +375,24 @@ final class WorkspaceWatcher: WorkspaceEventSource, @unchecked Sendable {
 
     private func updateSnapshotEntry(at url: URL) {
         let standardized = url.standardizedFileURL
+        // Read the identity with the other values. A second lookup can race a
+        // rename and fall back to a path identity, which later turns the move
+        // into a deletion plus a creation.
         guard let values = try? standardized.resourceValues(forKeys: [
             .isRegularFileKey,
             .isSymbolicLinkKey,
             .contentModificationDateKey,
             .fileSizeKey,
+            .fileResourceIdentifierKey,
+            .volumeIdentifierKey,
         ]),
         values.isRegularFile == true,
         values.isSymbolicLink != true else { return }
         removeSnapshotEntry(at: standardized)
-        let identity = PhysicalFileIdentity.authorizedFile(at: standardized)
+        let identity = PhysicalFileIdentity.authorizedFile(
+            at: standardized,
+            resourceValues: values
+        )
         snapshot[identity] = FileState(
             identity: identity,
             url: standardized,
