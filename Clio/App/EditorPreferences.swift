@@ -23,6 +23,12 @@ import Observation
 /// first assignment a writer makes, in range or not. Assigning the property
 /// directly re-enters `didSet` only when a clamp actually changed the value,
 /// and the second pass finds it already in range and stops.
+enum CaretStyle: String, CaseIterable, Identifiable, Sendable {
+    case block, line
+    var id: Self { self }
+    var title: String { self == .block ? "Block" : "Line" }
+}
+
 @MainActor
 @Observable
 final class EditorPreferences {
@@ -48,7 +54,8 @@ final class EditorPreferences {
             case .purple: .systemPurple
             case .pink: .systemPink
             case .red: .systemRed
-            case .orange, .amber: .systemOrange
+            case .orange: .systemOrange
+            case .amber: NSColor(srgbRed: 1.0, green: 0.69, blue: 0.0, alpha: 1)
             case .yellow: .systemYellow
             case .green: .systemGreen
             case .graphite: .systemGray
@@ -89,6 +96,16 @@ final class EditorPreferences {
         static let typewriterMode = "mode.typewriter"
         static let focusMode = "mode.focus"
         static let chromeFade = "mode.chromeFade"
+        static let caretStyle = "editor.caretStyle"
+        static let showsMinimap = "editor.showsMinimap"
+        static let showsStatusLine = "status.visible"
+        static let showsReadingTime = "status.readingTime"
+        static let showsSpeakingTime = "status.speakingTime"
+        static let hidesPointer = "mode.hidesPointer"
+        static let grammarChecking = "editor.grammarChecking"
+        static let smartPunctuation = "editor.smartPunctuation"
+        static let slashCommands = "editor.slashCommands"
+        static let autoWrapSelection = "editor.autoWrapSelection"
     }
 
     var editorFontName: String {
@@ -167,6 +184,46 @@ final class EditorPreferences {
         didSet { defaults.set(isChromeFadeEnabled, forKey: Keys.chromeFade) }
     }
 
+    var caretStyle: CaretStyle {
+        didSet { defaults.set(caretStyle.rawValue, forKey: Keys.caretStyle) }
+    }
+
+    var showsMinimap: Bool {
+        didSet { defaults.set(showsMinimap, forKey: Keys.showsMinimap) }
+    }
+
+    var showsStatusLine: Bool {
+        didSet { defaults.set(showsStatusLine, forKey: Keys.showsStatusLine) }
+    }
+
+    var showsReadingTime: Bool {
+        didSet { defaults.set(showsReadingTime, forKey: Keys.showsReadingTime) }
+    }
+
+    var showsSpeakingTime: Bool {
+        didSet { defaults.set(showsSpeakingTime, forKey: Keys.showsSpeakingTime) }
+    }
+
+    var hidesPointerWhileTyping: Bool {
+        didSet { defaults.set(hidesPointerWhileTyping, forKey: Keys.hidesPointer) }
+    }
+
+    var isGrammarCheckingEnabled: Bool {
+        didSet { defaults.set(isGrammarCheckingEnabled, forKey: Keys.grammarChecking) }
+    }
+
+    var isSmartPunctuationEnabled: Bool {
+        didSet { defaults.set(isSmartPunctuationEnabled, forKey: Keys.smartPunctuation) }
+    }
+
+    var isSlashCommandEnabled: Bool {
+        didSet { defaults.set(isSlashCommandEnabled, forKey: Keys.slashCommands) }
+    }
+
+    var autoWrapsSelection: Bool {
+        didSet { defaults.set(autoWrapsSelection, forKey: Keys.autoWrapSelection) }
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults) {
@@ -206,6 +263,17 @@ final class EditorPreferences {
         isChromeFadeEnabled = Self.bool(forKey: Keys.chromeFade, default: true, in: defaults)
         accent = defaults.string(forKey: Keys.accent)
             .flatMap(AccentPreset.init(rawValue:)) ?? .clio
+        caretStyle = defaults.string(forKey: Keys.caretStyle)
+            .flatMap(CaretStyle.init(rawValue:)) ?? .block
+        showsMinimap = Self.bool(forKey: Keys.showsMinimap, default: true, in: defaults)
+        showsStatusLine = Self.bool(forKey: Keys.showsStatusLine, default: true, in: defaults)
+        showsReadingTime = Self.bool(forKey: Keys.showsReadingTime, default: true, in: defaults)
+        showsSpeakingTime = Self.bool(forKey: Keys.showsSpeakingTime, default: true, in: defaults)
+        hidesPointerWhileTyping = Self.bool(forKey: Keys.hidesPointer, default: true, in: defaults)
+        isGrammarCheckingEnabled = Self.bool(forKey: Keys.grammarChecking, default: false, in: defaults)
+        isSmartPunctuationEnabled = Self.bool(forKey: Keys.smartPunctuation, default: false, in: defaults)
+        isSlashCommandEnabled = Self.bool(forKey: Keys.slashCommands, default: true, in: defaults)
+        autoWrapsSelection = Self.bool(forKey: Keys.autoWrapSelection, default: true, in: defaults)
     }
 
     func adjustFontSize(by amount: Double) {

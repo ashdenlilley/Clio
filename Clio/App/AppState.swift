@@ -29,6 +29,10 @@ final class AppState: ClioCommandDispatching {
     /// property on the other object.
     let preferences: EditorPreferences
 
+    /// Window, launch and export defaults. Kept separate from `preferences`
+    /// because nothing here affects how a document's text is presented.
+    let appPreferences: AppPreferences
+
     var editorFontName: String {
         get { preferences.editorFontName }
         set { preferences.editorFontName = newValue }
@@ -241,6 +245,7 @@ final class AppState: ClioCommandDispatching {
         self.defaults = defaults
         self.intelligenceKeyStore = intelligenceKeyStore
         self.preferences = EditorPreferences(defaults: defaults)
+        self.appPreferences = AppPreferences(defaults: defaults)
         self.fileManager = fileManager
         self.crashRecoveryJournal = crashRecoveryJournal
         self.externalFileAccessController = externalFileAccessController

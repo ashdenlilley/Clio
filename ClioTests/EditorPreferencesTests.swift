@@ -163,4 +163,54 @@ final class EditorPreferencesTests: XCTestCase {
         state.adjustFontSize(by: 100)
         XCTAssertEqual(state.fontSize, EditorPreferences.Limits.fontSize.upperBound)
     }
+
+    func testNewEditorPreferencesDefaultToCurrentBehaviour() {
+        let p = EditorPreferences(defaults: defaults)
+        XCTAssertEqual(p.caretStyle, .block)
+        XCTAssertTrue(p.showsMinimap)
+        XCTAssertTrue(p.showsStatusLine)
+        XCTAssertTrue(p.showsReadingTime)
+        XCTAssertTrue(p.showsSpeakingTime)
+        XCTAssertTrue(p.hidesPointerWhileTyping)
+        XCTAssertFalse(p.isGrammarCheckingEnabled)
+        XCTAssertFalse(p.isSmartPunctuationEnabled)
+        XCTAssertTrue(p.isSlashCommandEnabled)
+        XCTAssertTrue(p.autoWrapsSelection)
+    }
+
+    func testNewEditorPreferencesRoundTrip() {
+        let p = EditorPreferences(defaults: defaults)
+        p.caretStyle = .line
+        p.showsMinimap = false
+        p.showsStatusLine = false
+        p.showsReadingTime = false
+        p.showsSpeakingTime = false
+        p.hidesPointerWhileTyping = false
+        p.isGrammarCheckingEnabled = true
+        p.isSmartPunctuationEnabled = true
+        p.isSlashCommandEnabled = false
+        p.autoWrapsSelection = false
+        let r = EditorPreferences(defaults: defaults)
+        XCTAssertEqual(r.caretStyle, .line)
+        XCTAssertFalse(r.showsMinimap)
+        XCTAssertFalse(r.showsStatusLine)
+        XCTAssertFalse(r.showsReadingTime)
+        XCTAssertFalse(r.showsSpeakingTime)
+        XCTAssertFalse(r.hidesPointerWhileTyping)
+        XCTAssertTrue(r.isGrammarCheckingEnabled)
+        XCTAssertTrue(r.isSmartPunctuationEnabled)
+        XCTAssertFalse(r.isSlashCommandEnabled)
+        XCTAssertFalse(r.autoWrapsSelection)
+    }
+
+    func testUnknownCaretStyleFallsBackToBlock() {
+        defaults.set("bar", forKey: EditorPreferences.Keys.caretStyle)
+        XCTAssertEqual(EditorPreferences(defaults: defaults).caretStyle, .block)
+    }
+
+    func testAmberAndOrangeAreDistinctColours() {
+        let amber = EditorPreferences.AccentPreset.amber.nsColor.usingColorSpace(.sRGB)!
+        let orange = EditorPreferences.AccentPreset.orange.nsColor.usingColorSpace(.sRGB)!
+        XCTAssertNotEqual(amber, orange)
+    }
 }
