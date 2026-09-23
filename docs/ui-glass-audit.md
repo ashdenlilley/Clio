@@ -53,6 +53,23 @@ The caret sometimes has a small round glass badge beside it in the
 screenshots. That is the system text-insertion (input source) indicator, not
 Clio chrome.
 
+## Deviations from spec
+
+Two places this branch diverges from the original design spec, both
+confirmed by screenshot and left as-is:
+
+- **Selected rows use accent fills, not "row glass selected."** Selected rows
+  inside glass panels (sidebar, command palette, Settings categories) are
+  painted with a plain accent-tinted fill rather than a second, selected
+  glass layer. This follows Ruling 1 above (no glass on glass): a selected
+  row's glass would sit on top of the panel's own glass. `GlassShape.row` and
+  the `selected`/`interactive` parameters on `ClioGlass`/`clioGlass(_:)`
+  remain in `Glass.swift`, documented as reserved and currently unused.
+- **Grouped Form sections keep the system default fill.** The spec's idea of
+  a white overlay on grouped `Form` sections (Settings, discovery options)
+  was not applied; the screenshots read fine with the system's default
+  section fill over the black background, so no override was added.
+
 ## Surface × checklist
 
 `P` pass · `F` fixed (see findings) · `A` accepted as Liquid Glass behaviour · `O` open · `—` not applicable · `N` not captured

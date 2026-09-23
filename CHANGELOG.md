@@ -5,6 +5,29 @@ All notable changes to Clio are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Only canonical
 `vMAJOR.MINOR.PATCH` tags publish a release.
 
+## [Unreleased]
+
+### Added
+
+- **Liquid Glass chrome.** The sidebar, command palette, workspace search,
+  Settings, and the export and conflict sheets now sit on macOS 26's Liquid
+  Glass over a black window, instead of flat raised panels. Only
+  `Clio/Design/Glass.swift` calls the system glass APIs, so every surface's
+  material stays consistent and tunable in one place.
+- **Categorised Settings.** Settings is now split into General, Editor,
+  Writing, Workspaces, Export, Assisted Commands and Local MCP pages, each
+  reachable from a category sidebar, and exposes several previously
+  unreachable preferences (grammar checking, smart punctuation, minimap and
+  status-line toggles, discovery exclusions, and more) alongside the
+  existing ones.
+- Local MCP client and folder management moved out of its own window and
+  into Settings → **Local MCP**, next to the rest of Clio's preferences.
+
+### Changed
+
+- **Minimum macOS raised to 26.** This drops support for macOS 14 through 25;
+  Liquid Glass has no fallback rendering path for earlier systems.
+
 ## [1.0.0] - 2026-09-20
 
 First stable release. Clio is a local-first Markdown writing app for macOS: your

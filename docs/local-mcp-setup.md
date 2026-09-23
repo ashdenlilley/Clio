@@ -6,8 +6,8 @@ These instructions target the candidate branch, not the published 0.1.4 DMG.
 
 ## Authorize a local client
 
-1. Open Clio → Settings → Local MCP → Manage clients and folders, or use the
-   Clio menu-bar item → MCP Settings.
+1. Open Clio → Settings → Local MCP, or use the Clio menu-bar item →
+   MCP Settings.
 2. Enter a recognizable client name and explicitly select its workspace folders.
    Click **Authorize selected folders**. Add folders to Clio first if none appear.
 3. Enable local MCP. Its endpoint is `http://127.0.0.1:19847/mcp`.
