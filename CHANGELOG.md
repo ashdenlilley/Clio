@@ -5,6 +5,14 @@ All notable changes to Clio are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Only canonical
 `vMAJOR.MINOR.PATCH` tags publish a release.
 
+## [1.1.2] - 2026-09-27
+
+### Fixed
+
+- Focus mode no longer dims the whole document when the caret is on a blank
+  line, such as a file that opens with a blank first line. Text stays at full
+  brightness until the caret is on a paragraph.
+
 ## [1.1.1] - 2026-09-24
 
 ### Fixed

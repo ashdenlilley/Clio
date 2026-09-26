@@ -28,6 +28,29 @@ final class FocusDimmerTests: XCTestCase {
         XCTAssertNil(range)
     }
 
+    func testCaretOnBlankLineSuppressesFocusMode() {
+        let text = "\nfirst\n\nsecond\n"
+        let source = text as NSString
+
+        XCTAssertNil(FocusDimmer.focusRange(in: text, selection: NSRange(location: 0, length: 0)))
+        XCTAssertNil(FocusDimmer.focusRange(
+            in: text,
+            selection: NSRange(location: source.range(of: "first\n\n").upperBound - 1, length: 0)
+        ))
+        XCTAssertNil(FocusDimmer.focusRange(in: text, selection: NSRange(location: source.length, length: 0)))
+    }
+
+    func testBlankLineInsideFencedCodeBlockStaysInsideTheBlock() {
+        let text = "```\nlet a = 1\n\nlet b = 2\n```\n"
+        let source = text as NSString
+        let caret = source.range(of: "\n\n").location + 1
+
+        XCTAssertEqual(
+            FocusDimmer.focusRange(in: text, selection: NSRange(location: caret, length: 0)),
+            source.range(of: "```\nlet a = 1\n\nlet b = 2\n```\n")
+        )
+    }
+
     func testFencedCodeBlockIsOneFocusUnit() {
         let text = "before\n\n```swift\nlet value = 1\n```\n\nafter"
         let source = text as NSString

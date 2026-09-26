@@ -87,8 +87,8 @@ final class FocusDimmer {
         lastOpacity = -1
     }
 
-    /// Returns the current unit of thought, or `nil` when a selection crosses
-    /// units and focus mode should be suppressed.
+    /// Returns the current unit of thought, or `nil` when focus mode should be
+    /// suppressed: the selection crosses units, or the caret is on a blank line.
     static func focusRange(in string: String, selection: NSRange) -> NSRange? {
         focusRange(in: string as NSString, selection: selection)
     }
@@ -102,6 +102,10 @@ final class FocusDimmer {
         let firstUnit = unitRange(containing: startOffset, in: source)
         let lastUnit = unitRange(containing: endOffset, in: source)
         guard firstUnit == lastUnit else { return nil }
+        // A caret on a blank line has no thought to focus on. Dimming
+        // everything else would grey the whole screen, including a document
+        // that opens with a blank first line.
+        if Line(at: firstUnit.location, in: source).isBlank { return nil }
         return firstUnit
     }
 

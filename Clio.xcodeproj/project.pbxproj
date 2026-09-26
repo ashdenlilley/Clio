@@ -160,6 +160,7 @@
 		D8B9E38BD660DD196E4A6594 /* MarkdownExportContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 060BCF40DFDC79277E925D28 /* MarkdownExportContracts.swift */; };
 		DB8F636BE05F57DFCF150051 /* MCPProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2BA0A366E945589FAE28C8 /* MCPProtocolTests.swift */; };
 		DD67F16F9A30DCA2182606A2 /* EditorBehaviourPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B530A7F9F5D161A55BCBDDC /* EditorBehaviourPreferencesTests.swift */; };
+		E6B82F81013507322E4E8FF9 /* FocusDimmerRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 507DE0B10E72C2A92E11A058 /* FocusDimmerRenderingTests.swift */; };
 		E7EC5007037C5AA30DDFAE81 /* malformed.md in Resources */ = {isa = PBXBuildFile; fileRef = 5FAF1A6CD8347E63941C9BA3 /* malformed.md */; };
 		EAC6D854A8907021FB563180 /* WorkspaceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F8E550D4B9A16DD957A2435 /* WorkspaceWatcher.swift */; };
 		EC2FF42E9BF31D68396F35FE /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58100AF092D04B1319D0AAD5 /* MCPTools.swift */; };
@@ -271,6 +272,7 @@
 		4735E45E61E12035230D7397 /* WorkspacePerformanceContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePerformanceContractTests.swift; sourceTree = "<group>"; };
 		4838DDA36FA0C9F82A75B005 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		500E1A749ABD1908442F6676 /* CrashTestDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashTestDriver.swift; sourceTree = "<group>"; };
+		507DE0B10E72C2A92E11A058 /* FocusDimmerRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusDimmerRenderingTests.swift; sourceTree = "<group>"; };
 		50C99434863D996F1BED11BF /* ExportFileGrantWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportFileGrantWriter.swift; sourceTree = "<group>"; };
 		5159D6F9524091F56BB56198 /* ClioSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClioSettingsUITests.swift; sourceTree = "<group>"; };
 		56120630C97C7C93B907B0AF /* MotionStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionStateMachineTests.swift; sourceTree = "<group>"; };
@@ -728,6 +730,7 @@
 				D7FE18284C58BCC7AB935172 /* ExportRecoveryCheckpointStoreTests.swift */,
 				46374AD2CE9940638656CE5F /* ExportTests.swift */,
 				EE9650B91D65E0FC40310E5E /* FilesystemHardeningTests.swift */,
+				507DE0B10E72C2A92E11A058 /* FocusDimmerRenderingTests.swift */,
 				96779F661FA0B4BDC8CFC1FE /* FocusDimmerTests.swift */,
 				42FAD7E81BE7C4995BD16F6E /* GlassTests.swift */,
 				8D61688C027D6BF04442FE9E /* IntelligenceTests.swift */,
@@ -1137,6 +1140,7 @@
 				729013C11EF015BD21B455F9 /* ExportRecoveryCheckpointStoreTests.swift in Sources */,
 				8F1CC708EE71925510CC322E /* ExportTests.swift in Sources */,
 				A06789B427E6989D65245B46 /* FilesystemHardeningTests.swift in Sources */,
+				E6B82F81013507322E4E8FF9 /* FocusDimmerRenderingTests.swift in Sources */,
 				F66284F1172F109E28A6B309 /* FocusDimmerTests.swift in Sources */,
 				48AACFC5EBFA63437F9E5648 /* GlassTests.swift in Sources */,
 				0C43165E3DC03BE52006FC58 /* IntelligenceTests.swift in Sources */,
@@ -1376,14 +1380,14 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.1;
+				MARKETING_VERSION = 1.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = olympus.clio.mac;
 				PRODUCT_NAME = Clio;
 				SDKROOT = macosx;
@@ -1484,14 +1488,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Clio/Support/Clio.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Clio/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.1;
+				MARKETING_VERSION = 1.1.2;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = olympus.clio.mac;
 				PRODUCT_NAME = Clio;
