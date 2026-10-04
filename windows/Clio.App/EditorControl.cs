@@ -1,5 +1,6 @@
 using System.Numerics;
 using Clio.Editor;
+using Clio.Editor.Markdown;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
@@ -28,10 +29,10 @@ public sealed class EditorControl : UserControl
     private const double MinimapWidth = 28;
     private const double DoubleClickMs = 500;
 
-    private static readonly Color TextColor = Color.FromArgb(255, 0xEB, 0xEB, 0xEB);
-    private static readonly Color DimColor = Color.FromArgb(255, 0x5C, 0x5C, 0x5C);
-    private static readonly Color SelectionColor = Color.FromArgb(255, 0x26, 0x4F, 0x78);
-    private static readonly Color CaretColor = Color.FromArgb(255, 0xFF, 0xFF, 0xFF);
+    private static readonly Color TextColor = EditorStyler.Foreground;
+    private static readonly Color DimColor = EditorStyler.Dimmed;
+    private static readonly Color SelectionColor = Color.FromArgb(255, 0x1F, 0x29, 0x37);
+    private static readonly Color CaretColor = Color.FromArgb(255, 0x39, 0x8A, 0xB0);
 
     private readonly CanvasControl _canvas = new() { ClearColor = Color.FromArgb(255, 0, 0, 0) };
     private readonly DispatcherTimer _blink = new() { Interval = TimeSpan.FromMilliseconds(530) };
@@ -48,6 +49,10 @@ public sealed class EditorControl : UserControl
     private DateTime _lastClick;
     private char _pendingHighSurrogate;
     private LineMinimap _minimap = LineMinimap.Empty;
+    private IReadOnlyList<MarkdownSpan> _spans = [];
+    private CancellationTokenSource? _highlightCts;
+    private int _highlightVersion;
+    private const int HighlightDebounceMs = 80;
     private double _easeStart, _easeTarget;
     private DateTime _easeBegan;
 
@@ -90,19 +95,69 @@ public sealed class EditorControl : UserControl
         _scroll = 0;
         _layout = null;
         _minimap = LineMinimap.Make(text);
+        _spans = [];
+        ScheduleHighlight();
         _canvas.Invalidate();
     }
 
     private EditorModel Attach(EditorModel model)
     {
-        model.Buffer.Changed += _ =>
+        model.Buffer.Changed += change =>
         {
             _layout = null;
             _minimap = LineMinimap.Make(model.Buffer.Text);
+            _spans = ShiftSpans(_spans, change);
+            ScheduleHighlight();
             TextChanged?.Invoke();
         };
         model.SelectionChanged += OnSelectionChanged;
         return model;
+    }
+
+    // ---- highlighting ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Keeps the previous styling roughly in place while a fresh pass runs: spans before the edit stay,
+    /// spans after it move by the length delta, spans the edit touches are dropped.
+    /// </summary>
+    private static IReadOnlyList<MarkdownSpan> ShiftSpans(IReadOnlyList<MarkdownSpan> spans, TextChange change)
+    {
+        if (spans.Count == 0) return spans;
+        var removedEnd = change.Start + change.Removed.Length;
+        var delta = change.Inserted.Length - change.Removed.Length;
+        var shifted = new List<MarkdownSpan>(spans.Count);
+        foreach (var s in spans)
+        {
+            if (s.End <= change.Start) shifted.Add(s);
+            else if (s.Start >= removedEnd) shifted.Add(s with { Start = s.Start + delta });
+        }
+        return shifted;
+    }
+
+    private void ScheduleHighlight()
+    {
+        _highlightCts?.Cancel();
+        var cts = _highlightCts = new CancellationTokenSource();
+        var version = ++_highlightVersion;
+        var text = Model.Buffer.Text;
+        var queue = DispatcherQueue;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(HighlightDebounceMs, cts.Token);
+                var bytes = text.Length > 3_000_000 ? System.Text.Encoding.UTF8.GetByteCount(text) : text.Length;
+                var spans = MarkdownHighlighter.Highlight(text, MarkdownHighlighter.ModeFor(bytes), cts.Token);
+                queue.TryEnqueue(() =>
+                {
+                    if (version != _highlightVersion) return;
+                    _spans = spans;
+                    _layout = null;
+                    _canvas.Invalidate();
+                });
+            }
+            catch (OperationCanceledException) { }
+        });
     }
 
     private void Set(ref bool field, bool value)
@@ -132,7 +187,7 @@ public sealed class EditorControl : UserControl
         if (_layout is not null && Math.Abs(_layoutWidth - width) < 0.5) return _layout;
         var format = new CanvasTextFormat
         {
-            FontFamily = "ms-appx:///Assets/Fonts/Hack-Regular.ttf#Hack",
+            FontFamily = "ms-appx:///Assets/Fonts/#Hack",
             FontSize = TextSize,
             WordWrapping = CanvasWordWrapping.Wrap,
             LineSpacing = LineHeight,
@@ -140,21 +195,26 @@ public sealed class EditorControl : UserControl
         };
         _layout = new CanvasTextLayout(_canvas, Model.Buffer.Text, format, (float)width, float.MaxValue);
         _layoutWidth = width;
-        ApplyFocusColors();
+        RestyleLayout();
         return _layout;
     }
 
-    private void ApplyFocusColors()
+    /// <summary>Base colour, then Markdown styling, then focus dimming outside the focus unit.</summary>
+    private void RestyleLayout()
     {
         if (_layout is null) return;
         var length = Model.Buffer.Length;
         if (length == 0) return;
         _layout.SetColor(0, length, TextColor);
+        EditorStyler.Apply(_layout, _spans, length, TextSize);
         if (!FocusMode) return;
         // A null range (blank line) dims nothing: see commit 1a08c6b.
         if (FocusUnit.FocusRange(Model.Buffer.Text, Model.Selection) is not { } focus) return;
-        _layout.SetColor(0, length, DimColor);
-        _layout.SetColor(focus.Start, Math.Max(0, Math.Min(focus.Length, length - focus.Start)), TextColor);
+        // Dim only outside the focus unit so highlighting inside it stays intact.
+        var focusStart = Math.Clamp(focus.Start, 0, length);
+        var focusEnd = Math.Clamp(focus.End, focusStart, length);
+        if (focusStart > 0) _layout.SetColor(0, focusStart, DimColor);
+        if (focusEnd < length) _layout.SetColor(focusEnd, length - focusEnd, DimColor);
     }
 
     private double DocumentHeight => EnsureLayout().LayoutBounds.Height + 2 * DocPadding;
@@ -229,7 +289,7 @@ public sealed class EditorControl : UserControl
 
     private void OnSelectionChanged()
     {
-        ApplyFocusColors();
+        if (FocusMode) RestyleLayout();
         ResetCaret();
         RevealCaret(snap: !_manualScroll);
     }
