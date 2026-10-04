@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
+        Editor.TextChanged += OnEditorTextChanged;
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
         Closed += (_, _) => { _saveTimer.Stop(); Save(); };
     }
@@ -61,7 +62,7 @@ public sealed partial class MainWindow : Window
         {
             var doc = DocumentIO.Load(path);
             _loading = true;
-            Editor.Text = doc.Text;
+            Editor.SetText(doc.Text);
             _loading = false;
             (_path, _bom, _ending, _revision) = (path, doc.Bom, doc.LineEnding, doc.Revision);
             SaveState.Text = "Saved";
@@ -74,7 +75,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnEditorTextChanged(object sender, TextChangedEventArgs e)
+    private void OnEditorTextChanged()
     {
         UpdateWordCount();
         if (_loading || _path is null) return;
@@ -88,9 +89,7 @@ public sealed partial class MainWindow : Window
         if (_path is null || _revision is null) return;
         try
         {
-            // WinUI TextBox returns "\r" line breaks; the document model is LF.
-            var text = Editor.Text.Replace("\r\n", "\n").Replace('\r', '\n');
-            _revision = DocumentIO.Save(_path, text, _bom, _ending, _revision);
+            _revision = DocumentIO.Save(_path, Editor.Text, _bom, _ending, _revision);
             SaveState.Text = "Saved";
         }
         catch (ClioException ex)

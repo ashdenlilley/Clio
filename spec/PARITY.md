@@ -11,7 +11,8 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Workspace watcher | done (FSEvents) | planned | |
 | Search index (SQLite FTS5) | done | planned | 500-match cap |
 | Recovery copies, 7 days | done | planned | |
-| Editor: highlighting, focus, typewriter, minimap | done | planned | Windows: custom DirectWrite control |
+| Editor: focus, typewriter, minimap, selection, undo | done | partial | Windows: `Clio.Editor` logic + Win2D `EditorControl`; shares `focus-ranges.json` |
+| Editor: highlighting, IME, UI Automation, slash commands, palette | done | planned | Remaining phase 3 items |
 | Export PDF/HTML/DOCX/TXT | done | planned | |
 | Local MCP | done | planned | Windows: Credential Manager, `clio-mcp-bridge.exe`, tray toggle, default off |
 | Assisted commands / paste formatting | done | planned | |

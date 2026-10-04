@@ -28,6 +28,8 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 | --- | --- |
 | `windows/Clio.Core` | Platform logic: atomic save, document I/O, scanner, later watcher, recovery, search, MCP |
 | `windows/Clio.Core.Tests` | xUnit; reads `spec/vectors` and `ClioTests/Fixtures/Markdown/Conformance` directly |
+| `windows/Clio.Editor` | Pure editor logic: text buffer, undo, selection, focus ranges, minimap, typewriter math |
+| `windows/Clio.Editor.Tests` | xUnit; reads `spec/vectors/focus-ranges.json` |
 | `windows/Clio.App` | WinUI 3 app |
 | `scripts/windows-build.ps1` | Gate: build (warnings as errors), test, publish |
 

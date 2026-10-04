@@ -20,3 +20,9 @@ notices. The complete upstream notices are available at
 
 These Markdown packages are linked into the Clio executable. Clio does not
 download executable dependencies at runtime.
+
+The Windows build also links `Microsoft.WindowsAppSDK` 2.5.1 and
+`Microsoft.Graphics.Win2D` 1.4.0 by Microsoft, both distributed under the MIT
+License. Upstream licenses are available at
+<https://github.com/microsoft/WindowsAppSDK/blob/main/LICENSE> and
+<https://github.com/microsoft/Win2D/blob/master/LICENSE.txt>.
