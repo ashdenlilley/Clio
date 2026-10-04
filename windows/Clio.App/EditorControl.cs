@@ -53,6 +53,8 @@ public sealed partial class EditorControl : UserControl
     private CancellationTokenSource? _highlightCts;
     private int _highlightVersion;
     private const int HighlightDebounceMs = 80;
+    private readonly IncrementalHighlighter _engine = new();
+    private readonly object _engineLock = new();
     private double _easeStart, _easeTarget;
     private DateTime _easeBegan;
 
@@ -152,8 +154,11 @@ public sealed partial class EditorControl : UserControl
             try
             {
                 await Task.Delay(HighlightDebounceMs, cts.Token);
-                var bytes = text.Length > 3_000_000 ? System.Text.Encoding.UTF8.GetByteCount(text) : text.Length;
-                var spans = MarkdownHighlighter.Highlight(text, MarkdownHighlighter.ModeFor(bytes), cts.Token);
+                // The engine diffs against the text it last committed, so skipped or cancelled passes cost nothing
+                // and a typing burst re-lexes only the edited block.
+                HighlightUpdate update;
+                lock (_engineLock) update = _engine.Update(text, cts.Token);
+                var spans = update.Spans;
                 queue.TryEnqueue(() =>
                 {
                     if (version != _highlightVersion) return;
