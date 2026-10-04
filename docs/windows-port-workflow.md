@@ -53,6 +53,10 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
 3. **Native editor.** DirectWrite text control: source-preserving highlighting,
    focus dimming (blank-line rule from commit `1a08c6b`), typewriter scrolling,
    minimap, slash commands, Ctrl+K palette, IME, UI Automation, high contrast.
+   Done: highlighting (incremental), focus, typewriter, minimap, slash commands and palette
+   logic and UI, UI Automation Text pattern, high-contrast palette, IME through a proxy
+   control. Open: `CoreTextEditContext`, UI Automation text attributes and editing, a
+   real IME and Narrator pass, wiring the remaining palette commands (phases 2 and 4).
 4. **Export.** PDF, self-contained HTML, `.docx`, `.txt`; golden-file tests.
 5. **Settings and optional network features.** Assisted commands and paste
    formatting, off by default, key in Credential Manager.

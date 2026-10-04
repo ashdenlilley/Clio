@@ -48,6 +48,6 @@ public static class MarkdownHighlighter
         kind is SemanticKind.Emphasis or SemanticKind.Strong or SemanticKind.Strikethrough;
 
     /// <summary>Deduplicate and order: earlier first, longer (outer) first, then role name.</summary>
-    private static List<MarkdownSpan> Normalize(IEnumerable<MarkdownSpan> spans) =>
+    internal static List<MarkdownSpan> Normalize(IEnumerable<MarkdownSpan> spans) =>
         [.. spans.Distinct().OrderBy(s => s.Start).ThenByDescending(s => s.Length).ThenBy(s => s.Role.ToString(), StringComparer.Ordinal)];
 }

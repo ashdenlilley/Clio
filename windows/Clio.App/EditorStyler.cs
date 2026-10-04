@@ -11,19 +11,17 @@ namespace Clio.App;
 /// </summary>
 internal static class EditorStyler
 {
-    // Palette.swift; the system colours are the macOS dark-appearance values.
-    public static readonly Color Foreground = Rgb(0xD4D4D4);
-    public static readonly Color Emphasis = Rgb(0xF0F0F0);
-    public static readonly Color Muted = Rgb(0x6E6E6E);
-    public static readonly Color Marker = Rgb(0x4A4A4A);
-    public static readonly Color Dimmed = Rgb(0x3A3A3A);
-    public static readonly Color Literal = Rgb(0x30D158);
-    public static readonly Color Reference = Rgb(0x0A84FF);
-    public static readonly Color Meta = Rgb(0xBF5AF2);
+    // Colours come from the current EditorPalette (Palette.swift values, or system colours in high contrast).
+    public static Color Foreground => EditorTheme.ToColor(EditorTheme.Current.Foreground);
+    public static Color Emphasis => EditorTheme.ToColor(EditorTheme.Current.Emphasis);
+    public static Color Muted => EditorTheme.ToColor(EditorTheme.Current.Muted);
+    public static Color Marker => EditorTheme.ToColor(EditorTheme.Current.Marker);
+    public static Color Dimmed => EditorTheme.ToColor(EditorTheme.Current.Dimmed);
+    public static Color Literal => EditorTheme.ToColor(EditorTheme.Current.Literal);
+    public static Color Reference => EditorTheme.ToColor(EditorTheme.Current.Reference);
+    public static Color Meta => EditorTheme.ToColor(EditorTheme.Current.Meta);
 
     private static readonly FontWeight Bold = new() { Weight = 700 };
-
-    private static Color Rgb(int value) => Color.FromArgb(255, (byte)(value >> 16), (byte)(value >> 8), (byte)value);
 
     /// <summary>Spans must be ordered outer-first (<see cref="MarkdownHighlighter"/> guarantees this).</summary>
     public static void Apply(CanvasTextLayout layout, IReadOnlyList<MarkdownSpan> spans, int textLength, float baseSize)
@@ -72,6 +70,8 @@ internal static class EditorStyler
                 break;
             case SemanticKind.Link or SemanticKind.Autolink:
                 layout.SetColor(start, length, Reference);
+                // High contrast: colour alone must not identify a link.
+                if (EditorTheme.Current.IsHighContrast) layout.SetUnderline(start, length, true);
                 break;
             case SemanticKind.FrontMatter or SemanticKind.Footnote or SemanticKind.Table:
                 layout.SetColor(start, length, Meta);
