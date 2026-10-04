@@ -2,4 +2,6 @@
   <Project Path="Clio.App/Clio.App.csproj" />
   <Project Path="Clio.Core.Tests/Clio.Core.Tests.csproj" />
   <Project Path="Clio.Core/Clio.Core.csproj" />
+  <Project Path="Clio.Editor.Tests/Clio.Editor.Tests.csproj" />
+  <Project Path="Clio.Editor/Clio.Editor.csproj" />
 </Solution>

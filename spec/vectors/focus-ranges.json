@@ -1,0 +1,17 @@
+{
+  "description": "FocusDimmer.focusRange: selection [start,length] in UTF-16 units -> focus unit [start,length], or null when focus mode is suppressed. Derived from ClioTests/FocusDimmerTests.swift.",
+  "vectors": [
+    { "name": "paragraph spans contiguous non-blank lines", "text": "first line\ncontinues\n\nsecond paragraph", "selection": [11, 0], "expected": [0, 21] },
+    { "name": "selection across paragraphs suppresses", "text": "first\n\nsecond", "selection": [0, 13], "expected": null },
+    { "name": "caret on leading blank line suppresses", "text": "\nfirst\n\nsecond\n", "selection": [0, 0], "expected": null },
+    { "name": "caret on blank line between paragraphs suppresses", "text": "\nfirst\n\nsecond\n", "selection": [7, 0], "expected": null },
+    { "name": "caret at end after trailing newline suppresses", "text": "\nfirst\n\nsecond\n", "selection": [15, 0], "expected": null },
+    { "name": "blank line inside fence stays in block", "text": "```\nlet a = 1\n\nlet b = 2\n```\n", "selection": [14, 0], "expected": [0, 29] },
+    { "name": "fenced block is one unit", "text": "before\n\n```swift\nlet value = 1\n```\n\nafter", "selection": [21, 0], "expected": [8, 27] },
+    { "name": "list run with continuation is one unit", "text": "- one\n  continuation\n- two\n\nafter", "selection": [23, 0], "expected": [0, 27] },
+    { "name": "empty document", "text": "", "selection": [0, 0], "expected": [0, 0] },
+    { "name": "heading is its own unit", "text": "# Title\nbody\n", "selection": [2, 0], "expected": [0, 8] },
+    { "name": "blockquote run is one unit", "text": "> a\n> b\n\nafter", "selection": [1, 0], "expected": [0, 8] },
+    { "name": "crlf paragraph", "text": "one\r\ntwo\r\n\r\nthree", "selection": [5, 0], "expected": [0, 10] }
+  ]
+}
