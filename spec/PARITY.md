@@ -4,6 +4,7 @@ Legend: done, partial, planned, n/a (platform does not need it).
 
 | Area | macOS | Windows | Notes |
 | --- | --- | --- | --- |
+| Release packaging | Xcode Cloud: signed, notarized DMG | partial | Windows: unsigned zip, per-user installer and `SHA256SUMS-windows.txt` via `windows-release.ps1`; GitHub Actions draft release on tags. Zip and installer smoke-tested locally; clean-VM install and the first CI run are not done |
 | Document load/save, BOM, line endings | done | partial | Windows: vectors in `spec/vectors` |
 | Atomic save + transaction manifest | done | done | Windows: manifest, then `ReplaceFileW` with the old file kept as a displaced sibling (macOS keeps it in the temp slot). No directory fsync on Windows. Vector: `atomic-write-recovery.json` |
 | Crash recovery journal | done | done | JSON records under `%LOCALAPPDATA%ClioCrash Recovery`; vector: `recovery-journal.json`. Called by `DocumentService` (checkpoints before every write, clear after) and `StartupRecovery`; wired into the app (every edit journaled, startup sweep) |

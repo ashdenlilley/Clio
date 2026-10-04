@@ -34,6 +34,9 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 | `windows/Clio.Export.Tests` | xUnit; reads `spec/vectors/export-policy.json` and validates generated packages and PDFs |
 | `windows/Clio.App` | WinUI 3 app |
 | `scripts/windows-build.ps1` | Gate: build (warnings as errors), test, publish |
+| `scripts/windows-release.ps1`, `scripts/windows-smoke.ps1` | Release assets (zip, installer, checksums) and the install-launch-uninstall smoke test |
+| `windows/installer/Clio.iss` | Inno Setup script: per-user, no admin |
+| `.github/workflows/windows.yml` | CI on `windows-latest`; draft release on canonical tags |
 
 ## Phases
 
@@ -68,6 +71,11 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
    Remaining: the app's `IMcpHost`, tray icon, settings page, login autostart, client smoke tests.
 7. **Release.** x64 zip and installer on GitHub Releases, unsigned, SmartScreen
    warning documented, Windows section in `docs/releasing.md`, clean-VM install test.
+   Done: `scripts/windows-release.ps1` (zip, per-user Inno Setup installer, `SHA256SUMS-windows.txt`,
+   version from `project.yml`), `scripts/windows-smoke.ps1`, `.github/workflows/windows.yml` (draft
+   release on tags only), Windows section in `docs/releasing.md`. Zip and installer smoke-tested locally
+   on a dev machine, including uninstall. Remaining: clean-VM install test (manual checklist in
+   `docs/releasing.md`), first real tag run of the workflow (never executed), a `LICENSE` file (the repo has none).
 
 ## Mac-to-Windows mapping
 
