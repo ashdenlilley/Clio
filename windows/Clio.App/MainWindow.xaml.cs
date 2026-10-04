@@ -31,7 +31,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         _dialogs = new Dialogs(() => Root.XamlRoot);
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
+        WindowSizer.ResizeDips(this, 1100, 760);
 
         Editor.TextChanged += OnEditorTextChanged;
         Editor.PlainTextPasted += (text, range) => _paste.Recover(text, range, Editor, AppServices.Instance.Intelligence);
@@ -291,20 +291,22 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         Bind(VirtualKey.N, VirtualKeyModifiers.Control, () => _ = NewDocumentAsync());
         Bind(VirtualKey.N, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => App.OpenWindow());
         Bind(VirtualKey.W, VirtualKeyModifiers.Control, () => { if (_active is not null) _ = CloseTabAsync(_active); });
-        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control, () => CycleTab(1));
-        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => CycleTab(-1));
         Bind(VirtualKey.P, VirtualKeyModifiers.Control, () => ShowSearch(SearchMode.QuickOpen));
         Bind(VirtualKey.F, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => ShowSearch(SearchMode.Content));
 
-        // Ctrl+, (Settings). A KeyboardAccelerator never fires for punctuation keys in WinUI 3, so this is a tunnelling
-        // handler on the root: it sees the key before the editor or the sidebar does, wherever focus is.
+        // Ctrl+, (Settings) and Ctrl+Tab / Ctrl+Shift+Tab (next and previous document). WinUI 3 never delivers a
+        // KeyboardAccelerator for punctuation or for Tab while a text input has focus, so these are a tunnelling handler on
+        // the root: it sees the key before the editor or the sidebar does, wherever focus is.
         ((UIElement)Content).PreviewKeyDown += (_, e) =>
         {
-            if ((int)e.Key != OemComma) return;
+            if ((int)e.Key != OemComma && e.Key != VirtualKey.Tab) return;
             var held = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread;
             bool Down(VirtualKey key) => held(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-            if (!Down(VirtualKey.Control) || Down(VirtualKey.Menu) || Down(VirtualKey.Shift)) return;
-            OpenSettings();
+            if (!Down(VirtualKey.Control) || Down(VirtualKey.Menu)) return;
+            var shift = Down(VirtualKey.Shift);
+            if (e.Key == VirtualKey.Tab) CycleTab(shift ? -1 : 1);
+            else if (!shift) OpenSettings();
+            else return;
             e.Handled = true;
         };
     }

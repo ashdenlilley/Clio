@@ -23,7 +23,7 @@ public sealed class SettingsWindow : Window
     {
         Title = "Clio Settings";
         SystemBackdrop = new Microsoft.UI.Xaml.Media.MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt };
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(600, 780));
+        WindowSizer.ResizeDips(this, 600, 780);
         Closed += (_, _) => _open = null;
 
         var services = AppServices.Instance;
@@ -35,6 +35,8 @@ public sealed class SettingsWindow : Window
             Header = "Include plain text files", OnContent = "On", OffContent = "Off", IsOn = services.Settings.IncludeTextFiles,
         };
         text.Toggled += (_, _) => services.SetIncludeTextFiles(text.IsOn);
+        // A keyboard user lands on the first setting instead of an empty window.
+        text.Loaded += (_, _) => text.Focus(FocusState.Programmatic);
         panel.Children.Add(text);
 
         var association = new ToggleSwitch
