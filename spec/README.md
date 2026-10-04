@@ -30,4 +30,5 @@ user data cannot drift between them.
 | `vectors/recovery-journal.json` | Crash journal supersede, clear and coalescing rules |
 | `vectors/move-recovery.json` | Recovery decision table for interrupted moves |
 | `vectors/document-identity.json` | Document identity across rename, delete, replace and overlapping roots |
+| `vectors/slash-commands.json` | Slash command parsing, palette filtering and state, inline-slash trigger, palette placement |
 | `PARITY.md` | Feature matrix and known gaps |
