@@ -5,9 +5,6 @@ using Microsoft.Data.Sqlite;
 
 namespace Clio.Core;
 
-/// <summary>A document's bytes and the revision they were read at, taken in one read.</summary>
-public sealed record FileSnapshot(byte[] Data, DiskRevision Revision);
-
 /// <summary>
 /// SQLite FTS5 search over workspace documents (macOS <c>SQLiteSearchIndex</c>). The database is a disposable
 /// cache: authoritative document ids live in <see cref="DocumentIdentityStore"/>. Queries follow
@@ -198,19 +195,8 @@ public sealed class SearchIndex : IDisposable
         return new Row(id, workspace.Id, relative, content, snapshot.Revision.Modified.ToUnixTimeMilliseconds() / 1000.0, snapshot.Revision.ByteCount);
     }
 
-    /// <summary>
-    /// Reads a document in one pass and refuses links, so a file repointed at a private target after the
-    /// scanner's metadata check is never indexed. Sharing flags let editors keep writing.
-    /// </summary>
-    internal static FileSnapshot ReadSnapshot(string path)
-    {
-        if (PathSafety.IsLink(path)) throw new ClioException("Refusing to index a link.");
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (stream.Length > MaximumIndexedFileBytes) throw new ClioException("File too large to index.");
-        var data = new byte[stream.Length];
-        stream.ReadExactly(data);
-        return new FileSnapshot(data, new DiskRevision(data.LongLength, File.GetLastWriteTimeUtc(path), DiskRevision.Digest(data)));
-    }
+    /// <summary>Refuses links, so a file repointed after the scanner's metadata check is never indexed.</summary>
+    internal static FileSnapshot ReadSnapshot(string path) => FileSnapshots.Read(path);
 
     private void ReconcileIdentity(WorkspaceEvent e, WorkspaceDescriptor workspace)
     {

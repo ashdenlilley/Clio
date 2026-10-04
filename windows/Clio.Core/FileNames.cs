@@ -42,6 +42,19 @@ public static class FileNames
         return name.Length <= MaximumLength ? name : Truncate(name);
     }
 
+    /// <summary>
+    /// True for a single plain folder or file name: no separators, illegal or control characters, trailing dot or
+    /// space, "." or "..", and no reserved device stem.
+    /// </summary>
+    public static bool IsSafeComponent(string name)
+    {
+        if (name.Length == 0 || name.Length > MaximumLength || name is "." or "..") return false;
+        if (name.TrimEnd(' ', '.') != name) return false;
+        if (name.Any(c => char.IsControl(c) || Illegal.Contains(c))) return false;
+        var firstDot = name.IndexOf('.');
+        return !Reserved.Contains((firstDot < 0 ? name : name[..firstDot]).TrimEnd());
+    }
+
     private static string Truncate(string name)
     {
         var ext = Path.GetExtension(name);

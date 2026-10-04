@@ -8,7 +8,7 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Atomic save + transaction manifest | done | done | Windows: manifest, then `ReplaceFileW` with the old file kept as a displaced sibling (macOS keeps it in the temp slot). No directory fsync on Windows. Vector: `atomic-write-recovery.json` |
 | Crash recovery journal | done | done | JSON records under `%LOCALAPPDATA%\Clio\Crash Recovery`; vector: `recovery-journal.json`. Not yet called by the app: autosave and external-edit flows come with phase 2 |
 | Document identity store | done | partial | Core store ported (file id from `FILE_ID_INFO`, case-folded locators); vector: `document-identity.json`. Used by `WorkspaceScanner.ScanFiles` and the search index |
-| Move transactions | done | partial | Manifest, quarantine and recovery ported (`move-recovery.json`). The `DocumentMover` flow that drives them is not ported |
+| Move transactions + `DocumentMover` | done | done | Manifest, quarantine and recovery (`move-recovery.json`); `DocumentMover` drives them with collision choices, replace approval, identity migration and Recycle Bin delete (`document-move.json`). Buffer settling and displaced-buffer recovery stay with the caller. Not wired into the app yet |
 | Safe file names | done | done | Windows adds reserved names, illegal characters, trailing dots, 255 cap; vector: `file-names.json` |
 | Revision digest (SHA-256) | done | partial | Same vectors |
 | Workspace scan + .gitignore | done | partial | |
