@@ -28,6 +28,14 @@ public sealed class AppServices : IDisposable
 
     public PdfPrintSettingsStore PdfPrint { get; }
 
+    /// <summary>Local MCP: the service, the app-side host, login autostart and clipboard hygiene. Off until the owner enables it.</summary>
+    public McpController Mcp { get; }
+
+    private int _rebuilds;
+
+    /// <summary>No full index rebuild is running, so a listing or search answers for every indexed workspace.</summary>
+    public bool IndexIsComplete => Volatile.Read(ref _rebuilds) == 0;
+
     public IReadOnlyList<WorkspaceHost> Workspaces => _workspaces;
 
     /// <summary>The set of workspaces changed. Raised on the UI thread.</summary>
@@ -44,6 +52,7 @@ public sealed class AppServices : IDisposable
         Documents = new DocumentService(Recovery, Journal);
         Mover = new DocumentMover(Recovery, Journal, Identities);
         Search = new SearchIndex(identities: Identities, includeTextFiles: settings.IncludeTextFiles);
+        Mcp = new McpController();
     }
 
     public static AppServices Create()
@@ -61,6 +70,8 @@ public sealed class AppServices : IDisposable
         foreach (var record in Settings.Workspaces.ToList())
             if (Directory.Exists(record.Root)) Attach(record);
         _ = RebuildIndexAsync();
+        // Recovery has settled and the workspaces exist, so a client that was authorized last time can connect.
+        Mcp.StartConfigured();
     }
 
     public WorkspaceHost? WorkspaceContaining(string path) =>
@@ -115,14 +126,35 @@ public sealed class AppServices : IDisposable
     private async Task RebuildIndexAsync()
     {
         var descriptors = _workspaces.Select(w => new WorkspaceDescriptor(w.Id, w.Root)).ToList();
-        await _indexGate.WaitAsync();
-        try { await Search.RebuildAsync(descriptors); }
-        catch (Exception e) when (e is SearchIndexException or OperationCanceledException or IOException or ObjectDisposedException) { }
-        finally { _indexGate.Release(); }
+        Interlocked.Increment(ref _rebuilds);
+        try
+        {
+            await _indexGate.WaitAsync();
+            try { await Search.RebuildAsync(descriptors); }
+            catch (Exception e) when (e is SearchIndexException or OperationCanceledException or IOException or ObjectDisposedException) { }
+            finally { _indexGate.Release(); }
+        }
+        finally { Interlocked.Decrement(ref _rebuilds); }
+    }
+
+    /// <summary>
+    /// Tells the search index about a change Clio just made itself, ahead of the watcher. Returns whether the index is
+    /// now current; false means a client should expect search to lag until the watcher catches up.
+    /// </summary>
+    public async Task<bool> RecordCommittedAsync(IReadOnlyList<WorkspaceEvent> events, CancellationToken ct = default)
+    {
+        try
+        {
+            await _indexGate.WaitAsync(ct);
+            try { await Search.ApplyAsync(events, ct); return true; }
+            finally { _indexGate.Release(); }
+        }
+        catch (Exception e) when (e is SearchIndexException or OperationCanceledException or IOException or ObjectDisposedException) { return false; }
     }
 
     public void Dispose()
     {
+        Mcp.Dispose();
         foreach (var host in _workspaces) host.Dispose();
         _workspaces.Clear();
         try { Journal.Flush(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }

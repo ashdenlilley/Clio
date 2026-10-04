@@ -40,6 +40,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         _statusTimer.Start();
         Closed += OnClosed;
         Activated += OnFirstActivated;
+        Activated += (_, args) => { if (args.WindowActivationState != WindowActivationState.Deactivated) App.NoteActive(this); };
 
         var services = AppServices.Instance;
         services.WorkspacesChanged += RebuildTree;
@@ -86,7 +87,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         }
         try
         {
-            var tab = DocumentTab.Open(path);
+            // A document a client already read through MCP is held without a window: take that one, never a second session.
+            var tab = AppServices.Instance.Mcp.Host.TakeBackgroundTab(path) ?? DocumentTab.Open(path);
             AddTab(tab);
             return tab;
         }
