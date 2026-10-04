@@ -17,6 +17,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     private readonly Dialogs _dialogs;
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private DocumentTab? _active;
+    private readonly Clio.Editor.EditorModel _scratch = new(new Clio.Editor.TextBuffer());
+    private readonly PasteStructureController _paste = new();
     private bool _applying;
     private bool _closing;
 
@@ -32,6 +34,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
 
         Editor.TextChanged += OnEditorTextChanged;
+        Editor.PlainTextPasted += (text, range) => _paste.Recover(text, range, Editor, AppServices.Instance.Intelligence);
+        _paste.StateChanged += RefreshStatus;
         _statusTimer.Tick += (_, _) => RefreshStatus();
         _statusTimer.Start();
         Closed += OnClosed;
@@ -90,14 +94,39 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
 
     public void Activate(DocumentTab tab)
     {
-        if (!ReferenceEquals(_active, tab) && _active is not null) _ = _active.Autosaver.FlushAsync(_active.Session);
+        if (!ReferenceEquals(_active, tab) && _active is not null)
+        {
+            _active.ScrollOffset = Editor.ScrollOffset;
+            _ = _active.Autosaver.FlushAsync(_active.Session);
+        }
+        // A paste recovery in flight belongs to the document it started in.
+        if (!ReferenceEquals(_active, tab)) _paste.Cancel();
         _active = tab;
         _applying = true;
-        try { Editor.SetText(tab.Session.Text); }
+        try
+        {
+            // Each tab keeps its own text, selection and undo history; showing it again resumes where it left off.
+            tab.SyncEditingBuffer();
+            Editor.UseModel(tab.Editing);
+            Editor.ScrollOffset = tab.ScrollOffset;
+        }
         finally { _applying = false; }
         Editor.Focus(FocusState.Programmatic);
         RefreshSidebarTabs();
         RefreshAll();
+    }
+
+    /// <summary>No document is open: show an empty, history-free editor.</summary>
+    private void ShowEmpty()
+    {
+        _paste.Cancel();
+        _applying = true;
+        try
+        {
+            Editor.UseModel(_scratch);
+            Editor.SetText("");
+        }
+        finally { _applying = false; }
     }
 
     private async Task CloseTabAsync(DocumentTab tab)
@@ -110,7 +139,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         {
             _active = null;
             if (_tabs.Count > 0) Activate(_tabs[Math.Clamp(index, 0, _tabs.Count - 1)]);
-            else { _applying = true; Editor.SetText(""); _applying = false; }
+            else ShowEmpty();
         }
         RefreshSidebarTabs();
         RefreshAll();
@@ -222,7 +251,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     private void RefreshStatus()
     {
         if (_active is null) return;
-        SaveState.Text = _active.StatusText;
+        SaveState.Text = _paste.IsRecovering ? "Formatting pasted text…" : _active.StatusText;
     }
 
     private void UpdateWordCount()
@@ -278,6 +307,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         if (_closing) return;
         _closing = true;
         _statusTimer.Stop();
+        _paste.Cancel();
+        _exportCts?.Cancel();
         var services = AppServices.Instance;
         services.WorkspacesChanged -= RebuildTree;
         services.WorkspaceEventsObserved -= OnWorkspaceEvents;

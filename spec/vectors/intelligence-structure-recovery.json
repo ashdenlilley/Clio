@@ -265,5 +265,16 @@
       ],
       "expected": "> **Tip:** use it\n\n> **Warning:** careful\n\n> **Note:** plain\n\n### deep"
     }
+  ],
+  "staleAfterSeconds": 20,
+  "pasteApply": [
+    { "name": "unchanged and in time", "buffer": "before PASTED text after", "range": { "start": 7, "length": 11 }, "original": "PASTED text", "elapsedSeconds": 3, "expected": true },
+    { "name": "exactly at the stale limit is too late", "buffer": "x PASTED y", "range": { "start": 2, "length": 6 }, "original": "PASTED", "elapsedSeconds": 20, "expected": false },
+    { "name": "just inside the limit", "buffer": "x PASTED y", "range": { "start": 2, "length": 6 }, "original": "PASTED", "elapsedSeconds": 19.9, "expected": true },
+    { "name": "the writer edited inside the paste", "buffer": "x PASTEX y", "range": { "start": 2, "length": 6 }, "original": "PASTED", "elapsedSeconds": 1, "expected": false },
+    { "name": "text was inserted before it, so the range moved", "buffer": "yy x PASTED y", "range": { "start": 2, "length": 6 }, "original": "PASTED", "elapsedSeconds": 1, "expected": false },
+    { "name": "the document got shorter than the range", "buffer": "x PAS", "range": { "start": 2, "length": 6 }, "original": "PASTED", "elapsedSeconds": 1, "expected": false },
+    { "name": "range length differs from the pasted text", "buffer": "x PASTED y", "range": { "start": 2, "length": 5 }, "original": "PASTED", "elapsedSeconds": 1, "expected": false },
+    { "name": "a negative start is never applied", "buffer": "PASTED", "range": { "start": -1, "length": 6 }, "original": "PASTED", "elapsedSeconds": 1, "expected": false }
   ]
 }

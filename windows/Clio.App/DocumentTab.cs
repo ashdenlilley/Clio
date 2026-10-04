@@ -12,6 +12,28 @@ public sealed class DocumentTab : IDisposable
     public Autosaver Autosaver { get; }
     public WorkspaceHost? Workspace { get; private set; }
 
+    /// <summary>
+    /// The document's live editing state: text, selection and undo history. It outlives the editor control showing it, so
+    /// switching tabs keeps each document's undo and redo.
+    /// </summary>
+    public Clio.Editor.EditorModel Editing { get; }
+
+    /// <summary>Where this document was scrolled to when it was last shown.</summary>
+    public double ScrollOffset { get; set; }
+
+    /// <summary>
+    /// Brings <see cref="Editing"/> in line with the session before the tab is shown. When the session changed while the
+    /// tab was in the background (an outside edit reloaded, a conflict was resolved) the old history describes text that
+    /// no longer exists, so it is dropped; otherwise nothing changes and undo carries on.
+    /// </summary>
+    public void SyncEditingBuffer()
+    {
+        if (string.Equals(Editing.Buffer.Text, Session.Text, StringComparison.Ordinal)) return;
+        Editing.Buffer.Reset(Session.Text);
+        Editing.SetSelection(0, 0);
+        ScrollOffset = 0;
+    }
+
     /// <summary>Session state changed (any thread raised it; this fires on the UI thread).</summary>
     public event Action? Changed;
 
@@ -19,6 +41,7 @@ public sealed class DocumentTab : IDisposable
     {
         Session = session;
         Workspace = workspace;
+        Editing = new Clio.Editor.EditorModel(new Clio.Editor.TextBuffer(session.Text));
         Autosaver = new Autosaver(AppServices.Instance.Documents);
         Session.Changed += OnSessionChanged;
     }

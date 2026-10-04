@@ -110,19 +110,48 @@ public sealed partial class EditorControl : UserControl
         _canvas.Invalidate();
     }
 
+    private void OnBufferChanged(TextChange change)
+    {
+        _layout = null;
+        _minimap = LineMinimap.Make(Model.Buffer.Text);
+        _spans = ShiftSpans(_spans, change);
+        ScheduleHighlight();
+        RaiseUiaEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.TextPatternOnTextChanged);
+        TextChanged?.Invoke();
+    }
+
     private EditorModel Attach(EditorModel model)
     {
-        model.Buffer.Changed += change =>
-        {
-            _layout = null;
-            _minimap = LineMinimap.Make(model.Buffer.Text);
-            _spans = ShiftSpans(_spans, change);
-            ScheduleHighlight();
-            RaiseUiaEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.TextPatternOnTextChanged);
-            TextChanged?.Invoke();
-        };
+        model.Buffer.Changed += OnBufferChanged;
         model.SelectionChanged += OnSelectionChanged;
         return model;
+    }
+
+    /// <summary>The vertical scroll position, so a tab can be left and returned to where it was.</summary>
+    public double ScrollOffset
+    {
+        get => _scroll;
+        set { _scroll = Math.Max(0, value); _canvas.Invalidate(); }
+    }
+
+    /// <summary>
+    /// Show a different document's model without touching its text or undo history (switching tabs). Does not raise
+    /// <see cref="TextChanged"/>. The caller sets <see cref="ScrollOffset"/> afterwards when it has one to restore.
+    /// </summary>
+    public void UseModel(EditorModel model)
+    {
+        if (ReferenceEquals(model, Model)) return;
+        Model.Buffer.Changed -= OnBufferChanged;
+        Model.SelectionChanged -= OnSelectionChanged;
+        ResetIme();
+        Model = Attach(model);
+        _desiredX = -1;
+        _scroll = 0;
+        _layout = null;
+        _minimap = LineMinimap.Make(model.Buffer.Text);
+        _spans = [];
+        ScheduleHighlight();
+        _canvas.Invalidate();
     }
 
     // ---- highlighting ---------------------------------------------------------------------------
@@ -532,11 +561,24 @@ public sealed partial class EditorControl : UserControl
         if (cut) Model.Insert("");
     }
 
+    /// <summary>
+    /// Raised after plain text was pasted normally, with the text and the range it landed in. Structure recovery needs a
+    /// network round trip, so the paste itself stays synchronous and any reformatting arrives afterwards as a separate,
+    /// separately undoable edit.
+    /// </summary>
+    public event Action<string, TextRange>? PlainTextPasted;
+
     private async Task PasteAsync()
     {
         var view = Clipboard.GetContent();
         if (!view.Contains(StandardDataFormats.Text)) return;
-        var text = await view.GetTextAsync();
-        Model.Insert(text.Replace("\r\n", "\n").Replace('\r', '\n'));
+        var text = (await view.GetTextAsync()).Replace("\r\n", "\n").Replace('\r', '\n');
+        var model = Model;
+        var start = model.Selection.Start;
+        model.Insert(text);
+        // Only report a paste that is still exactly what landed.
+        if (text.Length > 0 && ReferenceEquals(model, Model) && start + text.Length <= model.Buffer.Length
+            && model.Buffer.Slice(start, text.Length) == text)
+            PlainTextPasted?.Invoke(text, new TextRange(start, text.Length));
     }
 }

@@ -22,6 +22,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Clio.Core\Clio.Core.csproj" />
     <ProjectReference Include="..\Clio.Editor\Clio.Editor.csproj" />
+    <ProjectReference Include="..\Clio.Export\Clio.Export.csproj" />
+    <ProjectReference Include="..\Clio.Intelligence\Clio.Intelligence.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\Clio\Resources\Fonts\Hack-Regular.ttf" Link="Assets\Fonts\Hack-Regular.ttf" CopyToOutputDirectory="PreserveNewest" />

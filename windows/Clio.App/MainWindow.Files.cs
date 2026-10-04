@@ -227,7 +227,7 @@ public sealed partial class MainWindow
         {
             _active = null;
             if (_tabs.Count > 0) Activate(_tabs[0]);
-            else { _applying = true; Editor.SetText(""); _applying = false; }
+            else ShowEmpty();
         }
         RefreshSidebarTabs();
         RefreshAll();

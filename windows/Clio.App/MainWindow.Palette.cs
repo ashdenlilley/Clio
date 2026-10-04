@@ -19,6 +19,11 @@ public sealed partial class MainWindow
         Palette.Palette.LiteralRestored += literal => Editor.RestoreLiteral(_slashRange, literal);
         Palette.Dismissed += () => Editor.Focus(FocusState.Programmatic);
 
+        // Assisted matching runs only where the literal filter finds nothing, and only with the feature on and a key stored.
+        var intelligence = AppServices.Instance.Intelligence;
+        Palette.IntentReady = () => intelligence.IsReady;
+        Palette.IntentResolver = (text, token) => intelligence.ResolveCommandAsync(text, IntentContext(), token);
+
         // Ctrl+K from anywhere, including the sidebar. The editor handles its own copy first.
         var accelerator = new KeyboardAccelerator { Key = VirtualKey.K, Modifiers = VirtualKeyModifiers.Control };
         accelerator.Invoked += (_, e) => { ShowPalette(CommandSource.KeyboardShortcut, null); e.Handled = true; };
@@ -55,11 +60,22 @@ public sealed partial class MainWindow
             case CommandId.Focus: Status((Editor.FocusMode = !Editor.FocusMode) ? "Focus mode on" : "Focus mode off"); break;
             case CommandId.Typewriter: Status((Editor.TypewriterMode = !Editor.TypewriterMode) ? "Typewriter scrolling on" : "Typewriter scrolling off"); break;
             case CommandId.Sidebar: ToggleSidebar(); break;
-            // Export arrives with phase 4.
+            case CommandId.Export: _ = ExportAsync(invocation.Arguments); refocus = false; break;
             default: Status($"{invocation.Command.SlashName()} is not available yet"); break;
         }
         if (refocus) Editor.Focus(FocusState.Programmatic);
     }
+
+    /// <summary>
+    /// What the window looks like, as booleans only. This is everything an assisted command request says about the
+    /// document: whether one is open and saved. Never its text, name or path.
+    /// </summary>
+    private Clio.Intelligence.CommandIntentContext IntentContext() => new(
+        HasOpenDocument: _active is not null,
+        DocumentExistsOnDisk: _active?.Session.IsBackedByFile == true,
+        IsFocusModeEnabled: Editor.FocusMode,
+        IsTypewriterEnabled: Editor.TypewriterMode,
+        IsSidebarVisible: Sidebar.Visibility == Visibility.Visible);
 
     private void RunOnActive(Func<DocumentTab, Task> action)
     {

@@ -168,6 +168,18 @@ public class StructureRecoveryTests
     }
 
     [Fact]
+    public void ARecoveredPasteAppliesOnlyWhileItStillDescribesWhatIsThere()
+    {
+        Check.Same(Vectors.GetProperty("staleAfterSeconds").GetDouble(), PasteRecoveryPolicy.StaleAfter.TotalSeconds);
+        foreach (var v in Vectors.GetProperty("pasteApply").EnumerateArray())
+        {
+            var range = new Clio.Editor.TextRange(v.GetProperty("range").GetProperty("start").GetInt32(), v.GetProperty("range").GetProperty("length").GetInt32());
+            var actual = PasteRecoveryPolicy.CanApply(v.GetProperty("buffer").GetString()!, range, v.GetProperty("original").GetString()!, TimeSpan.FromSeconds(v.GetProperty("elapsedSeconds").GetDouble()));
+            Assert.True(v.GetProperty("expected").GetBoolean() == actual, v.GetProperty("name").GetString());
+        }
+    }
+
+    [Fact]
     public void RenderMatchesVectorsAndNeverInventsText()
     {
         foreach (var v in Vectors.GetProperty("render").EnumerateArray())
