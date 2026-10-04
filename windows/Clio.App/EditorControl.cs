@@ -20,10 +20,11 @@ namespace Clio.App;
 /// Still open from the phase 3 acceptance list: source-preserving highlighting, IME composition
 /// (CoreTextEditContext), UI Automation text provider, slash commands, high contrast.
 /// </summary>
-public sealed class EditorControl : UserControl
+public sealed partial class EditorControl : UserControl
 {
     private const float TextSize = 17;
     private const float LineHeight = TextSize * 1.65f;
+    private const float MaxLayoutHeight = 100_000_000f;
     private const double MaxColumn = 760;
     private const double SideMargin = 48;
     private const double MinimapWidth = 28;
@@ -47,7 +48,6 @@ public sealed class EditorControl : UserControl
     private bool _dragging;
     private int _clicks;
     private DateTime _lastClick;
-    private char _pendingHighSurrogate;
     private LineMinimap _minimap = LineMinimap.Empty;
     private IReadOnlyList<MarkdownSpan> _spans = [];
     private CancellationTokenSource? _highlightCts;
@@ -70,8 +70,8 @@ public sealed class EditorControl : UserControl
     public EditorControl()
     {
         Model = Attach(new EditorModel(new TextBuffer()));
-        IsTabStop = true;
-        Content = _canvas;
+        IsTabStop = false; // the IME proxy owns keyboard focus
+        Content = BuildContent();
         _canvas.Draw += OnDraw;
         _canvas.SizeChanged += (_, _) => { _layout = null; _canvas.Invalidate(); };
         Unloaded += (_, _) => _canvas.RemoveFromVisualTree();
@@ -81,15 +81,20 @@ public sealed class EditorControl : UserControl
         _canvas.PointerWheelChanged += OnWheel;
         _blink.Tick += (_, _) => { _caretOn = !_caretOn; _canvas.Invalidate(); };
         _ease.Tick += OnEaseTick;
-        GotFocus += (_, _) => { _blink.Start(); ResetCaret(); };
-        LostFocus += (_, _) => { _blink.Stop(); _caretOn = false; _canvas.Invalidate(); };
-        KeyDown += OnKeyDown;
-        CharacterReceived += OnCharacterReceived;
+        _proxy.GotFocus += (_, _) => { _blink.Start(); ResetCaret(); };
+        _proxy.LostFocus += (_, _) => { _blink.Stop(); _caretOn = false; _canvas.Invalidate(); };
+        // Tunnelling, so shortcuts and navigation run before the proxy TextBox sees them.
+        PreviewKeyDown += OnKeyDown;
+        InitIme();
     }
+
+    /// <summary>Focus goes to the IME proxy, which receives text input and composition.</summary>
+    public new bool Focus(FocusState state) => _proxy.Focus(state);
 
     /// <summary>Replace the document. Clears undo history and does not raise <see cref="TextChanged"/>.</summary>
     public void SetText(string text)
     {
+        ResetIme();
         Model.Buffer.Reset(text);
         Model.SetSelection(0, 0);
         _scroll = 0;
@@ -181,19 +186,36 @@ public sealed class EditorControl : UserControl
     private double Left => Math.Max(SideMargin, (_canvas.ActualWidth - MinimapWidth - ColumnWidth) / 2);
     private double DocPadding => TypewriterMath.DocumentPadding(_canvas.ActualHeight, TypewriterAnchor, TypewriterMode);
 
+    /// <summary>
+    /// The bundled Hack file by absolute URI: Win2D rejects <c>ms-appx:</c> family URIs in an unpackaged app
+    /// (ArgumentException from CanvasTextLayout), and a folder URI fails the same way, so only the regular
+    /// face loads and bold/italic are synthesised by DirectWrite.
+    /// </summary>
+    private static readonly string BundledFont =
+        "file:///" + AppContext.BaseDirectory.Replace('\\', '/') + "Assets/Fonts/Hack-Regular.ttf#Hack";
+
+    private static CanvasTextFormat MakeFormat(string family) => new()
+    {
+        FontFamily = family,
+        FontSize = TextSize,
+        WordWrapping = CanvasWordWrapping.Wrap,
+        LineSpacing = LineHeight,
+        LineSpacingBaseline = LineHeight * 0.8f,
+    };
+
     private CanvasTextLayout EnsureLayout()
     {
         var width = ColumnWidth;
         if (_layout is not null && Math.Abs(_layoutWidth - width) < 0.5) return _layout;
-        var format = new CanvasTextFormat
+        try
         {
-            FontFamily = "ms-appx:///Assets/Fonts/#Hack",
-            FontSize = TextSize,
-            WordWrapping = CanvasWordWrapping.Wrap,
-            LineSpacing = LineHeight,
-            LineSpacingBaseline = LineHeight * 0.8f,
-        };
-        _layout = new CanvasTextLayout(_canvas, Model.Buffer.Text, format, (float)width, float.MaxValue);
+            _layout = new CanvasTextLayout(CanvasDevice.GetSharedDevice(), DisplayText, MakeFormat(BundledFont), (float)width, MaxLayoutHeight);
+        }
+        catch (ArgumentException)
+        {
+            // The bundled font could not be loaded: stay usable with a system monospace font.
+            _layout = new CanvasTextLayout(CanvasDevice.GetSharedDevice(), DisplayText, MakeFormat("Consolas"), (float)width, MaxLayoutHeight);
+        }
         _layoutWidth = width;
         RestyleLayout();
         return _layout;
@@ -203,13 +225,15 @@ public sealed class EditorControl : UserControl
     private void RestyleLayout()
     {
         if (_layout is null) return;
-        var length = Model.Buffer.Length;
+        var length = DisplayText.Length;
         if (length == 0) return;
         _layout.SetColor(0, length, TextColor);
-        EditorStyler.Apply(_layout, _spans, length, TextSize);
+        EditorStyler.Apply(_layout, DisplaySpans(_spans), length, TextSize);
+        if (_composition.Length > 0) _layout.SetUnderline(Model.Caret, _composition.Length, true);
         if (!FocusMode) return;
         // A null range (blank line) dims nothing: see commit 1a08c6b.
-        if (FocusUnit.FocusRange(Model.Buffer.Text, Model.Selection) is not { } focus) return;
+        if (FocusUnit.FocusRange(Model.Buffer.Text, Model.Selection) is not { } source) return;
+        var focus = DisplayRange(source);
         // Dim only outside the focus unit so highlighting inside it stays intact.
         var focusStart = Math.Clamp(focus.Start, 0, length);
         var focusEnd = Math.Clamp(focus.End, focusStart, length);
@@ -222,7 +246,7 @@ public sealed class EditorControl : UserControl
     private Windows.Foundation.Rect CaretRect(int offset)
     {
         var layout = EnsureLayout();
-        var text = Model.Buffer.Text;
+        var text = DisplayText;
         if (offset >= text.Length && text.EndsWith('\n'))
         {
             // DirectWrite reports the end of the previous line; the caret belongs on the empty last line.
@@ -254,11 +278,12 @@ public sealed class EditorControl : UserControl
 
         ds.DrawTextLayout(layout, origin, TextColor);
 
-        if (_caretOn && !Model.HasSelection && FocusState != FocusState.Unfocused)
+        var caret = CaretRect(DisplayCaret);
+        PositionProxy(origin.X + caret.X, origin.Y + caret.Y);
+        if (_caretOn && !Model.HasSelection && _proxy.FocusState != FocusState.Unfocused)
         {
-            var c = CaretRect(Model.Caret);
-            var x = (float)(origin.X + c.X);
-            ds.DrawLine(x, (float)(origin.Y + c.Y), x, (float)(origin.Y + c.Y + c.Height), CaretColor, 1.5f);
+            var x = (float)(origin.X + caret.X);
+            ds.DrawLine(x, (float)(origin.Y + caret.Y), x, (float)(origin.Y + caret.Y + caret.Height), CaretColor, 1.5f);
         }
 
         DrawMinimap(ds);
@@ -296,7 +321,7 @@ public sealed class EditorControl : UserControl
 
     private void RevealCaret(bool snap)
     {
-        var rect = CaretRect(Model.Caret);
+        var rect = CaretRect(DisplayCaret);
         var viewport = _canvas.ActualHeight;
         if (viewport <= 0) return;
         var top = DocPadding + rect.Y;
@@ -401,6 +426,8 @@ public sealed class EditorControl : UserControl
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // While an IME composition is open every key belongs to the IME.
+        if (_composing) return;
         var ctrl = Down(VirtualKey.Control);
         var shift = Down(VirtualKey.Shift);
         var handled = true;
@@ -432,24 +459,10 @@ public sealed class EditorControl : UserControl
         e.Handled = handled;
     }
 
-    private void OnCharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs e)
-    {
-        var ch = e.Character;
-        // Control characters arrive here too; Enter/Tab/Back are handled in KeyDown, shortcuts must not type.
-        if (char.IsControl(ch)) return;
-        if (Down(VirtualKey.Control) && !Down(VirtualKey.Menu)) return;
-        if (char.IsHighSurrogate(ch)) { _pendingHighSurrogate = ch; e.Handled = true; return; }
-        var text = char.IsLowSurrogate(ch) && _pendingHighSurrogate != 0 ? $"{_pendingHighSurrogate}{ch}" : ch.ToString();
-        _pendingHighSurrogate = '\0';
-        Model.Insert(text, typing: true, nowMs: Environment.TickCount64);
-        _desiredX = -1;
-        e.Handled = true;
-    }
-
     private void MoveVertical(int lines, bool extend)
     {
         var layout = EnsureLayout();
-        var rect = CaretRect(Model.Caret);
+        var rect = CaretRect(DisplayCaret);
         if (_desiredX < 0) _desiredX = rect.X;
         var metrics = layout.LineMetrics;
         var lineHeight = metrics.Length > 0 ? metrics[0].Height : TextSize * 1.65;
@@ -464,7 +477,7 @@ public sealed class EditorControl : UserControl
     private void MoveToVisualLineEdge(bool start, bool extend)
     {
         var layout = EnsureLayout();
-        var rect = CaretRect(Model.Caret);
+        var rect = CaretRect(DisplayCaret);
         var y = rect.Y + rect.Height / 2;
         var x = start ? 0 : ColumnWidth;
         var offset = HitOffset(new Windows.Foundation.Point(x + Left, y + DocPadding - _scroll));

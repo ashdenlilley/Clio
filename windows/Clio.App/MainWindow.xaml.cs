@@ -22,8 +22,7 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
-        Editor.TextChanged += OnEditorTextChanged;
-        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
+        Editor.TextChanged += OnEditorTextChanged;        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
         Closed += (_, _) => { _saveTimer.Stop(); Save(); };
     }
 
@@ -63,6 +62,7 @@ public sealed partial class MainWindow : Window
             var doc = DocumentIO.Load(path);
             _loading = true;
             Editor.SetText(doc.Text);
+            Editor.Focus(FocusState.Programmatic);
             _loading = false;
             (_path, _bom, _ending, _revision) = (path, doc.Bom, doc.LineEnding, doc.Revision);
             SaveState.Text = "Saved";
