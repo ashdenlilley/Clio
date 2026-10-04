@@ -38,4 +38,7 @@ user data cannot drift between them.
 | `vectors/slash-commands.json` | Slash command parsing, palette filtering and state, inline-slash trigger, palette placement |
 | `vectors/mcp-access.json` | Local MCP loopback policy, UTF-16 edit boundaries, authorization lifecycle, retry ledger, one-shot deletion approval, path scope |
 | `vectors/mcp-protocol.json` | Local MCP HTTP framing, version negotiation, tool catalogue and schema rules, session flow, client config shapes |
+| `vectors/intelligence-command-intent.json` | Assisted commands: request state (window booleans only), answer-to-command thresholds, ranked alternatives, export argument rules |
+| `vectors/intelligence-structure-recovery.json` | Paste structure recovery: send gate, marker rule, line reading, stitch/merge bars, classification, Markdown rendering |
+| `vectors/intelligence-transport.json` | TypeSafe transport: request encoding, answer decoding, budget, status mapping, retry and backoff, secret handling rules |
 | `PARITY.md` | Feature matrix and known gaps |

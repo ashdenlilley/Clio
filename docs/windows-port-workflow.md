@@ -32,6 +32,8 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 | `windows/Clio.Editor.Tests` | xUnit; reads `spec/vectors/focus-ranges.json` |
 | `windows/Clio.Export` | UI-free export: Markdig model, HTML, plain text, `.docx` (Open XML SDK), PDF (PDFsharp/MigraDoc), destination collisions via `AtomicFile` |
 | `windows/Clio.Export.Tests` | xUnit; reads `spec/vectors/export-policy.json` and validates generated packages and PDFs |
+| `windows/Clio.Intelligence` | UI-free assisted commands and paste structure recovery: TypeSafe contracts, transport (the only network code), command intent, structure recovery, Credential Manager key store |
+| `windows/Clio.Intelligence.Tests` | xUnit; reads the three `spec/vectors/intelligence-*.json` files, drives the client over a fake HTTP handler |
 | `windows/Clio.App` | WinUI 3 app |
 | `scripts/windows-build.ps1` | Gate: build (warnings as errors), test, publish |
 | `scripts/windows-release.ps1`, `scripts/windows-smoke.ps1` | Release assets (zip, installer, checksums) and the install-launch-uninstall smoke test |
@@ -61,9 +63,8 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
    logic and UI, UI Automation Text pattern, high-contrast palette, IME through a proxy
    control. Open: `CoreTextEditContext`, UI Automation text attributes and editing, a
    real IME and Narrator pass, wiring the remaining palette commands (phases 2 and 4).
-4. **Export.** PDF, self-contained HTML, `.docx`, `.txt`. Library done in `Clio.Export` (rendering, safety policy, collision handling, structural tests: `.docx` validates against the Open XML schema, PDFs are read back for text, pages and links; no byte-for-byte golden files because both formats embed timestamps and ids). Remaining: export dialog and `/export` wiring in `Clio.App`, PDF settings persistence, directory-transaction recovery checkpoints for exports.
-5. **Settings and optional network features.** Assisted commands and paste
-   formatting, off by default, key in Credential Manager.
+4. **Export.** PDF, self-contained HTML, `.docx`, `.txt`. Library in `Clio.Export` (rendering, safety policy, collision handling, structural tests: `.docx` validates against the Open XML schema, PDFs are read back for text, pages and links; no byte-for-byte golden files because both formats embed timestamps and ids). Wired into the app: `/export` options sheet with inline page setup, destination picker, Cancel, collision choices, Retry, and PDF page setup saved in settings. Remaining: directory-transaction recovery checkpoints for exports.
+5. **Settings and optional network features.** Done: assisted commands and paste formatting (`Clio.Intelligence`), off by default, key in Credential Manager, a Settings section that says what is sent and to whom, an assisted palette match only where the literal filter is empty, and paste reformatting as its own undo step. Not exercised against the live service from the test machine.
 6. **Local MCP.** Port `Clio/MCP` to the limits in `docs/local-mcp-plan.md`:
    loopback HTTP, per-client authorization, one-shot deletion approval, protocol
    versions 2025-03-26, 2025-06-18, 2025-11-25. Tray icon toggle. Bridge exe.

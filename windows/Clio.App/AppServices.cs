@@ -1,4 +1,5 @@
 using Clio.Core;
+using Clio.Intelligence;
 
 namespace Clio.App;
 
@@ -22,6 +23,11 @@ public sealed class AppServices : IDisposable
     public SearchIndex Search { get; private set; }
     public StartupRecoveryReport? RecoveryReport { get; private set; }
 
+    /// <summary>The only network capability: assisted commands and paste formatting. Off until the writer opts in.</summary>
+    public IntelligenceService Intelligence { get; }
+
+    public PdfPrintSettingsStore PdfPrint { get; }
+
     public IReadOnlyList<WorkspaceHost> Workspaces => _workspaces;
 
     /// <summary>The set of workspaces changed. Raised on the UI thread.</summary>
@@ -33,6 +39,8 @@ public sealed class AppServices : IDisposable
     private AppServices(AppSettings settings)
     {
         Settings = settings;
+        Intelligence = new IntelligenceService(new PersistedIntelligenceSettings(settings), new CredentialManagerKeyStore());
+        PdfPrint = new PdfPrintSettingsStore(settings);
         Documents = new DocumentService(Recovery, Journal);
         Mover = new DocumentMover(Recovery, Journal, Identities);
         Search = new SearchIndex(identities: Identities, includeTextFiles: settings.IncludeTextFiles);

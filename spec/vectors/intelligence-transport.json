@@ -1,0 +1,138 @@
+{
+  "description": "TypeSafe System One transport: request encoding, response decoding, request budget, HTTP status mapping, retry and backoff. Pure rules: no network. Both apps send to https://api.typesafe.ai/v1/systemone with a bearer key and never log or persist the key outside the platform credential store.",
+  "version": 1,
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "model": "jev-1.13.0",
+  "maximumAttempts": 3,
+  "timeoutSeconds": 20,
+  "encoding": [
+    {
+      "name": "the shape the endpoint documents",
+      "request": {
+        "state": "Help! My payouts have been failing for 3 days.",
+        "questions": {
+          "is_urgent": { "type": "noul", "instructions": "Does this convey urgency?", "criteria": { "true": "Explicitly time-sensitive", "false": "No urgency expressed" } },
+          "department": { "type": "choice", "instructions": "Which team should handle this?", "criteria": { "billing": "Payments", "technical": "Bugs" } },
+          "frustration": { "type": "score", "instructions": "How frustrated is the customer?", "criteria": ["Calm", "Frustrated", "Very angry"] }
+        }
+      },
+      "expected": {
+        "model": "jev-1.13.0",
+        "state": "Help! My payouts have been failing for 3 days.",
+        "questions": {
+          "is_urgent": { "type": "noul", "instructions": "Does this convey urgency?", "criteria": { "true": "Explicitly time-sensitive", "false": "No urgency expressed" } },
+          "department": { "type": "choice", "instructions": "Which team should handle this?", "criteria": { "billing": "Payments", "technical": "Bugs" } },
+          "frustration": { "type": "score", "instructions": "How frustrated is the customer?", "criteria": ["Calm", "Frustrated", "Very angry"] }
+        }
+      }
+    },
+    {
+      "name": "noul criteria are omitted when not supplied",
+      "request": {
+        "state": "x",
+        "questions": { "q": { "type": "noul", "instructions": "Is it so?" } }
+      },
+      "expected": {
+        "model": "jev-1.13.0",
+        "state": "x",
+        "questions": { "q": { "type": "noul", "instructions": "Is it so?" } }
+      }
+    }
+  ],
+  "decoding": {
+    "name": "every answer type decodes",
+    "response": {
+      "model": "jev-1.13.0",
+      "answers": {
+        "is_urgent": { "type": "noul", "noul": 0.95 },
+        "department": { "type": "choice", "choice": "billing", "probabilities": { "billing": 0.88, "technical": 0.12 }, "confidence": 0.81 },
+        "frustration": { "type": "score", "score": 1.05, "legend": { "0": "Calm", "1": "Frustrated" }, "probabilities": { "0": 0.05, "1": 0.95 }, "confidence": 0.92 }
+      },
+      "usage": { "input_tokens": 296, "output_tokens": 20 }
+    },
+    "expected": {
+      "model": "jev-1.13.0",
+      "noul": { "is_urgent": 0.95 },
+      "choice": { "department": { "choice": "billing", "probability": 0.88, "confidence": 0.81 } },
+      "score": { "frustration": { "score": 1.05, "confidence": 0.92 } },
+      "inputTokens": 296,
+      "outputTokens": 20
+    },
+    "malformed": [
+      { "name": "not json", "body": "<html>bad gateway</html>" },
+      { "name": "unknown answer type", "body": "{\"model\":\"m\",\"answers\":{\"q\":{\"type\":\"rank\"}},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" },
+      { "name": "missing usage", "body": "{\"model\":\"m\",\"answers\":{}}" },
+      { "name": "choice without probabilities", "body": "{\"model\":\"m\",\"answers\":{\"q\":{\"type\":\"choice\",\"choice\":\"a\",\"confidence\":1}},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" }
+    ]
+  },
+  "budget": {
+    "charactersPerToken": 3,
+    "combinedTokenLimit": 64000,
+    "stateTokenLimit": 32000,
+    "cases": [
+      { "name": "a state larger than the context window", "stateRepeat": { "unit": "word ", "count": 40000 }, "expectedOverflow": true },
+      { "name": "a modest paste", "state": "a short paste", "expectedOverflow": false },
+      { "name": "just inside the state limit", "stateRepeat": { "unit": "a", "count": 95950 }, "expectedOverflow": false },
+      { "name": "just outside the state limit", "stateRepeat": { "unit": "a", "count": 96000 }, "expectedOverflow": true }
+    ]
+  },
+  "status": [
+    { "status": 200, "expected": null },
+    { "status": 204, "expected": null },
+    { "status": 299, "expected": null },
+    { "status": 401, "expected": { "kind": "unauthorized" } },
+    { "status": 403, "expected": { "kind": "unauthorized" } },
+    { "status": 413, "expected": { "kind": "requestTooLarge", "message": "This request is too large for one evaluation." } },
+    { "status": 422, "body": "{\"detail\":\"questions.q.criteria is required\"}", "expected": { "kind": "invalidRequest", "message": "questions.q.criteria is required" } },
+    { "status": 422, "body": "{\"message\":\"state is empty\"}", "expected": { "kind": "invalidRequest", "message": "state is empty" } },
+    { "status": 422, "body": "{\"error\":\"nope\"}", "expected": { "kind": "invalidRequest", "message": "nope" } },
+    { "status": 422, "body": "{\"detail\":\"\"}", "expected": { "kind": "invalidRequest", "message": "TypeSafe rejected the request as malformed." } },
+    { "status": 422, "body": "not json", "expected": { "kind": "invalidRequest", "message": "TypeSafe rejected the request as malformed." } },
+    { "status": 429, "retryAfter": "3", "expected": { "kind": "rateLimited", "retryAfter": 3 } },
+    { "status": 429, "expected": { "kind": "rateLimited", "retryAfter": null } },
+    { "status": 429, "retryAfter": "soon", "expected": { "kind": "rateLimited", "retryAfter": null } },
+    { "status": 529, "expected": { "kind": "overloaded" } },
+    { "status": 500, "expected": { "kind": "server", "status": 500 } },
+    { "status": 302, "expected": { "kind": "server", "status": 302 } },
+    { "status": 404, "expected": { "kind": "server", "status": 404 } }
+  ],
+  "transient": [
+    { "kind": "rateLimited", "expected": true },
+    { "kind": "overloaded", "expected": true },
+    { "kind": "transport", "expected": true },
+    { "kind": "server", "status": 500, "expected": true },
+    { "kind": "server", "status": 503, "expected": true },
+    { "kind": "server", "status": 404, "expected": false },
+    { "kind": "unauthorized", "expected": false },
+    { "kind": "requestTooLarge", "expected": false },
+    { "kind": "invalidRequest", "expected": false },
+    { "kind": "malformedResponse", "expected": false },
+    { "kind": "disabled", "expected": false },
+    { "kind": "missingApiKey", "expected": false }
+  ],
+  "backoff": [
+    { "attempt": 1, "after": { "kind": "rateLimited", "retryAfter": 4 }, "expectedSeconds": 4 },
+    { "attempt": 1, "after": { "kind": "rateLimited", "retryAfter": 99 }, "expectedSeconds": 10 },
+    { "attempt": 1, "after": { "kind": "rateLimited", "retryAfter": -5 }, "expectedSeconds": 0 },
+    { "attempt": 1, "after": { "kind": "rateLimited", "retryAfter": null }, "expectedSeconds": 0.5 },
+    { "attempt": 1, "after": { "kind": "overloaded" }, "expectedSeconds": 0.5 },
+    { "attempt": 2, "after": { "kind": "overloaded" }, "expectedSeconds": 1 },
+    { "attempt": 3, "after": { "kind": "overloaded" }, "expectedSeconds": 2 },
+    { "attempt": 20, "after": { "kind": "overloaded" }, "expectedSeconds": 8 }
+  ],
+  "retry": [
+    { "name": "transient statuses are retried until one succeeds", "statuses": [429, 529, 200], "expectedRequests": 3, "expectedOutcome": "success" },
+    { "name": "a rejected key is never retried", "statuses": [401], "expectedRequests": 1, "expectedOutcome": "unauthorized" },
+    { "name": "repeated overload surfaces after the attempt limit", "statuses": [529, 529, 529, 529, 529], "expectedRequests": 3, "expectedOutcome": "overloaded" },
+    { "name": "a 500 is retried and may recover", "statuses": [500, 200], "expectedRequests": 2, "expectedOutcome": "success" },
+    { "name": "a malformed 200 is not retried", "statuses": ["200:garbage"], "expectedRequests": 1, "expectedOutcome": "malformedResponse" }
+  ],
+  "secrets": {
+    "rules": [
+      "The API key is sent only in the Authorization header over HTTPS.",
+      "The key is never written to settings, logs, error text or recovery copies.",
+      "Redirects are not followed, so the key cannot be replayed to another host.",
+      "Request state for assisted commands is the typed request plus five window booleans, never document text, names or paths."
+    ]
+  }
+}

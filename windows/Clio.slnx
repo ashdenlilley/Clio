@@ -9,4 +9,6 @@
   <Project Path="Clio.Mcp.Tests/Clio.Mcp.Tests.csproj" />
   <Project Path="Clio.Mcp/Clio.Mcp.csproj" />
   <Project Path="Clio.McpBridge/Clio.McpBridge.csproj" />
+  <Project Path="Clio.Intelligence.Tests/Clio.Intelligence.Tests.csproj" />
+  <Project Path="Clio.Intelligence/Clio.Intelligence.csproj" />
 </Solution>

@@ -17,6 +17,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     private readonly Dialogs _dialogs;
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private DocumentTab? _active;
+    private readonly Clio.Editor.EditorModel _scratch = new(new Clio.Editor.TextBuffer());
+    private readonly PasteStructureController _paste = new();
     private bool _applying;
     private bool _closing;
 
@@ -29,12 +31,15 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         _dialogs = new Dialogs(() => Root.XamlRoot);
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
+        WindowSizer.ResizeDips(this, 1100, 760);
 
         Editor.TextChanged += OnEditorTextChanged;
+        Editor.PlainTextPasted += (text, range) => _paste.Recover(text, range, Editor, AppServices.Instance.Intelligence);
+        _paste.StateChanged += RefreshStatus;
         _statusTimer.Tick += (_, _) => RefreshStatus();
         _statusTimer.Start();
         Closed += OnClosed;
+        Activated += OnFirstActivated;
 
         var services = AppServices.Instance;
         services.WorkspacesChanged += RebuildTree;
@@ -49,6 +54,21 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     }
 
     private Dialogs Dialog => _dialogs;
+
+    /// <summary>
+    /// A document opened while the window was still being created asks for focus before the window can take it, so
+    /// the first keystrokes would go nowhere. Once the window is really active, the editor takes focus.
+    /// </summary>
+    private void OnFirstActivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState == WindowActivationState.Deactivated || _active is null) return;
+        Activated -= OnFirstActivated;
+        Editor.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Gives the editor keyboard focus once the window has finished opening its documents (launch with files).</summary>
+    public void FocusEditorSoon() =>
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => { if (_active is not null) Editor.Focus(FocusState.Programmatic); });
 
     // ---- tabs -----------------------------------------------------------------------------------
 
@@ -90,14 +110,39 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
 
     public void Activate(DocumentTab tab)
     {
-        if (!ReferenceEquals(_active, tab) && _active is not null) _ = _active.Autosaver.FlushAsync(_active.Session);
+        if (!ReferenceEquals(_active, tab) && _active is not null)
+        {
+            _active.ScrollOffset = Editor.ScrollOffset;
+            _ = _active.Autosaver.FlushAsync(_active.Session);
+        }
+        // A paste recovery in flight belongs to the document it started in.
+        if (!ReferenceEquals(_active, tab)) _paste.Cancel();
         _active = tab;
         _applying = true;
-        try { Editor.SetText(tab.Session.Text); }
+        try
+        {
+            // Each tab keeps its own text, selection and undo history; showing it again resumes where it left off.
+            tab.SyncEditingBuffer();
+            Editor.UseModel(tab.Editing);
+            Editor.ScrollOffset = tab.ScrollOffset;
+        }
         finally { _applying = false; }
         Editor.Focus(FocusState.Programmatic);
         RefreshSidebarTabs();
         RefreshAll();
+    }
+
+    /// <summary>No document is open: show an empty, history-free editor.</summary>
+    private void ShowEmpty()
+    {
+        _paste.Cancel();
+        _applying = true;
+        try
+        {
+            Editor.UseModel(_scratch);
+            Editor.SetText("");
+        }
+        finally { _applying = false; }
     }
 
     private async Task CloseTabAsync(DocumentTab tab)
@@ -110,7 +155,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         {
             _active = null;
             if (_tabs.Count > 0) Activate(_tabs[Math.Clamp(index, 0, _tabs.Count - 1)]);
-            else { _applying = true; Editor.SetText(""); _applying = false; }
+            else ShowEmpty();
         }
         RefreshSidebarTabs();
         RefreshAll();
@@ -222,7 +267,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     private void RefreshStatus()
     {
         if (_active is null) return;
-        SaveState.Text = _active.StatusText;
+        SaveState.Text = _paste.IsRecovering ? "Formatting pasted text…" : _active.StatusText;
     }
 
     private void UpdateWordCount()
@@ -246,12 +291,28 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         Bind(VirtualKey.N, VirtualKeyModifiers.Control, () => _ = NewDocumentAsync());
         Bind(VirtualKey.N, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => App.OpenWindow());
         Bind(VirtualKey.W, VirtualKeyModifiers.Control, () => { if (_active is not null) _ = CloseTabAsync(_active); });
-        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control, () => CycleTab(1));
-        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => CycleTab(-1));
         Bind(VirtualKey.P, VirtualKeyModifiers.Control, () => ShowSearch(SearchMode.QuickOpen));
         Bind(VirtualKey.F, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => ShowSearch(SearchMode.Content));
-        Bind((VirtualKey)188, VirtualKeyModifiers.Control, () => OpenSettings()); // Ctrl+,
+
+        // Ctrl+, (Settings) and Ctrl+Tab / Ctrl+Shift+Tab (next and previous document). WinUI 3 never delivers a
+        // KeyboardAccelerator for punctuation or for Tab while a text input has focus, so these are a tunnelling handler on
+        // the root: it sees the key before the editor or the sidebar does, wherever focus is.
+        ((UIElement)Content).PreviewKeyDown += (_, e) =>
+        {
+            if ((int)e.Key != OemComma && e.Key != VirtualKey.Tab) return;
+            var held = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread;
+            bool Down(VirtualKey key) => held(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+            if (!Down(VirtualKey.Control) || Down(VirtualKey.Menu)) return;
+            var shift = Down(VirtualKey.Shift);
+            if (e.Key == VirtualKey.Tab) CycleTab(shift ? -1 : 1);
+            else if (!shift) OpenSettings();
+            else return;
+            e.Handled = true;
+        };
     }
+
+    /// <summary>VK_OEM_COMMA. <see cref="VirtualKey"/> has no name for it.</summary>
+    private const int OemComma = 0xBC;
 
     private void CycleTab(int delta)
     {
@@ -278,6 +339,8 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         if (_closing) return;
         _closing = true;
         _statusTimer.Stop();
+        _paste.Cancel();
+        _exportCts?.Cancel();
         var services = AppServices.Instance;
         services.WorkspacesChanged -= RebuildTree;
         services.WorkspaceEventsObserved -= OnWorkspaceEvents;

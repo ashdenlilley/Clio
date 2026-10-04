@@ -17,6 +17,7 @@ public partial class App : Application
         // Files passed on the command line (Open with, a registered .md association).
         foreach (var arg in Environment.GetCommandLineArgs().Skip(1))
             if (File.Exists(arg)) window.OpenPath(arg);
+        window.FocusEditorSoon();
     }
 
     public static MainWindow OpenWindow()

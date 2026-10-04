@@ -10,6 +10,7 @@ try {
     Step 'dotnet test Clio.Editor.Tests -c Release'
     Step 'dotnet test Clio.Export.Tests -c Release'
     Step 'dotnet test Clio.Mcp.Tests -c Release'
+    Step 'dotnet test Clio.Intelligence.Tests -c Release'
     Step 'dotnet publish Clio.App -c Release -p:Platform=x64 -o artifacts\Clio'
     # The stdio bridge ships next to Clio.exe as one self-contained file, launched by the MCP client.
     Step 'dotnet publish Clio.McpBridge -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishTrimmed=true -o artifacts\Clio'

@@ -60,7 +60,11 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <InfoBar x:Name="Banner" IsOpen="False" IsClosable="False" Margin="8,8,8,0" />
+            <StackPanel>
+                <InfoBar x:Name="Banner" IsOpen="False" IsClosable="False" Margin="8,8,8,0" />
+                <InfoBar x:Name="ExportBar" IsOpen="False" IsClosable="True" Margin="8,8,8,0"
+                         AutomationProperties.AutomationId="export.bar" />
+            </StackPanel>
             <app:EditorControl x:Name="Editor" Grid.Row="1" />
         </Grid>
 
