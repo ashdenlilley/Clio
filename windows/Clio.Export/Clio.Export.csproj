@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Clio.Export</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Clio.Export.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Clio.Core\Clio.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="Markdig" Version="1.4.0" />
+    <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />
+  </ItemGroup>
+</Project>

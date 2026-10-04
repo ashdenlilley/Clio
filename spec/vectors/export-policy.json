@@ -1,0 +1,122 @@
+{
+  "description": "Export behaviour both apps share: which links survive, how HTML text is escaped, footnote ids, print geometry, and the plain-text projection of simple Markdown. Geometry is in points; content rectangle is reported as size only (macOS measures from the bottom-left, Windows from the top-left).",
+  "safeLink": [
+    { "input": "https://example.com/a?b=1&c=2", "output": "https://example.com/a?b=1&c=2" },
+    { "input": "HTTPS://EXAMPLE.COM", "output": "HTTPS://EXAMPLE.COM" },
+    { "input": "mailto:someone@example.com", "output": "mailto:someone@example.com" },
+    { "input": "notes/other.md", "output": "notes/other.md" },
+    { "input": "#section", "output": "#section" },
+    { "input": "javascript:alert(1)", "output": null },
+    { "input": "JaVaScRiPt:alert(1)", "output": null },
+    { "input": "data:text/html;base64,PHNjcmlwdD4=", "output": null },
+    { "input": "file:///etc/passwd", "output": null },
+    { "input": "/etc/passwd", "output": null },
+    { "input": "\\\\server\\share", "output": null },
+    { "input": " https://example.com", "output": null },
+    { "input": "https://example.com\n", "output": null },
+    { "input": "java\u0000script:alert(1)", "output": null },
+    { "input": "https://example.com/a b", "output": null },
+    { "input": "https://example.com/\u0085", "output": null },
+    { "input": "https://example.com/%zz", "output": null }
+  ],
+  "escapeHtml": [
+    { "input": "plain", "output": "plain" },
+    { "input": "a & b < c > d \" e ' f", "output": "a &amp; b &lt; c &gt; d &quot; e &#39; f" },
+    { "input": "tab\there\nnew\rline", "output": "tab\there\nnew\rline" },
+    { "input": "before\u0000after\u0085done", "output": "before�after�done" },
+    { "input": "<script>alert('x')</script>", "output": "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;" }
+  ],
+  "footnoteId": [
+    { "label": "1", "id": "fn-31" },
+    { "label": "note", "id": "fn-6e6f7465" },
+    { "label": "", "id": "fn-empty" },
+    { "label": "bad\" onclick=\"alert(1) ❤️", "id": "fn-62616422206f6e636c69636b3d22616c65727428312920e29da4efb88f" }
+  ],
+  "regionalDefault": [
+    { "region": "US", "paper": "na-letter", "width": 612, "height": 792 },
+    { "region": "CA", "paper": "na-letter", "width": 612, "height": 792 },
+    { "region": "MX", "paper": "na-letter", "width": 612, "height": 792 },
+    { "region": "GB", "paper": "iso-a4", "width": 595.2756, "height": 841.8898 },
+    { "region": "DE", "paper": "iso-a4", "width": 595.2756, "height": 841.8898 },
+    { "region": null, "paper": "iso-a4", "width": 595.2756, "height": 841.8898 }
+  ],
+  "printGeometry": {
+    "fallbackRegion": "GB",
+    "headerHeight": 22,
+    "footerHeight": 20,
+    "cases": [
+      {
+        "name": "regional default A4 portrait",
+        "settings": { "width": null, "height": null, "margins": [54, 54, 54, 54], "orientation": "portrait" },
+        "valid": true, "pageWidth": 595.2756, "pageHeight": 841.8898, "contentWidth": 487.2756, "contentHeight": 691.8898
+      },
+      {
+        "name": "letter landscape with 36 pt margins",
+        "settings": { "width": 612, "height": 792, "margins": [36, 36, 36, 36], "orientation": "landscape" },
+        "valid": true, "pageWidth": 792, "pageHeight": 612, "contentWidth": 720, "contentHeight": 498
+      },
+      {
+        "name": "stored size is portrait-normalised",
+        "settings": { "width": 792, "height": 612, "margins": [36, 36, 36, 36], "orientation": "portrait" },
+        "valid": true, "pageWidth": 612, "pageHeight": 792, "contentWidth": 540, "contentHeight": 678
+      },
+      {
+        "name": "side margins leave no width",
+        "settings": { "width": 612, "height": 792, "margins": [54, 306, 54, 306], "orientation": "portrait" },
+        "valid": false
+      },
+      {
+        "name": "content narrower than 72 pt",
+        "settings": { "width": 612, "height": 792, "margins": [54, 270, 54, 280], "orientation": "portrait" },
+        "valid": false
+      },
+      {
+        "name": "content shorter than 18 pt after header and footer",
+        "settings": { "width": 612, "height": 792, "margins": [370, 54, 370, 54], "orientation": "portrait" },
+        "valid": false
+      },
+      {
+        "name": "width without height",
+        "settings": { "width": 612, "height": null, "margins": [54, 54, 54, 54], "orientation": "portrait" },
+        "valid": false
+      },
+      {
+        "name": "negative margin",
+        "settings": { "width": 612, "height": 792, "margins": [-1, 54, 54, 54], "orientation": "portrait" },
+        "valid": false
+      }
+    ]
+  },
+  "plainText": [
+    {
+      "name": "headings, emphasis, links and tables lose their punctuation",
+      "markdown": "# Notes\n\n**Bold** and *italic* 🙂\n\n[Example](https://example.com)\n\n| Name | Value |\n| --- | --- |\n| First | Second |\n",
+      "text": "Notes\nBold and italic 🙂\nExample (https://example.com)\nName\tValue\nFirst\tSecond\n"
+    },
+    {
+      "name": "list markers",
+      "markdown": "- one\n- two\n\n1. first\n2. second\n\n- [x] done\n- [ ] todo\n",
+      "text": "• one\n• two\n1. first\n2. second\n☑ done\n☐ todo\n"
+    },
+    {
+      "name": "nested list indents two spaces per level",
+      "markdown": "- a\n  - b\n",
+      "text": "• a\n  • b\n"
+    },
+    {
+      "name": "images become alt text, strikethrough keeps its text",
+      "markdown": "![alt text](x.png) and ~~gone~~\n",
+      "text": "[Image: alt text] and gone\n"
+    },
+    {
+      "name": "block quote and thematic break",
+      "markdown": "> quoted\n\nbefore\n\n---\n\nafter\n",
+      "text": "quoted\nbefore\n────────\nafter\n"
+    },
+    {
+      "name": "autolink keeps its label only",
+      "markdown": "<https://example.com>\n",
+      "text": "https://example.com\n"
+    }
+  ]
+}

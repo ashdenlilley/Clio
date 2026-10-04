@@ -38,3 +38,14 @@ License 2.0), which bundles the SQLite library. SQLite is in the public domain.
 Upstream licenses are available at
 <https://github.com/dotnet/efcore/blob/main/LICENSE.txt> and
 <https://github.com/ericsink/SQLitePCL.raw/blob/main/LICENSE.txt>.
+
+The Windows export library links `PDFsharp-MigraDoc` 6.2.4 (PDFsharp and
+MigraDoc, empira Software GmbH, MIT License) to write PDF files and
+`DocumentFormat.OpenXml` 3.5.1 (Microsoft, MIT License) to write `.docx` files;
+it also uses `Markdig` (see above) to parse Markdown. Upstream licenses are
+available at <https://github.com/empira/PDFsharp/blob/master/LICENSE> and
+<https://github.com/dotnet/Open-XML-SDK/blob/main/LICENSE>. The Windows export
+tests additionally use `UglyToad.PdfPig` 1.7.0-custom-5 (Apache License 2.0) to
+read generated PDFs back; it is a test-only dependency and is not distributed
+with Clio. PDF export embeds subsets of the Windows system fonts Segoe UI and
+Consolas (Arial and Courier New as fallbacks) from the user's own machine.

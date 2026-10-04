@@ -34,5 +34,6 @@ user data cannot drift between them.
 | `vectors/search-queries.json` | Search term splitting, FTS query, LIKE escaping, result limits, batch behaviour |
 | `vectors/document-move.json` | Mover naming, collision choices, replace approval, path rejection |
 | `vectors/external-change.json` | Reconcile, save and conflict-resolution outcomes for an open document |
+| `vectors/export-policy.json` | Export: safe links, HTML escaping, footnote ids, PDF print geometry and regional paper defaults, plain-text projection |
 | `vectors/slash-commands.json` | Slash command parsing, palette filtering and state, inline-slash trigger, palette placement |
 | `PARITY.md` | Feature matrix and known gaps |
