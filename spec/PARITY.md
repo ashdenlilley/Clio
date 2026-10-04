@@ -12,7 +12,7 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Safe file names | done | done | Windows adds reserved names, illegal characters, trailing dots, 255 cap; vector: `file-names.json` |
 | Revision digest (SHA-256) | done | partial | Same vectors |
 | Workspace scan + .gitignore | done | partial | |
-| Workspace watcher | done (FSEvents) | planned | |
+| Workspace watcher | done (FSEvents) | done | Windows: `FileSystemWatcher` (ReadDirectoryChangesW) + 200 ms root liveness timer + snapshot diff (`workspace-snapshot-diff.json`); deletions confirmed after 120 ms because swap-style saves briefly remove the path. Not wired into the app yet |
 | Search index (SQLite FTS5) | done | planned | 500-match cap |
 | Recovery copies, 7 days | done | partial | `RecoveryStore` ported, vector `recovery-store.json`. No caller until conflict resolution and the mover are ported |
 | Editor: focus, typewriter, minimap, selection, undo | done | partial | Windows: `Clio.Editor` logic + Win2D `EditorControl`; shares `focus-ranges.json` |
