@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         _statusTimer.Tick += (_, _) => RefreshStatus();
         _statusTimer.Start();
         Closed += OnClosed;
+        Activated += OnFirstActivated;
 
         var services = AppServices.Instance;
         services.WorkspacesChanged += RebuildTree;
@@ -53,6 +54,21 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
     }
 
     private Dialogs Dialog => _dialogs;
+
+    /// <summary>
+    /// A document opened while the window was still being created asks for focus before the window can take it, so
+    /// the first keystrokes would go nowhere. Once the window is really active, the editor takes focus.
+    /// </summary>
+    private void OnFirstActivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState == WindowActivationState.Deactivated || _active is null) return;
+        Activated -= OnFirstActivated;
+        Editor.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Gives the editor keyboard focus once the window has finished opening its documents (launch with files).</summary>
+    public void FocusEditorSoon() =>
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => { if (_active is not null) Editor.Focus(FocusState.Programmatic); });
 
     // ---- tabs -----------------------------------------------------------------------------------
 
@@ -279,8 +295,22 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         Bind(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => CycleTab(-1));
         Bind(VirtualKey.P, VirtualKeyModifiers.Control, () => ShowSearch(SearchMode.QuickOpen));
         Bind(VirtualKey.F, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => ShowSearch(SearchMode.Content));
-        Bind((VirtualKey)188, VirtualKeyModifiers.Control, () => OpenSettings()); // Ctrl+,
+
+        // Ctrl+, (Settings). A KeyboardAccelerator never fires for punctuation keys in WinUI 3, so this is a tunnelling
+        // handler on the root: it sees the key before the editor or the sidebar does, wherever focus is.
+        ((UIElement)Content).PreviewKeyDown += (_, e) =>
+        {
+            if ((int)e.Key != OemComma) return;
+            var held = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread;
+            bool Down(VirtualKey key) => held(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+            if (!Down(VirtualKey.Control) || Down(VirtualKey.Menu) || Down(VirtualKey.Shift)) return;
+            OpenSettings();
+            e.Handled = true;
+        };
     }
+
+    /// <summary>VK_OEM_COMMA. <see cref="VirtualKey"/> has no name for it.</summary>
+    private const int OemComma = 0xBC;
 
     private void CycleTab(int delta)
     {
