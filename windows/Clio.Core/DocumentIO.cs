@@ -52,7 +52,7 @@ public static class DocumentIO
         if (expected is not null && File.Exists(path) && CurrentRevision(path).ContentDigest != expected.ContentDigest)
             throw new ConflictException();
         var bytes = Encode(text, bom, ending);
-        AtomicFile.Write(path, bytes);
+        AtomicFile.Write(path, bytes, expected);
         return Revision(path, bytes);
     }
 

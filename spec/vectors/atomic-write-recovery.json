@@ -1,0 +1,32 @@
+{
+  "description": "AtomicWriteTransactions.recoverInterruptedTransactions: what recovery does for each combination of destination and temporary-slot state. States: absent | base (the revision the writer expected) | candidate (the bytes being installed) | other (anything else). For a create, base does not exist (expectedBase is false). The temporary slot is the temp file, or on Windows the displaced file when the temp is gone (ReplaceFileW backup), which is where the old base lands after a swap. `checkpoints` are journal records written (reason:content) in order; `cleanup` true means the temp slot and manifest are removed, false means both are left untouched for manual review.",
+  "contents": { "base": "outside-base", "candidate": "latest-local", "other": "someone-else" },
+  "rows": [
+    { "name": "replace: manifest only", "expectedBase": true, "destination": "base", "temporary": "absent", "checkpoints": [], "cleanup": true },
+    { "name": "replace: killed before swap", "expectedBase": true, "destination": "base", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": true },
+    { "name": "replace: swapped, old base displaced", "expectedBase": true, "destination": "candidate", "temporary": "base", "checkpoints": ["atomicDisplaced:base"], "cleanup": true },
+    { "name": "replace: swapped, displaced gone", "expectedBase": true, "destination": "candidate", "temporary": "absent", "checkpoints": ["atomicCandidate:candidate"], "cleanup": true },
+    { "name": "replace: destination edited elsewhere, candidate still staged", "expectedBase": true, "destination": "other", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": false },
+    { "name": "replace: destination edited elsewhere, nothing staged", "expectedBase": true, "destination": "other", "temporary": "absent", "checkpoints": [], "cleanup": false },
+    { "name": "replace: destination deleted, candidate staged", "expectedBase": true, "destination": "absent", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": false },
+    { "name": "replace: destination other, base displaced", "expectedBase": true, "destination": "other", "temporary": "base", "checkpoints": ["atomicDisplaced:base"], "cleanup": false },
+    { "name": "replace: base both places", "expectedBase": true, "destination": "base", "temporary": "base", "checkpoints": ["atomicDisplaced:base"], "cleanup": false },
+    { "name": "replace: temp unrelated", "expectedBase": true, "destination": "base", "temporary": "other", "checkpoints": [], "cleanup": false },
+    { "name": "create: manifest only", "expectedBase": false, "destination": "absent", "temporary": "absent", "checkpoints": [], "cleanup": true },
+    { "name": "create: killed before install", "expectedBase": false, "destination": "absent", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": true },
+    { "name": "create: installed", "expectedBase": false, "destination": "candidate", "temporary": "absent", "checkpoints": ["atomicCandidate:candidate"], "cleanup": true },
+    { "name": "create: destination appeared elsewhere", "expectedBase": false, "destination": "other", "temporary": "absent", "checkpoints": [], "cleanup": false },
+    { "name": "create: candidate in both places", "expectedBase": false, "destination": "candidate", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": false }
+  ],
+  "windowsOnly": [
+    "If the temp file and the displaced file both exist (ReplaceFileW failed after moving the old file aside) and the displaced file equals the expected base, it is also checkpointed as atomicDisplaced. The table above is unchanged.",
+    "A failed save puts the displaced file back at the destination when the destination is missing, and keeps the manifest if it cannot."
+  ],
+  "untouched": [
+    "A manifest whose temporary path is not '.clio-save-<id>' for its own id is ignored.",
+    "A manifest whose destination or temporary lies outside the recovery root, or in a different directory from the manifest, is ignored.",
+    "A manifest, temp or destination that is a symbolic link or junction is ignored and never followed.",
+    "A manifest over 1 MiB or with an unknown schemaVersion is ignored.",
+    "A candidate or base larger than 200 MiB (4 x the 50 MiB safe-file limit) is never read into the journal."
+  ]
+}

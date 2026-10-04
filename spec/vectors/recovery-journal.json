@@ -1,0 +1,47 @@
+{
+  "description": "CrashRecoveryJournal semantics. Records are append-only files; a record is `valid` only if its stored digest matches its data, and invalid files are ignored but never deleted. Writing a dirtyBuffer record removes older-or-equal-revision dirtyBuffer records of the same document; every other reason is kept until explicitly removed. clear(document, through) removes only dirtyBuffer records of that document with revision <= through. schedule() coalesces per document to the newest revision and ignores an older revision than the one already pending; flush() writes what is pending. Ops: checkpoint | schedule | flush | clear. `remaining` is the sorted list of 'reason:revision:content' for valid records after the ops.",
+  "maximumRecordBytes": 67108864,
+  "scenarios": [
+    { "name": "newer dirty supersedes older", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 1, "reason": "dirtyBuffer", "content": "one" },
+      { "op": "checkpoint", "doc": "A", "rev": 2, "reason": "dirtyBuffer", "content": "two" } ],
+      "remaining": ["dirtyBuffer:2:two"] },
+    { "name": "older dirty does not remove newer", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 5, "reason": "dirtyBuffer", "content": "five" },
+      { "op": "checkpoint", "doc": "A", "rev": 3, "reason": "dirtyBuffer", "content": "three" } ],
+      "remaining": ["dirtyBuffer:3:three", "dirtyBuffer:5:five"] },
+    { "name": "documents are independent", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 1, "reason": "dirtyBuffer", "content": "a1" },
+      { "op": "checkpoint", "doc": "B", "rev": 2, "reason": "dirtyBuffer", "content": "b2" } ],
+      "remaining": ["dirtyBuffer:1:a1", "dirtyBuffer:2:b2"] },
+    { "name": "non-dirty reasons survive a dirty checkpoint", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 1, "reason": "saveFailed", "content": "failed" },
+      { "op": "checkpoint", "doc": "A", "rev": 2, "reason": "dirtyBuffer", "content": "dirty" } ],
+      "remaining": ["dirtyBuffer:2:dirty", "saveFailed:1:failed"] },
+    { "name": "clear removes only redundant dirty checkpoint", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 9, "reason": "dirtyBuffer", "content": "canonical candidate" },
+      { "op": "checkpoint", "doc": "A", "rev": 9, "reason": "interruptedMove", "content": "outside source" },
+      { "op": "clear", "doc": "A", "through": 9 } ],
+      "remaining": ["interruptedMove:9:outside source"] },
+    { "name": "clear keeps newer dirty revisions", "ops": [
+      { "op": "checkpoint", "doc": "A", "rev": 4, "reason": "dirtyBuffer", "content": "four" },
+      { "op": "clear", "doc": "A", "through": 3 } ],
+      "remaining": ["dirtyBuffer:4:four"] },
+    { "name": "rapid generations coalesce to the newest", "ops": [
+      { "op": "schedule", "doc": "A", "rev": 1, "content": "one" },
+      { "op": "schedule", "doc": "A", "rev": 2, "content": "two" },
+      { "op": "schedule", "doc": "A", "rev": 3, "content": "three" },
+      { "op": "flush" } ],
+      "remaining": ["dirtyBuffer:3:three"] },
+    { "name": "late older schedule is ignored", "ops": [
+      { "op": "schedule", "doc": "A", "rev": 3, "content": "three" },
+      { "op": "schedule", "doc": "A", "rev": 2, "content": "two" },
+      { "op": "flush" } ],
+      "remaining": ["dirtyBuffer:3:three"] },
+    { "name": "checkpoint drops pending older generation", "ops": [
+      { "op": "schedule", "doc": "A", "rev": 2, "content": "two" },
+      { "op": "checkpoint", "doc": "A", "rev": 4, "reason": "dirtyBuffer", "content": "four" },
+      { "op": "flush" } ],
+      "remaining": ["dirtyBuffer:4:four"] }
+  ]
+}

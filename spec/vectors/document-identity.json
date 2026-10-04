@@ -1,0 +1,45 @@
+{
+  "description": "DocumentIdentityStore.resolve/migrate/tombstone. Symbols in `as`, `id`, `same`, `different` name resolved document ids; 'P' is a caller-supplied preferred id. `physical` is 'volume:fileId' (a resource identity) and `canonical` the canonical path observed; `exists` lists canonical paths that exist on disk during the scenario. A candidate batch is resolved in one call. Windows folds case in locator paths and canonical paths (scenarios marked platforms:['windows']); macOS keeps them exact.",
+  "limits": { "maximumRetainedTombstones": 1024, "maximumStorageBytes": 16777216 },
+  "scenarios": [
+    { "name": "rename preserves identity", "exists": ["/w/new.md"], "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "old.md", "physical": "v:1", "canonical": "/w/old.md" } ] },
+      { "op": "migrate", "as": "m", "ws": "w1", "from": "old.md", "to": "new.md", "physical": "v:1", "canonical": "/w/new.md" },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "new.md", "physical": "v:1", "canonical": "/w/new.md" } ] } ],
+      "same": [["r1", "m"], ["r1", "r2"]] },
+    { "name": "delete and recreate gets a new identity", "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "old.md", "physical": "v:1", "canonical": "/w/old.md" } ] },
+      { "op": "tombstone", "ws": "w1", "path": "old.md", "id": "r1" },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "old.md", "physical": "v:2", "canonical": "/w/old.md" } ] } ],
+      "different": [["r1", "r2"]] },
+    { "name": "missed rename and old path recreation do not merge", "exists": ["/w/z.md", "/w/a.md"], "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "a.md", "physical": "v:1", "canonical": "/w/a.md" } ] },
+      { "op": "resolve", "candidates": [
+        { "as": "r2", "ws": "w1", "path": "z.md", "physical": "v:1", "canonical": "/w/z.md" },
+        { "as": "r3", "ws": "w1", "path": "a.md", "physical": "v:2", "canonical": "/w/a.md" } ] } ],
+      "same": [["r1", "r2"]], "different": [["r1", "r3"], ["r2", "r3"]] },
+    { "name": "atomic replacement keeps the locator identity and prunes the superseded file id", "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "note.md", "physical": "v:old", "canonical": "/w/note.md" } ] },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "note.md", "physical": "v:new", "canonical": "/w/note.md" } ] },
+      { "op": "resolve", "candidates": [ { "as": "r3", "ws": "w1", "path": "unrelated.md", "physical": "v:old", "canonical": "/w/unrelated.md" } ] } ],
+      "same": [["r1", "r2"]], "different": [["r1", "r3"]], "physicalFilesAfterOp": { "op": 1, "count": 1 } },
+    { "name": "overlapping workspaces share one identity", "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "a.md", "physical": "v:1", "canonical": "/w/a.md" } ] },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w2", "path": "sub/a.md", "physical": "v:1", "canonical": "/w/a.md" } ] } ],
+      "same": [["r1", "r2"]] },
+    { "name": "unrelated preferred id collision allocates a distinct identity", "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "first.md", "physical": "v:1", "canonical": "/w/first.md", "preferred": "P" } ] },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "second.md", "physical": "v:2", "canonical": "/w/second.md", "preferred": "P" } ] } ],
+      "same": [["r1", "P"]], "different": [["r2", "P"], ["r2", "r1"]] },
+    { "name": "tombstoned document's file id is not reused", "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "old.md", "physical": "v:reused", "canonical": "/old.md" } ] },
+      { "op": "tombstone", "ws": "w1", "path": "old.md", "id": "r1" },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "new.md", "physical": "v:reused", "canonical": "/new.md" } ] } ],
+      "different": [["r1", "r2"]] },
+    { "name": "locator paths are case-insensitive", "platforms": ["windows"], "ops": [
+      { "op": "resolve", "candidates": [ { "as": "r1", "ws": "w1", "path": "Notes.md", "physical": "v:1", "canonical": "c:/w/notes.md" } ] },
+      { "op": "resolve", "candidates": [ { "as": "r2", "ws": "w1", "path": "notes.MD", "physical": "v:1", "canonical": "C:/W/NOTES.MD" } ] } ],
+      "same": [["r1", "r2"]] }
+  ],
+  "corruptStore": "An unreadable or oversized store file fails closed: every mutating call throws, and the file is never overwritten."
+}

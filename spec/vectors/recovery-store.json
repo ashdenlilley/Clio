@@ -1,0 +1,22 @@
+{
+  "description": "RecoveryStore: recovery copies of replaced or conflicting files. Name = '<stem> — <stamp> — <first 8 hex of document id>.<ext>' where stamp is the source modification time (or creation time when absent) in UTC formatted yyyy-MM-dd HH-mm-ss. The separator is U+2014 EM DASH with single spaces. An existing name gets ' (n)' before the extension, n from 2. Retention is 7 days: a copy is pruned only when its modification time is strictly older than now - 7 days; pruning runs during preserve using the creation clock.",
+  "retentionSeconds": 604800,
+  "maximumCollisionAttempts": 10000,
+  "names": [
+    { "filename": "draft.md", "stampUtc": "2026-03-04T05:06:07Z", "documentId": "9f1c2a3b-0000-4000-8000-000000000001", "recovered": "draft — 2026-03-04 05-06-07 — 9f1c2a3b.md" },
+    { "filename": "Notes", "stampUtc": "2026-03-04T05:06:07Z", "documentId": "ABCDEF12-0000-4000-8000-000000000001", "recovered": "Notes — 2026-03-04 05-06-07 — abcdef12.md", "why": "safe filename adds .md; id prefix is lowercased" },
+    { "filename": "a/b.txt", "stampUtc": "2025-12-31T23:59:59Z", "documentId": "00000000-0000-4000-8000-000000000001", "recovered": "b — 2025-12-31 23-59-59 — 00000000.txt" }
+  ],
+  "collisions": [
+    { "name": "x — 2026-01-01 00-00-00 — 11111111.md", "existing": [], "available": "x — 2026-01-01 00-00-00 — 11111111.md" },
+    { "name": "x — 2026-01-01 00-00-00 — 11111111.md", "existing": ["x — 2026-01-01 00-00-00 — 11111111.md"], "available": "x — 2026-01-01 00-00-00 — 11111111 (2).md" },
+    { "name": "x — 2026-01-01 00-00-00 — 11111111.md", "existing": ["x — 2026-01-01 00-00-00 — 11111111.md", "x — 2026-01-01 00-00-00 — 11111111 (2).md"], "available": "x — 2026-01-01 00-00-00 — 11111111 (3).md" },
+    { "name": "x — 2026-01-01 00-00-00 — 11111111.md", "existing": ["X — 2026-01-01 00-00-00 — 11111111.MD"], "available": "x — 2026-01-01 00-00-00 — 11111111 (2).md", "platforms": ["windows"], "why": "NTFS names are case-insensitive" }
+  ],
+  "retention": [
+    { "ageSeconds": 0, "pruned": false },
+    { "ageSeconds": 604799, "pruned": false },
+    { "ageSeconds": 604800, "pruned": false, "why": "strictly older only" },
+    { "ageSeconds": 604801, "pruned": true }
+  ]
+}
