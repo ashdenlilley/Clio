@@ -1,0 +1,45 @@
+{
+  "description": "Search query construction and limits shared by SQLiteSearchIndex (macOS) and SearchIndex (Windows). `queryTerms` splits on any text element that is not a letter, a number or '_' (a combining mark stays with its base letter), keeps at most 16 terms and the first 128 characters of each. `ftsQuery` quotes every term (doubling embedded quotes), adds a prefix star and joins with AND; no terms means no FTS query and content search falls back to filename search. `escapedLike` escapes backslash, percent and underscore for LIKE ... ESCAPE '\\'. Limits clamp into 1...500. The index is SQLite FTS5 with tokenizer `unicode61 remove_diacritics 2`.",
+  "limits": { "maximumResults": 500, "defaultResults": 100, "firstBatchResults": 20, "maximumTerms": 16, "maximumTermLength": 128, "excerptLength": 1024, "excerptLeadIn": 240, "maximumIndexedFileBytes": 52428800 },
+  "tokenizer": "unicode61 remove_diacritics 2",
+  "queryTerms": [
+    { "query": "searchable phrase", "terms": ["searchable", "phrase"] },
+    { "query": "\"café\" OR AND", "terms": ["café", "OR", "AND"] },
+    { "query": "café au lait", "terms": ["café", "au", "lait"] },
+    { "query": "snake_case-word", "terms": ["snake_case", "word"] },
+    { "query": "🧭 compass", "terms": ["compass"] },
+    { "query": "  \t\n ", "terms": [] },
+    { "query": "", "terms": [] },
+    { "query": "***", "terms": [] },
+    { "query": "v2 2024 x", "terms": ["v2", "2024", "x"] }
+  ],
+  "termCaps": {
+    "manyTerms": { "words": 20, "expectedTerms": 16 },
+    "longTerm": { "length": 130, "expectedLength": 128 }
+  },
+  "ftsQuery": [
+    { "terms": [], "fts": null },
+    { "terms": ["a"], "fts": "\"a\"*" },
+    { "terms": ["a", "b"], "fts": "\"a\"* AND \"b\"*" },
+    { "terms": ["x\"y"], "fts": "\"x\"\"y\"*" }
+  ],
+  "escapedLike": [
+    { "input": "plain", "escaped": "plain" },
+    { "input": "100%_a\\", "escaped": "100\\%\\_a\\\\" }
+  ],
+  "limitClamp": [
+    { "limit": 0, "clamped": 1 },
+    { "limit": -5, "clamped": 1 },
+    { "limit": 1, "clamped": 1 },
+    { "limit": 100, "clamped": 100 },
+    { "limit": 500, "clamped": 500 },
+    { "limit": 501, "clamped": 500 }
+  ],
+  "behaviour": [
+    "Filename search matches the query as a case-insensitive substring of the relative path (SQLite NOCASE folds ASCII only); prefix matches rank first, then shorter paths, then path order.",
+    "Content search streams two batches: an unranked first batch (score 0, at most 20 results) then a final batch ranked by bm25 with ties broken by relative path. Filename search streams one batch unless the first batch was full and the limit is larger.",
+    "Each content result carries an excerpt of at most 1024 characters starting 240 characters before the first occurrence of the first term.",
+    "When no workspace filter is set, one physical file reached through overlapping workspace roots appears once, attributed to the workspace with the longest root.",
+    "Files larger than 50 MiB, non-UTF-8 files and files that change into a link after scanning are not indexed."
+  ]
+}

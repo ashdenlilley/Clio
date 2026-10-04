@@ -199,9 +199,7 @@ public sealed class WorkspaceWatcher : IDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
-    private bool IsDocument(string path) =>
-        WorkspaceScanner.IsMarkdown(path)
-        || (_includeText && Path.GetExtension(path).Equals(".txt", StringComparison.OrdinalIgnoreCase));
+    private bool IsDocument(string path) => WorkspaceScanner.IsDocument(path, _includeText);
 
     private void ReplaceSnapshot(Dictionary<PhysicalFileIdentity, FileState> next)
     {

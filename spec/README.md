@@ -31,4 +31,5 @@ user data cannot drift between them.
 | `vectors/move-recovery.json` | Recovery decision table for interrupted moves |
 | `vectors/document-identity.json` | Document identity across rename, delete, replace and overlapping roots |
 | `vectors/workspace-snapshot-diff.json` | Watcher snapshot diff: replace, move, modify, delete, create pairing |
+| `vectors/search-queries.json` | Search term splitting, FTS query, LIKE escaping, result limits, batch behaviour |
 | `PARITY.md` | Feature matrix and known gaps |
