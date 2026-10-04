@@ -30,7 +30,7 @@ Push-Location $win
 try {
     Step "dotnet build Clio.slnx -c Release $ver"
     if (-not $SkipTests) {
-        foreach ($t in 'Core', 'Editor', 'Export', 'Mcp') { Step "dotnet test Clio.$t.Tests -c Release --no-build" }
+        foreach ($t in 'Core', 'Editor', 'Export', 'Intelligence', 'Mcp') { Step "dotnet test Clio.$t.Tests -c Release --no-build" }
     }
     Step "dotnet publish Clio.App -c Release -p:Platform=x64 $ver -o `"$stage`""
     # The stdio bridge ships next to Clio.exe as one self-contained file, launched by the MCP client.

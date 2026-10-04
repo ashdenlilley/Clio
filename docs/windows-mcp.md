@@ -1,8 +1,10 @@
 # Local MCP on Windows
 
 Status: library, listener, router, tools, credential storage, client config and the
-stdio bridge are implemented and tested. The app still has to supply the live-document
-host, tray toggle, settings page and login autostart. No client has been smoke-tested yet.
+stdio bridge are implemented and tested, and the app side is wired: `AppMcpHost` (the
+live-document host), the tray icon, the Local MCP settings section, opt-in login autostart and
+clipboard clearing. No Claude client has been smoke-tested yet; the app and the real bridge were
+driven against a temporary folder (see the checklist at the end).
 The macOS behaviour and limits in [local-mcp-plan.md](local-mcp-plan.md) and
 [local-mcp-setup.md](local-mcp-setup.md) are the reference; the shared contract is
 `spec/vectors/mcp-access.json` and `spec/vectors/mcp-protocol.json`.
@@ -107,6 +109,20 @@ Avoid typing a real token on a command line: it lands in shell history.
 
 ## Checklist before release
 
-Not yet run: Claude Desktop and Claude Code smoke tests with a disposable folder, tray and settings
-behaviour, login autostart, clean quit with pending edits and connected clients, and a clean-VM check
-that the published bridge starts.
+Run on the published zip, driving Settings and the tray through UI Automation and the real bridge over
+stdio against a temporary folder: authorize a client, enable MCP (and at launch from the saved preference),
+`tools/list` (all twelve), `list_workspaces`, `list_documents`, `search_documents`, `read_document`,
+`open_document`, `active_document`, `edit_document` (lands in the editor, autosaves), the native deletion
+prompt (Cancel gives `deletion_not_approved`, approve moves the file to the Recycle Bin), tray Pause, Resume,
+MCP Settings and Quit, Clio staying resident with no window and `open_document` bringing one back, opt-in
+login item written and removed, token clipboard cleared after 60 seconds, disable closes the port, Remove
+deletes the Credential Manager entry.
+
+Not yet run: Claude Desktop and Claude Code smoke tests, "Add to Claude Desktop" writing the real
+configuration file (it is covered by `Clio.Mcp.Tests` only), `move_document`, `export_document` and
+`create_document` through the app, a quit with a document that cannot be saved, the tray under a light
+theme or high DPI, and a clean-VM check that the published bridge starts.
+
+Note: a client built on Windows PowerShell 5.1's `HttpClient` or `Invoke-WebRequest` is refused with 400,
+because it sends `Expect: 100-continue`, which the strict request parser rejects. Node, curl and the bridge
+do not send it.
