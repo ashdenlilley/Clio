@@ -1,0 +1,21 @@
+{
+  "description": "Source-preserving Markdown highlight spans. Fixtures live in ClioTests/Fixtures/Markdown/Conformance (never copied). Each vector selects spans of one semantic kind and role from the named fixture and asserts the exact source slices. Derived from ClioTests/MarkdownConformanceTests.swift and the Swift presentation lexer. include: every slice must appear at least once; exclude: no slice may equal any of these; atLeast: slice -> minimum occurrences; exactly: slice -> exact occurrences. Kinds use the Swift MarkdownSemanticKind raw names, roles use the Swift MarkdownSpanRole case names. The macOS suite does not read this file yet; see PARITY.md.",
+  "invariants": [
+    "every span lies inside [0, source UTF-16 length]",
+    "span application never changes the source text"
+  ],
+  "vectors": [
+    { "name": "delimiters: emphasis markers", "fixture": "delimiters", "kind": "emphasis", "role": "marker", "atLeast": { "*": 2 } },
+    { "name": "delimiters: strong markers", "fixture": "delimiters", "kind": "strong", "role": "marker", "atLeast": { "**": 2 } },
+    { "name": "delimiters: intraword underscore is not emphasis", "fixture": "delimiters", "kind": "emphasis", "role": "content", "exclude": ["underscore"] },
+    { "name": "delimiters: strikethrough markers", "fixture": "delimiters", "kind": "strikethrough", "role": "marker", "atLeast": { "~~": 2 } },
+    { "name": "malformed-unicode: strong content keeps nested underscore text", "fixture": "malformed-unicode", "kind": "strong", "role": "content", "include": ["bold _nested_"] },
+    { "name": "malformed-unicode: exactly one strong pair", "fixture": "malformed-unicode", "kind": "strong", "role": "marker", "exactly": { "**": 2 } },
+    { "name": "gfm-extensions: task markers", "fixture": "gfm-extensions", "kind": "task", "role": "marker", "include": ["[x]", "[ ]"] },
+    { "name": "gfm-extensions: front matter fences", "fixture": "gfm-extensions", "kind": "frontMatter", "role": "marker", "atLeast": { "---": 2 } },
+    { "name": "gfm-extensions: footnote reference markers", "fixture": "gfm-extensions", "kind": "footnote", "role": "marker", "include": ["[^", "]"] },
+    { "name": "links-code-entities: inline code content", "fixture": "links-code-entities", "kind": "inlineCode", "role": "content", "include": ["one"] },
+    { "name": "links-code-entities: autolink destination", "fixture": "links-code-entities", "kind": "autolink", "role": "destination", "include": ["https://example.com/a?q=1"] },
+    { "name": "blocks: table pipes are markers", "fixture": "blocks", "kind": "table", "role": "marker", "atLeast": { "|": 3 } }
+  ]
+}

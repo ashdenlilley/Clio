@@ -16,7 +16,9 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Search index (SQLite FTS5) | done | planned | 500-match cap |
 | Recovery copies, 7 days | done | partial | `RecoveryStore` ported, vector `recovery-store.json`. No caller until conflict resolution and the mover are ported |
 | Editor: focus, typewriter, minimap, selection, undo | done | partial | Windows: `Clio.Editor` logic + Win2D `EditorControl`; shares `focus-ranges.json` |
-| Editor: highlighting, IME, UI Automation, slash commands, palette | done | planned | Remaining phase 3 items |
+| Editor: Markdown highlighting (Full and Reduced modes) | done | partial | Windows: lexer ported, Markdig for emphasis/strong/strikethrough; shares `markdown-highlight.json`, which the macOS suite does not read yet. No incremental re-highlight, no safe-large-file semantic chunking, Foundation line separators (U+2028/2029/0085) are not line breaks |
+| Editor: IME composition | done | partial | Windows: proxy `TextBox` inside `EditorControl`, not `CoreTextEditContext`; not yet tested with a real IME |
+| Editor: UI Automation, slash commands, palette | done | planned | Remaining phase 3 items |
 | Export PDF/HTML/DOCX/TXT | done | planned | |
 | Local MCP | done | planned | Windows: Credential Manager, `clio-mcp-bridge.exe`, tray toggle, default off |
 | Assisted commands / paste formatting | done | planned | |

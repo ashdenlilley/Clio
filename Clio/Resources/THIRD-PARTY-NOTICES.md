@@ -26,3 +26,8 @@ The Windows build also links `Microsoft.WindowsAppSDK` 2.5.1 and
 License. Upstream licenses are available at
 <https://github.com/microsoft/WindowsAppSDK/blob/main/LICENSE> and
 <https://github.com/microsoft/Win2D/blob/master/LICENSE.txt>.
+
+The Windows editor also links `Markdig` 1.4.0 by Alexandre Mutel, distributed
+under the BSD 2-Clause License, for CommonMark emphasis and strikethrough
+delimiter ranges. The upstream license is available at
+<https://github.com/xoofx/markdig/blob/master/license.txt>.
