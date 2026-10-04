@@ -6,4 +6,7 @@
   <Project Path="Clio.Editor/Clio.Editor.csproj" />
   <Project Path="Clio.Export.Tests/Clio.Export.Tests.csproj" />
   <Project Path="Clio.Export/Clio.Export.csproj" />
+  <Project Path="Clio.Mcp.Tests/Clio.Mcp.Tests.csproj" />
+  <Project Path="Clio.Mcp/Clio.Mcp.csproj" />
+  <Project Path="Clio.McpBridge/Clio.McpBridge.csproj" />
 </Solution>

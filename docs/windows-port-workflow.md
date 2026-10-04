@@ -64,6 +64,8 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
 6. **Local MCP.** Port `Clio/MCP` to the limits in `docs/local-mcp-plan.md`:
    loopback HTTP, per-client authorization, one-shot deletion approval, protocol
    versions 2025-03-26, 2025-06-18, 2025-11-25. Tray icon toggle. Bridge exe.
+   Done: `Clio.Mcp`, `Clio.Mcp.Tests`, `Clio.McpBridge` (see [Windows MCP setup](windows-mcp.md)).
+   Remaining: the app's `IMcpHost`, tray icon, settings page, login autostart, client smoke tests.
 7. **Release.** x64 zip and installer on GitHub Releases, unsigned, SmartScreen
    warning documented, Windows section in `docs/releasing.md`, clean-VM install test.
 

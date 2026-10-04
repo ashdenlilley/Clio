@@ -28,7 +28,7 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Workspace UX: new, rename, move, delete | done | partial | Windows: file picker for new and Save As, rename and move through `DocumentMover` with keep-both/replace approval (replaced open text goes to recovery), delete to the Recycle Bin after a revision check. Tree actions open the document first, then act on it |
 | Search UI: quick open and workspace search | done | done | Windows: Ctrl+P filename quick open, Ctrl+Shift+F or /search full text, progressive batches, 500-match cap with a notice |
 | Markdown file association | done | partial | Windows: opt-in toggle registers Clio under "Open with" for .md and .markdown in HKCU (no admin); the default-app choice stays with the user in Windows Settings. Not exercised end to end |
-| Local MCP | done | planned | Windows: Credential Manager, `clio-mcp-bridge.exe`, tray toggle, default off |
+| Local MCP | done | partial | Windows: `Clio.Mcp` (policy, HTTP listener, router, tools, Credential Manager, client config) and `clio-mcp-bridge.exe` are done and tested against `mcp-access.json` and `mcp-protocol.json`; the app still has to implement `IMcpHost`, the tray toggle, settings page and login autostart. macOS tests do not read the vectors yet. Windows ids are upper-case dashed GUIDs like macOS; the Windows listener also sets exclusive address use and drops non-loopback peers |
 | Assisted commands / paste formatting | done | planned | |
 | Security-scoped bookmarks | done | n/a | |
 | Liquid Glass | done | n/a | Windows: black canvas, Mica chrome |
