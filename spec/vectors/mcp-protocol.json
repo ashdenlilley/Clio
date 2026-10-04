@@ -1,0 +1,114 @@
+{
+  "description": "Local MCP protocol contract (macOS MCPRouter, MCPHTTPRequest, MCPTools definitions). Transport is JSON-over-HTTP, one request per connection, no server-initiated SSE.",
+  "endpoint": { "host": "127.0.0.1", "port": 19847, "path": "/mcp" },
+  "protocolVersions": ["2025-11-25", "2025-06-18", "2025-03-26"],
+  "versionNegotiation": [
+    { "requested": "2025-11-25", "negotiated": "2025-11-25" },
+    { "requested": "2025-06-18", "negotiated": "2025-06-18" },
+    { "requested": "2025-03-26", "negotiated": "2025-03-26" },
+    { "requested": "2024-11-05", "negotiated": "2025-11-25" },
+    { "requested": "future-version", "negotiated": "2025-11-25" }
+  ],
+  "limits": {
+    "maximumRequestHeadBytes": 16384,
+    "maximumSessions": 32,
+    "maximumInFlight": 16,
+    "sessionLifetimeSeconds": 3600,
+    "toolDeadlineSeconds": 110,
+    "maximumJsonDepth": 16,
+    "maximumObjectMembers": 64,
+    "maximumArrayItems": 128,
+    "maximumRequestIdUtf8Bytes": 128
+  },
+  "httpFraming": {
+    "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n",
+    "body": "{}",
+    "incompleteBody": "{",
+    "extraHeadersRejected": [
+      { "header": "Content-Length: 3\r\n", "error": "invalidRequest", "why": "duplicate header" },
+      { "header": "Transfer-Encoding: chunked\r\n", "error": "invalidRequest" },
+      { "header": "Expect: 100-continue\r\n", "error": "invalidRequest" },
+      { "header": "Origin: null\r\n", "error": "forbiddenOrigin" },
+      { "header": "Origin: http://127.0.0.1:19847\r\n", "error": "forbiddenOrigin" }
+    ],
+    "trailingBytesRejected": "{}extra",
+    "oversizedWithoutHeadTerminator": { "repeat": "A", "count": 16385 },
+    "malformed": [
+      { "name": "wrong path", "head": "POST /other HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "wrong version", "head": "POST /mcp HTTP/1.0\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "unsupported method", "head": "PUT /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "missing host", "head": "POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "foreign host", "head": "POST /mcp HTTP/1.1\r\nHost: evil.example:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidHost" },
+      { "name": "non numeric length", "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 0x2\r\n", "error": "invalidRequest" },
+      { "name": "missing length on POST", "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n", "error": "invalidRequest" },
+      { "name": "wrong content type", "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: text/plain\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "accept lacks event-stream", "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "control character in value", "head": "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nX-Evil: a\u0001b\r\nContent-Length: 2\r\n", "error": "invalidRequest" },
+      { "name": "GET with a body", "head": "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1:19847\r\nContent-Length: 2\r\n", "error": "invalidRequest" }
+    ],
+    "errorStatus": { "forbiddenOrigin": 403, "invalidHost": 403, "oversizedRequest": 413, "other": 400 }
+  },
+  "tools": {
+    "count": 12,
+    "names": ["list_workspaces", "list_documents", "search_documents", "read_document", "active_document", "open_document", "select_text", "create_document", "edit_document", "move_document", "trash_document", "export_document"],
+    "mutations": ["create_document", "edit_document", "move_document", "trash_document", "export_document"],
+    "noToolNameContains": "approve",
+    "limits": {
+      "readPageUtf16": 16384,
+      "listPage": 100,
+      "listDefault": 30,
+      "queryUtf8Bytes": 256,
+      "filenameUtf8Bytes": 128,
+      "mutationDocumentBytes": 262144,
+      "readDocumentBytes": 1048576,
+      "indexedSearchMatches": 500
+    }
+  },
+  "schemaValidation": {
+    "tool": "read_document",
+    "cases": [
+      { "arguments": { "workspaceID": "w", "documentID": "d" }, "valid": true },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "offset": 0, "limit": 100 }, "valid": true },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "approve": true }, "valid": false, "why": "extra authority-shaped property" },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "limit": true }, "valid": false, "why": "boolean is not an integer" },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "limit": -1 }, "valid": false },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "limit": 1.5 }, "valid": false },
+      { "arguments": { "workspaceID": "w", "documentID": "d", "limit": 3000000000 }, "valid": false },
+      { "arguments": { "workspaceID": null, "documentID": "d" }, "valid": false },
+      { "arguments": { "workspaceID": "w" }, "valid": false, "why": "missing required" },
+      { "arguments": { "workspaceID": 7, "documentID": "d" }, "valid": false }
+    ],
+    "validRequestIds": ["a", 0, 1, -5, 9007199254740991],
+    "invalidRequestIds": [true, false, null, 1.5, 9007199254740992, { "repeat": "x", "count": 129 }]
+  },
+  "session": {
+    "flow": [
+      { "step": "initialize without bearer token", "status": 401 },
+      { "step": "initialize with token and unknown protocol version", "status": 200, "header": "MCP-Session-Id" },
+      { "step": "tools/list before notifications/initialized", "status": 200, "jsonRpcError": true },
+      { "step": "notifications/initialized", "status": 202 },
+      { "step": "tools/list", "status": 200, "tools": 12 },
+      { "step": "tools/list with wrong MCP-Protocol-Version header", "status": 400 },
+      { "step": "GET /mcp", "status": 405 },
+      { "step": "router stop, then tools/list", "status": 404 }
+    ],
+    "isolation": [
+      { "step": "client two reuses client one's session id", "status": 404 },
+      { "step": "client one revoked, then ping on its session", "status": 401 }
+    ],
+    "mutationRetry": [
+      { "step": "create_document sample.md with mutationID M", "expect": "creates one file" },
+      { "step": "repeat the identical call", "expect": "same documentID, no second file" },
+      { "step": "same mutationID with different text", "expect": "tool error retryConflict" }
+    ]
+  },
+  "clientConfig": {
+    "claudeDesktop": {
+      "shape": { "mcpServers": { "clio": { "command": "<path to clio-mcp-bridge.exe>", "env": { "CLIO_MCP_TOKEN": "<base64 32 byte token>" } } } },
+      "mergeRule": "Insert or replace only mcpServers.clio. Preserve every other key and server."
+    },
+    "claudeCode": {
+      "shape": { "type": "http", "url": "http://127.0.0.1:19847/mcp", "headers": { "Authorization": "Bearer <base64 32 byte token>" } }
+    }
+  }
+}

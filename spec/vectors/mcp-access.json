@@ -1,0 +1,105 @@
+{
+  "description": "Local MCP access policy (macOS MCPAccessPolicy). Transport-independent rules every platform must enforce. Error names are the MCPAccessError case names. Strings use JSON escapes; `repeat` rows expand to `count` copies of the character.",
+  "port": 19847,
+  "maximumBodyBytes": 1048576,
+  "loopback": {
+    "validHost": "127.0.0.1:19847",
+    "rejectedHosts": ["evil.example:19847", "127.0.0.1:80", "localhost:19847", "127.0.0.1:19847.evil", "[::1]:19847", "127.0.0.1", "127.0.0.1:19847 ", "0.0.0.0:19847"],
+    "rejectedOrigins": ["null", "", "https://evil.example", "http://127.0.0.1:19847", "http://localhost:19847"],
+    "bodyBytes": [
+      { "count": 0, "ok": true },
+      { "count": 10, "ok": true },
+      { "count": 1048576, "ok": true },
+      { "count": -1, "ok": false },
+      { "count": 1048577, "ok": false }
+    ]
+  },
+  "textReplacement": {
+    "source": "A🙂éZ",
+    "note": "UTF-16 offsets. A=0, emoji=1..2, e=3, combining acute=4, Z=5. Edits may not start or end inside a surrogate pair or a composed character.",
+    "accepted": [
+      { "location": 1, "length": 2, "text": "🌱", "result": "A🌱éZ" },
+      { "location": 0, "length": 0, "text": "", "result": "A🙂éZ" },
+      { "location": 6, "length": 0, "text": "!", "result": "A🙂éZ!" },
+      { "location": 3, "length": 2, "text": "e", "result": "A🙂eZ" }
+    ],
+    "rejected": [
+      { "location": 2, "length": 1, "text": "x", "why": "starts inside surrogate pair" },
+      { "location": 1, "length": 1, "text": "x", "why": "ends inside surrogate pair" },
+      { "location": 4, "length": 0, "text": "x", "why": "inside composed character" },
+      { "location": 3, "length": 1, "text": "x", "why": "ends inside composed character" },
+      { "location": -1, "length": 0, "text": "" },
+      { "location": 1, "length": -1, "text": "" },
+      { "location": 7, "length": 0, "text": "" },
+      { "location": 1, "length": 9223372036854775807, "text": "" },
+      { "location": 9223372036854775807, "length": 9223372036854775807, "text": "" }
+    ],
+    "emptySource": { "location": 0, "length": 0, "text": "a", "result": "a" },
+    "oversizedText": { "repeat": "x", "count": 1048577 }
+  },
+  "authorization": {
+    "tokenBytes": 32,
+    "maximumClients": 32,
+    "maximumNameUtf8Bytes": 128,
+    "rejected": [
+      { "why": "empty workspace set" },
+      { "why": "token is not 32 bytes" },
+      { "why": "blank name" },
+      { "why": "name over 128 UTF-8 bytes" },
+      { "why": "name contains a control character" },
+      { "why": "token digest already registered to another client" }
+    ],
+    "lifecycle": [
+      { "step": "authorize client A", "expect": "ok" },
+      { "step": "authenticate A while disabled", "expect": "disabled" },
+      { "step": "enable", "expect": "ok" },
+      { "step": "authenticate A", "expect": "grant" },
+      { "step": "validate grant for a workspace outside the client scope", "expect": "outsideWorkspace" },
+      { "step": "authenticate with an unknown 32 byte token", "expect": "unauthorized" },
+      { "step": "disable then enable", "expect": "ok" },
+      { "step": "validate the earlier grant", "expect": "unauthorized", "why": "pause/resume ends outstanding grants" },
+      { "step": "revoke A", "expect": "ok" },
+      { "step": "authenticate A", "expect": "unauthorized" }
+    ]
+  },
+  "ledger": {
+    "capacity": 1,
+    "steps": [
+      { "op": "reserve", "client": "c1", "request": "r1", "arguments": "canonical arguments", "expect": "execute" },
+      { "op": "reserve", "client": "c1", "request": "r1", "arguments": "canonical arguments", "expect": "pending" },
+      { "op": "reserve", "client": "c1", "request": "r1", "arguments": "different", "expect": "retryConflict" },
+      { "op": "complete", "client": "c1", "request": "r1", "result": "saved result", "expect": "ok" },
+      { "op": "reserve", "client": "c1", "request": "r1", "arguments": "canonical arguments", "expect": "completed:saved result" },
+      { "op": "reserve", "client": "c1", "request": "r2", "arguments": "canonical arguments", "expect": "retryCapacity" },
+      { "op": "reserve", "client": "c2", "request": "r1", "arguments": "canonical arguments", "expect": "retryCapacity" },
+      { "op": "complete", "client": "c1", "request": "r1", "result": "", "expect": "invalidRequest" }
+    ]
+  },
+  "deletionApprovals": {
+    "lifetimeSeconds": 60,
+    "maximumOutstanding": 32,
+    "steps": [
+      { "op": "consume", "approval": "unknown", "expect": "approvalRequired" },
+      { "op": "record", "name": "a1", "client": "c1", "revision": 4, "at": 100, "expect": "ok" },
+      { "op": "consume", "approval": "a1", "client": "c1", "revision": 4, "at": 100, "expect": "ok" },
+      { "op": "consume", "approval": "a1", "client": "c1", "revision": 4, "at": 100, "expect": "approvalRequired", "why": "one shot" },
+      { "op": "record", "name": "a2", "client": "c1", "revision": 4, "at": 100, "expect": "ok" },
+      { "op": "consume", "approval": "a2", "client": "c1", "revision": 5, "at": 100, "expect": "staleRevision" },
+      { "op": "record", "name": "a3", "client": "c1", "revision": 4, "at": 100, "expect": "ok" },
+      { "op": "consume", "approval": "a3", "client": "c2", "revision": 4, "at": 100, "expect": "unauthorized" },
+      { "op": "record", "name": "a4", "client": "c1", "revision": 4, "at": 100, "expect": "ok" },
+      { "op": "consume", "approval": "a4", "client": "c1", "revision": 4, "at": 160, "expect": "expiredApproval" }
+    ]
+  },
+  "pathScope": {
+    "note": "Lexical rules, checked before touching the file system. Windows adds reparse-point (junction/symlink) rejection inside the approved root, device paths and alternate data streams.",
+    "inside": ["ok.md", "nested/ok.md", "nested/missing/deep/new.md"],
+    "outside": [
+      { "path": "..", "why": "the root itself or its parent" },
+      { "path": ".", "why": "the root itself" },
+      { "path": "../no.md" },
+      { "path": "nested/../../no.md" },
+      { "path": "../scope-other/no.md", "why": "sibling sharing the root's name prefix" }
+    ]
+  }
+}
