@@ -1,0 +1,240 @@
+{
+  "description": "Assisted commands: how a typed palette request becomes a TypeSafe request, and how the typed answers become a command call. Pure data: nothing here touches a network. Answers are the wire shape of TypeSafe System One.",
+  "version": 1,
+  "thresholds": {
+    "minimumConfidence": 0.45,
+    "minimumCommandProbability": 0.35,
+    "minimumAlternativeProbability": 0.02,
+    "maximumAlternatives": 4,
+    "minimumRequestCharacters": 3
+  },
+  "noMatch": "__none__",
+  "model": "jev-1.13.0",
+  "commandIds": ["new", "open", "search", "rename", "delete", "reveal", "folder", "export", "focus", "typewriter", "sidebar", "settings"],
+  "exportFormats": ["pdf", "html", "docx", "txt"],
+  "questionIds": {
+    "command": "command",
+    "exportFormat": "export_format",
+    "exportFormatStated": "export_format_stated"
+  },
+  "context": {
+    "name": "only window state travels, never the document",
+    "input": {
+      "hasOpenDocument": true,
+      "documentExistsOnDisk": false,
+      "isFocusModeEnabled": true,
+      "isTypewriterEnabled": false,
+      "isSidebarVisible": true
+    },
+    "request": "save this as word",
+    "expectedState": {
+      "request": "save this as word",
+      "editor": {
+        "has_open_document": true,
+        "document_saved_to_disk": false,
+        "focus_mode_on": true,
+        "typewriter_on": false,
+        "sidebar_visible": true
+      }
+    },
+    "expectedQuestionTypes": {
+      "command": "choice",
+      "export_format": "choice",
+      "export_format_stated": "noul"
+    }
+  },
+  "resolve": [
+    {
+      "name": "fills the export argument when the request names a format",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "export", "probabilities": { "export": 0.88, "new": 0.08, "__none__": 0.04 }, "confidence": 0.81 },
+          "export_format": { "type": "choice", "choice": "docx", "probabilities": { "docx": 0.91, "pdf": 0.06, "html": 0.02, "txt": 0.01 }, "confidence": 0.89 },
+          "export_format_stated": { "type": "noul", "noul": 0.94 }
+        },
+        "usage": { "input_tokens": 318, "output_tokens": 34 }
+      },
+      "expected": { "command": "export", "arguments": ["docx"], "confidence": 0.81, "commandProbability": 0.88, "ranked": ["export", "new"] }
+    },
+    {
+      "name": "omits the argument when the request leaves the format open",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "export", "probabilities": { "export": 0.79, "__none__": 0.21 }, "confidence": 0.74 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 0.4, "docx": 0.3, "html": 0.2, "txt": 0.1 }, "confidence": 0.3 },
+          "export_format_stated": { "type": "noul", "noul": 0.11 }
+        },
+        "usage": { "input_tokens": 300, "output_tokens": 20 }
+      },
+      "expected": { "command": "export", "arguments": [], "confidence": 0.74, "commandProbability": 0.79, "ranked": ["export"] }
+    },
+    {
+      "name": "stated exactly at the midpoint still fills the argument, and the format weakens the confidence",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "export", "probabilities": { "export": 0.9, "__none__": 0.1 }, "confidence": 0.9 },
+          "export_format": { "type": "choice", "choice": "html", "probabilities": { "html": 0.6, "pdf": 0.4 }, "confidence": 0.5 },
+          "export_format_stated": { "type": "noul", "noul": 0.5 }
+        },
+        "usage": { "input_tokens": 300, "output_tokens": 20 }
+      },
+      "expected": { "command": "export", "arguments": ["html"], "confidence": 0.6, "commandProbability": 0.9, "ranked": ["export"] }
+    },
+    {
+      "name": "a format the parser does not accept is never passed on",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "export", "probabilities": { "export": 0.9, "__none__": 0.1 }, "confidence": 0.9 },
+          "export_format": { "type": "choice", "choice": "rtf", "probabilities": { "rtf": 0.9, "pdf": 0.1 }, "confidence": 0.9 },
+          "export_format_stated": { "type": "noul", "noul": 0.9 }
+        },
+        "usage": { "input_tokens": 300, "output_tokens": 20 }
+      },
+      "expected": { "command": "export", "arguments": [], "confidence": 0.9, "commandProbability": 0.9, "ranked": ["export"] }
+    },
+    {
+      "name": "lists only plausible alternatives under the top match",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": {
+            "type": "choice", "choice": "search",
+            "probabilities": {
+              "search": 0.71, "open": 0.19, "new": 0.08, "rename": 0.01, "delete": 0.005, "reveal": 0.0,
+              "folder": 0.0, "export": 0.0, "focus": 0.0, "typewriter": 0.0, "sidebar": 0.0, "settings": 0.0, "__none__": 0.005
+            },
+            "confidence": 0.77
+          },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0, "docx": 0.0, "html": 0.0, "txt": 0.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.01 }
+        },
+        "usage": { "input_tokens": 240, "output_tokens": 18 }
+      },
+      "expected": { "command": "search", "arguments": [], "confidence": 0.71, "commandProbability": 0.71, "ranked": ["search", "open", "new"] }
+    },
+    {
+      "name": "equal probabilities rank by command name",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "open", "probabilities": { "open": 0.4, "new": 0.2, "folder": 0.2, "focus": 0.2 }, "confidence": 0.8 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.0 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": { "command": "open", "arguments": [], "confidence": 0.4, "commandProbability": 0.4, "ranked": ["open", "focus", "folder", "new"] }
+    },
+    {
+      "name": "at most four candidates are listed",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "new", "probabilities": { "new": 0.4, "open": 0.2, "search": 0.15, "rename": 0.1, "delete": 0.1, "reveal": 0.05 }, "confidence": 0.8 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.0 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": { "command": "new", "arguments": [], "confidence": 0.4, "commandProbability": 0.4, "ranked": ["new", "open", "search", "delete"] }
+    },
+    {
+      "name": "exactly at both thresholds is accepted",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "settings", "probabilities": { "settings": 0.35, "__none__": 0.65 }, "confidence": 0.45 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.0 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": { "command": "settings", "arguments": [], "confidence": 0.35, "commandProbability": 0.35, "ranked": ["settings"] }
+    },
+    {
+      "name": "just under the confidence threshold is rejected",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "settings", "probabilities": { "settings": 0.9, "__none__": 0.1 }, "confidence": 0.449 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": null
+    },
+    {
+      "name": "just under the probability threshold is rejected",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "settings", "probabilities": { "settings": 0.349, "__none__": 0.651 }, "confidence": 0.9 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": null
+    },
+    {
+      "name": "no command fits",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "__none__", "probabilities": { "__none__": 0.82, "new": 0.18 }, "confidence": 0.79 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0, "docx": 0.0, "html": 0.0, "txt": 0.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.02 }
+        },
+        "usage": { "input_tokens": 200, "output_tokens": 10 }
+      },
+      "expected": null
+    },
+    {
+      "name": "a command that merely leads a scattered field is not offered",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "rename", "probabilities": { "rename": 0.29, "delete": 0.26, "new": 0.25, "open": 0.2 }, "confidence": 0.31 },
+          "export_format": { "type": "choice", "choice": "pdf", "probabilities": { "pdf": 1.0, "docx": 0.0, "html": 0.0, "txt": 0.0 }, "confidence": 1.0 },
+          "export_format_stated": { "type": "noul", "noul": 0.1 }
+        },
+        "usage": { "input_tokens": 200, "output_tokens": 10 }
+      },
+      "expected": null
+    },
+    {
+      "name": "a choice naming an unknown command is not offered",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "choice", "choice": "teleport", "probabilities": { "teleport": 0.9, "new": 0.1 }, "confidence": 0.9 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": null
+    },
+    {
+      "name": "a missing command answer is not offered",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "export_format_stated": { "type": "noul", "noul": 0.9 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": null
+    },
+    {
+      "name": "a command answer of the wrong type is not offered",
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "command": { "type": "noul", "noul": 0.9 }
+        },
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+      },
+      "expected": null
+    }
+  ]
+}

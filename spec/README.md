@@ -36,4 +36,7 @@ user data cannot drift between them.
 | `vectors/external-change.json` | Reconcile, save and conflict-resolution outcomes for an open document |
 | `vectors/export-policy.json` | Export: safe links, HTML escaping, footnote ids, PDF print geometry and regional paper defaults, plain-text projection |
 | `vectors/slash-commands.json` | Slash command parsing, palette filtering and state, inline-slash trigger, palette placement |
+| `vectors/intelligence-command-intent.json` | Assisted commands: request state (window booleans only), answer-to-command thresholds, ranked alternatives, export argument rules |
+| `vectors/intelligence-structure-recovery.json` | Paste structure recovery: send gate, marker rule, line reading, stitch/merge bars, classification, Markdown rendering |
+| `vectors/intelligence-transport.json` | TypeSafe transport: request encoding, answer decoding, budget, status mapping, retry and backoff, secret handling rules |
 | `PARITY.md` | Feature matrix and known gaps |

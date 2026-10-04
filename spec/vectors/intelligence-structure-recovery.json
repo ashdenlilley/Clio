@@ -1,0 +1,269 @@
+{
+  "description": "Paste structure recovery: when a paste is worth sending, how it is read into lines and merged into blocks, how classification answers become judgments, and how Markdown is rendered from them. The model never writes text; every character of the output comes from the input.",
+  "version": 1,
+  "thresholds": {
+    "minimumCharacters": 240,
+    "maximumCharacters": 40000,
+    "minimumLines": 3,
+    "headingMaxCharacters": 90,
+    "joinAfterDangling": 0.2,
+    "joinAfterTerminal": 0.5,
+    "stepThreshold": 0.5,
+    "markerRule": "A paste carries Markdown markers when marked lines * 4 >= line count. A marked line starts with up to three spaces, then one of: 1-6 # and a space; - + * and a space; 1-9 digits, . or ) and a space; > ; ``` ; ~~~ ; |"
+  },
+  "memo": "Migration to the new build system\n\nHi everyone, quick heads up about the build system migration that is\nhappening next week. We have been running the new pipeline in shadow\nmode for three weeks and the results look solid, so it is time to\nmake the switch for real.\n\nThings to do before Monday\n\nUpdate your local toolchain to version 2.4 or later\nDelete the old build cache directory\nRun the doctor script and fix anything it flags",
+  "markdownPaste": "# A title that survived\n\n- first item in a list\n- second item in a list\n- third item in a list\n\nSome prose underneath it that runs on for a while so the paste is long\nenough to clear the minimum length gate comfortably and then some more.",
+  "shouldAttempt": [
+    { "name": "an unstructured memo is worth sending", "text": "memo", "expected": true },
+    { "name": "a paste that kept its markup is not", "text": "markdownPaste", "expected": false },
+    { "name": "short pastes are not worth a round trip", "literal": "a quick note", "expected": false },
+    { "name": "one long line has no breaks to heal", "literal": "one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line one long line ", "expected": false },
+    { "name": "exactly 240 characters is enough", "lineLengths": [80, 80, 78], "expected": true },
+    { "name": "239 characters is not", "lineLengths": [80, 80, 77], "expected": false },
+    { "name": "exactly 40000 characters is allowed", "lineLengths": [13333, 13333, 13332], "expected": true },
+    { "name": "40001 characters would crowd the budget", "lineLengths": [13333, 13333, 13333], "expected": false },
+    { "name": "two lines are not enough", "lineLengths": [200, 200], "expected": false },
+    { "name": "blank lines do not count as lines", "literal": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n\n\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "expected": false }
+  ],
+  "carriesMarkers": [
+    { "lines": ["# Title", "plain", "plain", "plain"], "expected": true },
+    { "lines": ["# Title", "plain", "plain", "plain", "plain"], "expected": false },
+    { "lines": ["1. one", "2) two", "> quote"], "expected": true },
+    { "lines": ["- a"], "expected": true },
+    { "lines": ["+ a"], "expected": true },
+    { "lines": ["* a"], "expected": true },
+    { "lines": ["plain text", "more plain"], "expected": false },
+    { "lines": ["   - three spaces is still a list"], "expected": true },
+    { "lines": ["    - four spaces is code"], "expected": false },
+    { "lines": ["-nospace"], "expected": false },
+    { "lines": ["#hashtag"], "expected": false },
+    { "lines": ["####### seven"], "expected": false },
+    { "lines": ["```js"], "expected": true },
+    { "lines": ["~~~"], "expected": true },
+    { "lines": ["| a | b |"], "expected": true },
+    { "lines": [">no space still quotes"], "expected": true },
+    { "lines": ["*bold* text"], "expected": false },
+    { "lines": ["1234567890. ten digits"], "expected": false },
+    { "lines": ["123456789. nine digits"], "expected": true }
+  ],
+  "lines": [
+    {
+      "name": "memo",
+      "text": "memo",
+      "expected": [
+        { "text": "Migration to the new build system", "gap": false },
+        { "text": "Hi everyone, quick heads up about the build system migration that is", "gap": true },
+        { "text": "happening next week. We have been running the new pipeline in shadow", "gap": false },
+        { "text": "mode for three weeks and the results look solid, so it is time to", "gap": false },
+        { "text": "make the switch for real.", "gap": false },
+        { "text": "Things to do before Monday", "gap": true },
+        { "text": "Update your local toolchain to version 2.4 or later", "gap": true },
+        { "text": "Delete the old build cache directory", "gap": false },
+        { "text": "Run the doctor script and fix anything it flags", "gap": false }
+      ]
+    },
+    {
+      "name": "whitespace is collapsed, blank runs before content are not separators, blank-looking lines are",
+      "literal": "\n\n first  line\twith   tabs \n\nsecond\n   \nthird",
+      "expected": [
+        { "text": "first line with tabs", "gap": false },
+        { "text": "second", "gap": true },
+        { "text": "third", "gap": true }
+      ]
+    }
+  ],
+  "stitch": {
+    "text": "memo",
+    "expectedQuestionIds": ["L002", "L003", "L004", "L007", "L008"],
+    "expectedQuestionText": {
+      "L002": "Does line L002 pick up mid-sentence, continuing a sentence left unfinished at the end of line L001?"
+    },
+    "expectedState": "L000| Migration to the new build system\n\nL001| Hi everyone, quick heads up about the build system migration that is\nL002| happening next week. We have been running the new pipeline in shadow\nL003| mode for three weeks and the results look solid, so it is time to\nL004| make the switch for real.\n\nL005| Things to do before Monday\n\nL006| Update your local toolchain to version 2.4 or later\nL007| Delete the old build cache directory\nL008| Run the doctor script and fix anything it flags",
+    "joinsFromResponse": {
+      "lineCount": 4,
+      "answers": { "L001": 0.9, "L003": 0.25 },
+      "expected": [0, 0.9, 0, 0.25]
+    }
+  },
+  "endsTerminally": [
+    { "text": "so it is time to switch.", "expected": true },
+    { "text": "the results look solid, so it is", "expected": false },
+    { "text": "He said stop.\"", "expected": true },
+    { "text": "(see below.)", "expected": true },
+    { "text": "as follows:", "expected": true },
+    { "text": "wait for it…", "expected": true },
+    { "text": "really?!", "expected": true },
+    { "text": "mid,", "expected": false },
+    { "text": "mid", "expected": false }
+  ],
+  "merge": [
+    {
+      "name": "the bar is higher after a terminated sentence",
+      "lines": [
+        { "text": "a sentence that trails off and", "gap": false },
+        { "text": "carries on here.", "gap": false },
+        { "text": "A new thought entirely.", "gap": false }
+      ],
+      "joins": [0, 0.3, 0.3],
+      "expected": [
+        { "text": "a sentence that trails off and carries on here.", "lineIndices": [0, 1], "gap": false },
+        { "text": "A new thought entirely.", "lineIndices": [2], "gap": false }
+      ]
+    },
+    {
+      "name": "a gap always breaks a block",
+      "lines": [{ "text": "first", "gap": false }, { "text": "second", "gap": true }],
+      "joins": [0, 0.99],
+      "expected": [
+        { "text": "first", "lineIndices": [0], "gap": false },
+        { "text": "second", "lineIndices": [1], "gap": true }
+      ]
+    },
+    {
+      "name": "a join exactly at the dangling bar merges, just under does not",
+      "lines": [
+        { "text": "dangling and", "gap": false },
+        { "text": "joined", "gap": false },
+        { "text": "dangling and", "gap": false },
+        { "text": "not joined", "gap": false }
+      ],
+      "joins": [0, 0.2, 0.2, 0.199],
+      "expected": [
+        { "text": "dangling and joined dangling and", "lineIndices": [0, 1, 2], "gap": false },
+        { "text": "not joined", "lineIndices": [3], "gap": false }
+      ]
+    },
+    {
+      "name": "a join exactly at the terminal bar merges, just under does not",
+      "lines": [
+        { "text": "End.", "gap": false },
+        { "text": "Joined", "gap": false },
+        { "text": "Stop.", "gap": false },
+        { "text": "Not joined", "gap": false }
+      ],
+      "joins": [0, 0.5, 0.1, 0.499],
+      "expected": [
+        { "text": "End. Joined", "lineIndices": [0, 1], "gap": false },
+        { "text": "Stop.", "lineIndices": [2], "gap": false },
+        { "text": "Not joined", "lineIndices": [3], "gap": false }
+      ]
+    },
+    {
+      "name": "the memo with the model's joins",
+      "text": "memo",
+      "joins": [0, 0, 0.9, 0.9, 0.9, 0, 0, 0.1, 0.1],
+      "expected": [
+        { "text": "Migration to the new build system", "lineIndices": [0], "gap": false },
+        { "text": "Hi everyone, quick heads up about the build system migration that is happening next week. We have been running the new pipeline in shadow mode for three weeks and the results look solid, so it is time to make the switch for real.", "lineIndices": [1, 2, 3, 4], "gap": true },
+        { "text": "Things to do before Monday", "lineIndices": [5], "gap": true },
+        { "text": "Update your local toolchain to version 2.4 or later", "lineIndices": [6], "gap": true },
+        { "text": "Delete the old build cache directory", "lineIndices": [7], "gap": false },
+        { "text": "Run the doctor script and fix anything it flags", "lineIndices": [8], "gap": false }
+      ]
+    }
+  ],
+  "classify": {
+    "name": "the heading question is skipped for blocks too long to be one",
+    "blocks": [
+      { "text": "Short title", "gap": false },
+      { "textRepeat": { "unit": "long ", "count": 40 }, "gap": true },
+      { "textLength": 90, "gap": true },
+      { "textLength": 91, "gap": true }
+    ],
+    "expectedQuestionIds": [
+      "callout_B000", "callout_B001", "callout_B002", "callout_B003",
+      "hlevel_B000", "hlevel_B002",
+      "step_B000", "step_B001", "step_B002", "step_B003",
+      "type_B000", "type_B001", "type_B002", "type_B003"
+    ],
+    "questionTypes": { "type_B000": "choice", "hlevel_B000": "choice", "step_B000": "noul", "callout_B000": "choice" },
+    "kindCriteria": ["heading", "paragraph", "list_item", "quote", "code", "callout"],
+    "headingLevelCriteria": ["title", "section", "subsection"],
+    "calloutCriteria": ["note", "tip", "warning"]
+  },
+  "memoClassifyQuestionCount": 23,
+  "judgments": [
+    {
+      "name": "answers become judgments, missing answers fall back to a plain paragraph",
+      "blockCount": 3,
+      "answers": {
+        "type_B000": { "type": "choice", "choice": "heading", "probabilities": { "heading": 0.95, "paragraph": 0.05 }, "confidence": 0.9 },
+        "hlevel_B000": { "type": "choice", "choice": "title", "probabilities": { "title": 0.8, "section": 0.2 }, "confidence": 0.7 },
+        "step_B000": { "type": "noul", "noul": 0.1 },
+        "callout_B000": { "type": "choice", "choice": "note", "probabilities": { "note": 1.0 }, "confidence": 1.0 },
+        "type_B002": { "type": "choice", "choice": "teleport", "probabilities": { "teleport": 1.0 }, "confidence": 0.4 },
+        "callout_B002": { "type": "choice", "choice": "warning", "probabilities": { "warning": 1.0 }, "confidence": 1.0 },
+        "step_B002": { "type": "noul", "noul": 0.77 }
+      },
+      "expected": [
+        { "kind": "heading", "confidence": 0.9, "headingLevel": "title", "stepProbability": 0.1, "calloutKind": "note" },
+        { "kind": "paragraph", "confidence": 0, "headingLevel": "section", "stepProbability": 0, "calloutKind": "note" },
+        { "kind": "paragraph", "confidence": 0.4, "headingLevel": "section", "stepProbability": 0.77, "calloutKind": "warning" }
+      ]
+    }
+  ],
+  "render": [
+    {
+      "name": "markdown from judgments without inventing text",
+      "blocks": [
+        "Migration to the new build system",
+        "Hi everyone, quick heads up about the migration.",
+        "Things to do before Monday",
+        "Update your local toolchain",
+        "Delete the old build cache directory",
+        "bun run build",
+        "The platform team",
+        "The web client team",
+        "If the doctor script reports red, stop and ask.",
+        "As Dana put it, a migration nobody notices is a good one."
+      ],
+      "judgments": [
+        { "kind": "heading", "headingLevel": "title" },
+        { "kind": "paragraph" },
+        { "kind": "heading", "headingLevel": "section" },
+        { "kind": "list_item", "step": 0.88 },
+        { "kind": "list_item", "step": 0.9 },
+        { "kind": "code" },
+        { "kind": "list_item", "step": 0.14 },
+        { "kind": "list_item", "step": 0.12 },
+        { "kind": "callout", "callout": "warning" },
+        { "kind": "quote" }
+      ],
+      "expected": "# Migration to the new build system\n\nHi everyone, quick heads up about the migration.\n\n## Things to do before Monday\n\n1. Update your local toolchain\n2. Delete the old build cache directory\n\n```\nbun run build\n```\n\n- The platform team\n- The web client team\n\n> **Warning:** If the doctor script reports red, stop and ask.\n\n> As Dana put it, a migration nobody notices is a good one."
+    },
+    {
+      "name": "a run is numbered when its mean step probability reaches the threshold, and numbering restarts after other content",
+      "blocks": ["A", "B", "para", "C"],
+      "judgments": [
+        { "kind": "list_item", "step": 0.6 },
+        { "kind": "list_item", "step": 0.4 },
+        { "kind": "paragraph" },
+        { "kind": "list_item", "step": 0.2 }
+      ],
+      "expected": "1. A\n2. B\n\npara\n\n- C"
+    },
+    {
+      "name": "just under the threshold is bulleted",
+      "blocks": ["A", "B"],
+      "judgments": [{ "kind": "list_item", "step": 0.5 }, { "kind": "list_item", "step": 0.49 }],
+      "expected": "- A\n- B"
+    },
+    {
+      "name": "consecutive code blocks share one fence",
+      "blocks": ["a", "b", "prose"],
+      "judgments": [{ "kind": "code" }, { "kind": "code" }, { "kind": "paragraph" }],
+      "expected": "```\na\nb\n```\n\nprose"
+    },
+    {
+      "name": "callout kinds label the blockquote and heading levels pick the marker",
+      "blocks": ["use it", "careful", "plain", "deep"],
+      "judgments": [
+        { "kind": "callout", "callout": "tip" },
+        { "kind": "callout", "callout": "warning" },
+        { "kind": "callout" },
+        { "kind": "heading", "headingLevel": "subsection" }
+      ],
+      "expected": "> **Tip:** use it\n\n> **Warning:** careful\n\n> **Note:** plain\n\n### deep"
+    }
+  ]
+}
