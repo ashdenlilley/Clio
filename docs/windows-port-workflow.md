@@ -38,16 +38,18 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 A phase is done only when its acceptance checks pass and `spec/PARITY.md` is updated.
 
 0. **Scaffold.** Done.
-1. **Files and workspace core.** Done for atomic save with transaction manifest and
-   recovery, BOM/CRLF, SHA-256 revisions, conflict detection, scanner with nested
-   `.gitignore`, crash recovery journal, 7-day recovery copies, document identity
-   store, move transaction manifests and recovery, safe file names. Remaining:
-   wiring them into app flows (autosave journal checkpoints, startup recovery,
-   conflict resolver, `DocumentMover`, scanner using the identity store), which
-   belongs with phase 2.
-2. **Workspace UX.** `ReadDirectoryChangesW` watcher with file-ID snapshot diff
-   (keeps move semantics), tabs and multiple windows, new/rename/move, external-edit
-   conflict UI, SQLite FTS5 search with the 500-match cap, `.md` association (opt-in).
+1. **Files and workspace core.** Done: atomic save with transaction manifest and
+   recovery, BOM/CRLF, SHA-256 revisions, scanner with nested `.gitignore`, crash
+   recovery journal, 7-day recovery copies, document identity store, move
+   transactions, safe file names.
+2. **Workspace UX.** Core services done and tested, UI not yet wired:
+   `WorkspaceWatcher` (ReadDirectoryChangesW, file-ID snapshot diff keeps move
+   semantics), `SearchIndex` (SQLite FTS5, 500-match cap), `DocumentMover`,
+   `DocumentSession`/`DocumentService` (save, external-change reconcile, conflict
+   resolution), `Autosaver`, `StartupRecovery`, identity-aware scanning.
+   Remaining: tabs and multiple windows, new/rename/move UI, external-edit conflict
+   UI, search UI, discovery policy and ignored-file tier, `.md` association (opt-in),
+   and calling all of the above from `Clio.App`.
 3. **Native editor.** DirectWrite text control: source-preserving highlighting,
    focus dimming (blank-line rule from commit `1a08c6b`), typewriter scrolling,
    minimap, slash commands, Ctrl+K palette, IME, UI Automation, high contrast.

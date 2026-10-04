@@ -29,6 +29,24 @@ public abstract record PhysicalFileIdentity
 
     private const int FileIdInfoClass = 18;
 
+    /// <summary>
+    /// Like <see cref="OfFile"/>, but null when the file is gone. A vanished file must fail the whole read: a path
+    /// identity substituted mid-race would later be reported as deleted plus created.
+    /// </summary>
+    public static PhysicalFileIdentity? TryOfFile(string path)
+    {
+        var full = Path.GetFullPath(path);
+        try
+        {
+            using var handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (GetFileInformationByHandleEx(handle, FileIdInfoClass, out var info, (uint)Marshal.SizeOf<FileIdInfo>()))
+                return new Resource(info.VolumeSerialNumber.ToString("x16"), info.FileIdHigh.ToString("x16") + info.FileIdLow.ToString("x16"));
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        return File.Exists(full) ? new ByPath(FileNames.Fold(full)) : null;
+    }
+
     public static PhysicalFileIdentity OfFile(string path)
     {
         var full = Path.GetFullPath(path);

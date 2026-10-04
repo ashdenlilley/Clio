@@ -30,4 +30,8 @@ user data cannot drift between them.
 | `vectors/recovery-journal.json` | Crash journal supersede, clear and coalescing rules |
 | `vectors/move-recovery.json` | Recovery decision table for interrupted moves |
 | `vectors/document-identity.json` | Document identity across rename, delete, replace and overlapping roots |
+| `vectors/workspace-snapshot-diff.json` | Watcher snapshot diff: replace, move, modify, delete, create pairing |
+| `vectors/search-queries.json` | Search term splitting, FTS query, LIKE escaping, result limits, batch behaviour |
+| `vectors/document-move.json` | Mover naming, collision choices, replace approval, path rejection |
+| `vectors/external-change.json` | Reconcile, save and conflict-resolution outcomes for an open document |
 | `PARITY.md` | Feature matrix and known gaps |

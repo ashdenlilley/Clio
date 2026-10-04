@@ -31,3 +31,10 @@ The Windows editor also links `Markdig` 1.4.0 by Alexandre Mutel, distributed
 under the BSD 2-Clause License, for CommonMark emphasis and strikethrough
 delimiter ranges. The upstream license is available at
 <https://github.com/xoofx/markdig/blob/master/license.txt>.
+
+The Windows search index links `Microsoft.Data.Sqlite` 10.0.12 by Microsoft
+(MIT License) and `SQLitePCLRaw.bundle_e_sqlite3` 2.1.12 by Eric Sink (Apache
+License 2.0), which bundles the SQLite library. SQLite is in the public domain.
+Upstream licenses are available at
+<https://github.com/dotnet/efcore/blob/main/LICENSE.txt> and
+<https://github.com/ericsink/SQLitePCL.raw/blob/main/LICENSE.txt>.

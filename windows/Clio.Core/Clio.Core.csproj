@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Ignore" Version="0.2.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Clio.Core.Tests" />
