@@ -42,14 +42,13 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
    recovery, BOM/CRLF, SHA-256 revisions, scanner with nested `.gitignore`, crash
    recovery journal, 7-day recovery copies, document identity store, move
    transactions, safe file names.
-2. **Workspace UX.** Core services done and tested, UI not yet wired:
-   `WorkspaceWatcher` (ReadDirectoryChangesW, file-ID snapshot diff keeps move
-   semantics), `SearchIndex` (SQLite FTS5, 500-match cap), `DocumentMover`,
-   `DocumentSession`/`DocumentService` (save, external-change reconcile, conflict
-   resolution), `Autosaver`, `StartupRecovery`, identity-aware scanning.
-   Remaining: tabs and multiple windows, new/rename/move UI, external-edit conflict
-   UI, search UI, discovery policy and ignored-file tier, `.md` association (opt-in),
-   and calling all of the above from `Clio.App`.
+2. **Workspace UX.** Done in `Clio.App`: startup recovery, a watcher per folder
+   feeding the search index and open documents, open-document tabs (the sidebar
+   list) with a session and autosaver each, multiple windows, identity-based
+   sidebar tree, new/rename/move/delete with collision and replace approval,
+   conflict and deletion banners, quick open and full-text search, settings, opt-in
+   `.md` association. Remaining: drag-and-drop moves, per-tab undo history,
+   single-instance activation, discovery policy and ignored-file tier.
 3. **Native editor.** DirectWrite text control: source-preserving highlighting,
    focus dimming (blank-line rule from commit `1a08c6b`), typewriter scrolling,
    minimap, slash commands, Ctrl+K palette, IME, UI Automation, high contrast.
