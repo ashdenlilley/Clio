@@ -13,6 +13,7 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
     <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <ApplicationIcon>Assets\Clio.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
@@ -27,6 +28,7 @@
     <ProjectReference Include="..\Clio.Mcp\Clio.Mcp.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Assets\Clio.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\Clio\Resources\Fonts\Hack-Regular.ttf" Link="Assets\Fonts\Hack-Regular.ttf" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\Clio\Resources\Fonts\Hack-Bold.ttf" Link="Assets\Fonts\Hack-Bold.ttf" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\Clio\Resources\Fonts\Hack-Italic.ttf" Link="Assets\Fonts\Hack-Italic.ttf" CopyToOutputDirectory="PreserveNewest" />

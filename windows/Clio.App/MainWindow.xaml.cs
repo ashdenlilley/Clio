@@ -29,6 +29,7 @@ public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
         EditorTheme.Start();
         InitializeComponent();
         _dialogs = new Dialogs(() => Root.XamlRoot);
+        AppIcon.Apply(this);
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         WindowSizer.ResizeDips(this, 1100, 760);

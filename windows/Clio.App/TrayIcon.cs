@@ -39,7 +39,8 @@ public sealed class TrayIcon : IDisposable
         var wc = new WndClass { lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_proc), hInstance = instance, lpszClassName = "ClioTrayWindow" };
         RegisterClass(ref wc);
         _hwnd = CreateWindowEx(0, wc.lpszClassName, "Clio tray", 0, 0, 0, 0, 0, MessageOnlyParent, IntPtr.Zero, instance, IntPtr.Zero);
-        _icon = DocumentIcon.Create();
+        _icon = AppIcon.LoadSmall();
+        if (_icon == IntPtr.Zero) _icon = DocumentIcon.Create();
         _mcp.Changed += Update;
         Add();
     }

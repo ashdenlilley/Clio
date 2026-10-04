@@ -21,6 +21,7 @@ public sealed class SettingsWindow : Window
 
     private SettingsWindow()
     {
+        AppIcon.Apply(this);
         Title = "Clio Settings";
         SystemBackdrop = new Microsoft.UI.Xaml.Media.MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt };
         WindowSizer.ResizeDips(this, 600, 780);

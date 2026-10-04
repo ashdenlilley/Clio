@@ -31,6 +31,7 @@ OutputBaseFilename=Clio-{#AppVersion}-win-x64-setup
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\Clio.exe
+SetupIconFile=..\Clio.App\Assets\Clio.ico
 CloseApplications=yes
 RestartApplications=no
 WizardStyle=modern
