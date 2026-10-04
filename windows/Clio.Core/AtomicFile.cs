@@ -51,6 +51,36 @@ public static partial class AtomicFile
         }
     }
 
+    /// <summary>Creates <paramref name="destination"/> only if nothing exists there. Returns false when the name is taken.</summary>
+    public static bool TryCreate(string destination, ReadOnlySpan<byte> contents)
+    {
+        var full = Path.GetFullPath(destination);
+        var parent = Path.GetDirectoryName(full) ?? throw new LinkException(destination);
+        if (IsLink(parent)) throw new LinkException(destination);
+
+        var temp = Path.Combine(parent, TempPrefix + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(contents);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temp, full, overwrite: false);
+            return true;
+        }
+        catch (IOException) when (File.Exists(full) || Directory.Exists(full))
+        {
+            try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return false;
+        }
+        catch
+        {
+            try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            throw;
+        }
+    }
+
     private static void Replace(string destination, string temp)
     {
         if (!ReplaceFile(destination, temp, null, 0, 0, 0))
