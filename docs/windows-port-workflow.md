@@ -30,6 +30,8 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 | `windows/Clio.Core.Tests` | xUnit; reads `spec/vectors` and `ClioTests/Fixtures/Markdown/Conformance` directly |
 | `windows/Clio.Editor` | Pure editor logic: text buffer, undo, selection, focus ranges, minimap, typewriter math |
 | `windows/Clio.Editor.Tests` | xUnit; reads `spec/vectors/focus-ranges.json` |
+| `windows/Clio.Export` | UI-free export: Markdig model, HTML, plain text, `.docx` (Open XML SDK), PDF (PDFsharp/MigraDoc), destination collisions via `AtomicFile` |
+| `windows/Clio.Export.Tests` | xUnit; reads `spec/vectors/export-policy.json` and validates generated packages and PDFs |
 | `windows/Clio.App` | WinUI 3 app |
 | `scripts/windows-build.ps1` | Gate: build (warnings as errors), test, publish |
 
@@ -57,7 +59,7 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
    logic and UI, UI Automation Text pattern, high-contrast palette, IME through a proxy
    control. Open: `CoreTextEditContext`, UI Automation text attributes and editing, a
    real IME and Narrator pass, wiring the remaining palette commands (phases 2 and 4).
-4. **Export.** PDF, self-contained HTML, `.docx`, `.txt`; golden-file tests.
+4. **Export.** PDF, self-contained HTML, `.docx`, `.txt`. Library done in `Clio.Export` (rendering, safety policy, collision handling, structural tests: `.docx` validates against the Open XML schema, PDFs are read back for text, pages and links; no byte-for-byte golden files because both formats embed timestamps and ids). Remaining: export dialog and `/export` wiring in `Clio.App`, PDF settings persistence, directory-transaction recovery checkpoints for exports.
 5. **Settings and optional network features.** Assisted commands and paste
    formatting, off by default, key in Credential Manager.
 6. **Local MCP.** Port `Clio/MCP` to the limits in `docs/local-mcp-plan.md`:
