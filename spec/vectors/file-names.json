@@ -1,0 +1,37 @@
+{
+  "description": "Workspace.safeFilename: suggested name -> safe file name. `all` rows hold on every platform. `windows` rows add Windows-only hardening on top (reserved device names, illegal characters, trailing dots/spaces, 255 UTF-16 unit cap) and are not asserted on macOS. Default name is untitled.md; a missing extension gets .md.",
+  "defaultName": "untitled.md",
+  "all": [
+    { "input": "Notes", "safe": "Notes.md" },
+    { "input": "Notes.md", "safe": "Notes.md" },
+    { "input": "plan.txt", "safe": "plan.txt" },
+    { "input": "a/b.md", "safe": "b.md" },
+    { "input": "dir/", "safe": "dir.md" },
+    { "input": "  spaced.md  ", "safe": "spaced.md" },
+    { "input": "a:b.md", "safe": "ab.md" },
+    { "input": "", "safe": "untitled.md" },
+    { "input": ".", "safe": "untitled.md" },
+    { "input": "..", "safe": "untitled.md" },
+    { "input": ".hidden", "safe": "untitled.md" },
+    { "input": "tab\tname.md", "safe": "tabname.md" }
+  ],
+  "windows": [
+    { "input": "a\\b.md", "safe": "b.md", "why": "backslash is a separator" },
+    { "input": "what?.md", "safe": "what.md" },
+    { "input": "a*b|c<d>e\"f.md", "safe": "abcdef.md" },
+    { "input": "name.", "safe": "name.md", "why": "Win32 silently strips trailing dots; the file would not round-trip" },
+    { "input": "name .", "safe": "name.md" },
+    { "input": "...", "safe": "untitled.md" },
+    { "input": "CON", "safe": "_CON.md" },
+    { "input": "con.txt", "safe": "_con.txt" },
+    { "input": "NUL.md", "safe": "_NUL.md" },
+    { "input": "Aux.tar.gz", "safe": "_Aux.tar.gz" },
+    { "input": "COM1.md", "safe": "_COM1.md" },
+    { "input": "lpt9.md", "safe": "_lpt9.md" },
+    { "input": "COM0.md", "safe": "COM0.md", "why": "only COM1-9 and LPT1-9 are reserved" },
+    { "input": "CONSOLE.md", "safe": "CONSOLE.md" },
+    { "input": "my.CON.md", "safe": "my.CON.md", "why": "only the part before the first dot is checked" }
+  ],
+  "windowsMaximumLength": 255,
+  "windowsLongName": { "stemLength": 400, "extension": ".md", "expectedLength": 255, "keepsExtension": true }
+}

@@ -24,4 +24,10 @@ user data cannot drift between them.
 | --- | --- |
 | `vectors/revision-digest.json` | Content digest = lowercase hex SHA-256 of the raw file bytes |
 | `vectors/line-endings.json` | BOM and CRLF/LF detection and round-trip rules |
+| `vectors/file-names.json` | Safe file names; Windows-only hardening is listed separately |
+| `vectors/recovery-store.json` | Recovery copy naming, collision suffixes, 7-day retention |
+| `vectors/atomic-write-recovery.json` | Recovery decision table for interrupted atomic writes |
+| `vectors/recovery-journal.json` | Crash journal supersede, clear and coalescing rules |
+| `vectors/move-recovery.json` | Recovery decision table for interrupted moves |
+| `vectors/document-identity.json` | Document identity across rename, delete, replace and overlapping roots |
 | `PARITY.md` | Feature matrix and known gaps |

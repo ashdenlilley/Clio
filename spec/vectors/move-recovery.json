@@ -1,0 +1,29 @@
+{
+  "description": "InterruptedMoveTransactions.recover: a move quarantines the source (rename to '.clio-move-source-<id>') after the destination holds the candidate. States: source absent|present, quarantine absent|present, destination absent|expected|candidate|other. `expected` is the destination revision recorded in the manifest (a replace); a create records none (destinationRecorded false). Outcome: `checkpoint` is whether an interruptedMove journal record holding the source bytes is written, `sourceRemains` whether the source file is still visible afterwards, `manifestRemoved` whether the manifest is deleted, `recovered` the return value. Source bytes and candidate bytes are identical; `other` is unrelated content.",
+  "contents": { "source": "moved-document", "expected": "old-destination", "other": "someone-else" },
+  "rows": [
+    { "name": "replace: move never started", "destinationRecorded": true, "source": "present", "quarantine": "absent", "destination": "expected",
+      "checkpoint": false, "sourceRemains": true, "manifestRemoved": true, "recovered": 0 },
+    { "name": "replace: destination installed, source still visible", "destinationRecorded": true, "source": "present", "quarantine": "absent", "destination": "candidate",
+      "checkpoint": true, "sourceRemains": false, "manifestRemoved": true, "recovered": 1 },
+    { "name": "create: move never started", "destinationRecorded": false, "source": "present", "quarantine": "absent", "destination": "absent",
+      "checkpoint": false, "sourceRemains": true, "manifestRemoved": true, "recovered": 0 },
+    { "name": "create: destination installed, source still visible", "destinationRecorded": false, "source": "present", "quarantine": "absent", "destination": "candidate",
+      "checkpoint": true, "sourceRemains": false, "manifestRemoved": true, "recovered": 1 },
+    { "name": "source already quarantined", "destinationRecorded": true, "source": "absent", "quarantine": "present", "destination": "candidate",
+      "checkpoint": true, "sourceRemains": false, "manifestRemoved": true, "recovered": 1 },
+    { "name": "move completed, nothing left", "destinationRecorded": true, "source": "absent", "quarantine": "absent", "destination": "candidate",
+      "checkpoint": false, "sourceRemains": false, "manifestRemoved": true, "recovered": 0 },
+    { "name": "destination edited elsewhere", "destinationRecorded": true, "source": "present", "quarantine": "absent", "destination": "other",
+      "checkpoint": false, "sourceRemains": true, "manifestRemoved": false, "recovered": 0 },
+    { "name": "replace: destination vanished", "destinationRecorded": true, "source": "present", "quarantine": "absent", "destination": "absent",
+      "checkpoint": false, "sourceRemains": true, "manifestRemoved": false, "recovered": 0 },
+    { "name": "everything gone", "destinationRecorded": true, "source": "absent", "quarantine": "absent", "destination": "absent",
+      "checkpoint": false, "sourceRemains": false, "manifestRemoved": false, "recovered": 0 }
+  ],
+  "authorization": [
+    "A manifest is actionable only when both its source root and destination root lie inside the set of roots the caller passes in.",
+    "A cross-workspace manifest is left untouched until both roots are in that set.",
+    "A manifest whose paths escape its roots, whose quarantine name does not match '.clio-move-source-<id>', or that is a symbolic link or junction, is ignored."
+  ]
+}
