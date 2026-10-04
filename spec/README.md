@@ -33,4 +33,5 @@ user data cannot drift between them.
 | `vectors/workspace-snapshot-diff.json` | Watcher snapshot diff: replace, move, modify, delete, create pairing |
 | `vectors/search-queries.json` | Search term splitting, FTS query, LIKE escaping, result limits, batch behaviour |
 | `vectors/document-move.json` | Mover naming, collision choices, replace approval, path rejection |
+| `vectors/external-change.json` | Reconcile, save and conflict-resolution outcomes for an open document |
 | `PARITY.md` | Feature matrix and known gaps |
