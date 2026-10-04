@@ -40,6 +40,10 @@ public sealed partial class EditorControl
 
     private string _composition = "";
     private bool _composing;
+
+    /// <summary>An IME composition is open: the text shown is not yet in the model (macOS "marked text").</summary>
+    public bool IsComposing => _composing;
+
     private double _proxyX = double.NaN, _proxyY = double.NaN;
 
     /// <summary>Model text with the open composition spliced in at the caret; what the layout shows.</summary>

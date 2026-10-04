@@ -69,7 +69,7 @@ A phase is done only when its acceptance checks pass and `spec/PARITY.md` is upd
    loopback HTTP, per-client authorization, one-shot deletion approval, protocol
    versions 2025-03-26, 2025-06-18, 2025-11-25. Tray icon toggle. Bridge exe.
    Done: `Clio.Mcp`, `Clio.Mcp.Tests`, `Clio.McpBridge` (see [Windows MCP setup](windows-mcp.md)).
-   Remaining: the app's `IMcpHost`, tray icon, settings page, login autostart, client smoke tests.
+   Wired into the app (`AppMcpHost`, tray icon, Local MCP settings, opt-in login autostart, clipboard clearing, quit quiescing) and exercised on the published build with a temp folder. Remaining: Claude Desktop and Claude Code smoke tests, and the clean-VM check that the published bridge starts.
 7. **Release.** x64 zip and installer on GitHub Releases, unsigned, SmartScreen
    warning documented, Windows section in `docs/releasing.md`, clean-VM install test.
    Done: `scripts/windows-release.ps1` (zip, per-user Inno Setup installer, `SHA256SUMS-windows.txt`,

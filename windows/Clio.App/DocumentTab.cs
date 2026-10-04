@@ -51,8 +51,19 @@ public sealed class DocumentTab : IDisposable
     public static DocumentTab Open(string path)
     {
         var workspace = AppServices.Instance.WorkspaceContaining(path);
-        var session = DocumentSession.Open(path, workspace?.Root);
+        var session = DocumentSession.Open(path, workspace?.Root, StableId(path, workspace));
         return new DocumentTab(session, workspace);
+    }
+
+    /// <summary>
+    /// The id the identity store gives this file, so the open document and the scanner, search index and MCP all name it
+    /// the same way. A file outside every workspace has no stable id; its session gets a fresh one.
+    /// </summary>
+    public static Guid? StableId(string path, WorkspaceHost? workspace)
+    {
+        if (workspace is null || PhysicalFileIdentity.TryOfFile(path) is not { } physical) return null;
+        var relative = Path.GetRelativePath(workspace.Root, path).Replace('\\', '/');
+        return AppServices.Instance.Identities.Resolve(new DocumentIdentityCandidate(new DocumentLocator(workspace.Id, relative), physical, path));
     }
 
     public string Title
