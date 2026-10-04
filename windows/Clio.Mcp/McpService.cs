@@ -99,6 +99,21 @@ public sealed class McpService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Loads the stored clients so a settings page can list them, without starting the server (macOS
+    /// <c>prepareSettingsPage</c>). Returns false with <see cref="ErrorMessage"/> set when Credential Manager is unavailable.
+    /// </summary>
+    public bool PrepareSettingsPage()
+    {
+        try { LoadCredentials(); ErrorMessage = null; RaiseChanged(); return true; }
+        catch (Exception error) when (error is McpException or IOException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            ErrorMessage = "Allow Credential Manager access to manage MCP clients.";
+            RaiseChanged();
+            return false;
+        }
+    }
+
     /// <summary>Quiesce BEFORE the quit-save gate so cancellation of a save cannot admit new tool writes. The preference stays.</summary>
     public void QuiesceForQuit()
     {

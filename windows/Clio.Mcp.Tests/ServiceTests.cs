@@ -41,6 +41,22 @@ public class ServiceTests
     }
 
     [Fact]
+    public void PreparingTheSettingsPageListsStoredClientsWithoutStartingTheServer()
+    {
+        var host = new FakeHost();
+        var store = new MemoryMcpClientStore();
+        using (var first = new McpService(host, store, 0)) first.AddClient("Claude Code", Scope(host));
+
+        using var service = new McpService(host, store, 0);
+        Assert.Empty(service.Clients);
+        Assert.True(service.PrepareSettingsPage());
+        Assert.Equal(["Claude Code"], service.Clients.Select(c => c.Name));
+        Assert.False(service.Enabled);
+        Assert.Equal("MCP is off", service.Status);
+        Assert.Null(service.ErrorMessage);
+    }
+
+    [Fact]
     public async Task EnabledPreferenceStartsTheServerAtLaunchAndPersistsChoices()
     {
         var host = new FakeHost();
