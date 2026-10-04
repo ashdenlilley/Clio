@@ -88,6 +88,8 @@ public sealed partial class EditorControl : UserControl
         _proxy.LostFocus += (_, _) => { _blink.Stop(); _caretOn = false; _canvas.Invalidate(); };
         // Tunnelling, so shortcuts and navigation run before the proxy TextBox sees them.
         PreviewKeyDown += OnKeyDown;
+        // The IME proxy (not the canvas) is the document as far as assistive technology is concerned.
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(_canvas, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
         InitIme();
     }
 
@@ -116,6 +118,7 @@ public sealed partial class EditorControl : UserControl
             _minimap = LineMinimap.Make(model.Buffer.Text);
             _spans = ShiftSpans(_spans, change);
             ScheduleHighlight();
+            RaiseUiaEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.TextPatternOnTextChanged);
             TextChanged?.Invoke();
         };
         model.SelectionChanged += OnSelectionChanged;
@@ -345,6 +348,7 @@ public sealed partial class EditorControl : UserControl
         if (FocusMode || EditorTheme.Current.SelectionText is not null) RestyleLayout();
         ResetCaret();
         RevealCaret(snap: !_manualScroll);
+        RaiseUiaEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.TextPatternOnTextSelectionChanged);
     }
 
     private void RevealCaret(bool snap)

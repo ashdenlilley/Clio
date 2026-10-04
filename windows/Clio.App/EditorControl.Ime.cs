@@ -19,7 +19,7 @@ namespace Clio.App;
 /// </summary>
 public sealed partial class EditorControl
 {
-    private readonly TextBox _proxy = new()
+    private readonly ImeProxyTextBox _proxy = new()
     {
         Width = 4,
         MinWidth = 0,
@@ -59,6 +59,7 @@ public sealed partial class EditorControl
 
     private void InitIme()
     {
+        _proxy.Editor = this;
         _proxy.TextChanged += (_, _) => FlushProxy();
         _proxy.TextCompositionStarted += (_, _) =>
         {
