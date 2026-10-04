@@ -9,7 +9,7 @@
         <MicaBackdrop Kind="BaseAlt" />
     </Window.SystemBackdrop>
 
-    <Grid>
+    <Grid x:Name="Root">
         <Grid.RowDefinitions>
             <RowDefinition Height="32" />
             <RowDefinition Height="*" />
@@ -22,21 +22,47 @@
 
         <!-- Custom title bar: content extends into the caption area, system buttons stay. -->
         <Grid x:Name="TitleBar" Grid.ColumnSpan="2">
-            <TextBlock Text="Clio" VerticalAlignment="Center" Margin="12,0,0,0"
+            <TextBlock x:Name="TitleText" Text="Clio" VerticalAlignment="Center" Margin="12,0,0,0"
                        Style="{StaticResource CaptionTextBlockStyle}" />
         </Grid>
 
-        <Grid x:Name="Sidebar" Grid.Row="1" Padding="8,0,8,8">
+        <Grid x:Name="Sidebar" Grid.Row="1" Padding="8,0,8,8" AutomationProperties.Name="Document sidebar">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid ColumnSpacing="6" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button x:Name="NewDocumentButton" Content="New document" Click="OnNewDocument" HorizontalAlignment="Stretch"
+                        AutomationProperties.AutomationId="sidebar.newDocument" />
+                <Button x:Name="OpenFolderButton" Grid.Column="1" Click="OnOpenFolder" ToolTipService.ToolTip="Open folder"
+                        AutomationProperties.Name="Open folder" AutomationProperties.AutomationId="sidebar.openFolder">
+                    <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                </Button>
+            </Grid>
+            <StackPanel x:Name="OpenDocumentsSection" Grid.Row="1" Margin="0,0,0,8" Visibility="Collapsed">
+                <TextBlock Text="OPEN DOCUMENTS" FontSize="10" Opacity="0.6" Margin="4,0,0,4" />
+                <ListView x:Name="OpenDocs" SelectionMode="Single" SelectionChanged="OnOpenDocSelected"
+                          AutomationProperties.AutomationId="sidebar.tabs" MaxHeight="200" />
+            </StackPanel>
+            <TreeView x:Name="Tree" Grid.Row="2" SelectionMode="None" ItemInvoked="OnTreeItemInvoked"
+                      RightTapped="OnTreeRightTapped" AutomationProperties.AutomationId="sidebar.tree" />
+            <TextBlock x:Name="TreeHint" Grid.Row="2" Text="Open a folder to see its documents." Opacity="0.6"
+                       TextWrapping="Wrap" Margin="4,8,4,0" Visibility="Collapsed" />
+        </Grid>
+
+        <Grid Grid.Row="1" Grid.Column="1" Background="{StaticResource CanvasBrush}" CornerRadius="8,0,0,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <Button x:Name="OpenFolderButton" Content="Open folder" Click="OnOpenFolder" Margin="0,0,0,8"
-                    HorizontalAlignment="Stretch" />
-            <ListView x:Name="Tree" Grid.Row="1" SelectionChanged="OnTreeSelectionChanged" />
+            <InfoBar x:Name="Banner" IsOpen="False" IsClosable="False" Margin="8,8,8,0" />
+            <app:EditorControl x:Name="Editor" Grid.Row="1" />
         </Grid>
-
-        <app:EditorControl x:Name="Editor" Grid.Row="1" Grid.Column="1" CornerRadius="8,0,0,0" />
 
         <Grid Grid.Row="2" Grid.ColumnSpan="2" Padding="16,4">
             <TextBlock x:Name="WordCount" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.6" />
@@ -45,5 +71,6 @@
         </Grid>
 
         <app:CommandPaletteControl x:Name="Palette" Grid.RowSpan="3" Grid.ColumnSpan="2" />
+        <app:SearchPanelControl x:Name="SearchPanel" Grid.RowSpan="3" Grid.ColumnSpan="2" />
     </Grid>
 </Window>

@@ -1,111 +1,294 @@
 using Clio.Core;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
+using Microsoft.UI.Xaml.Input;
+using Windows.System;
 
 namespace Clio.App;
 
-public sealed partial class MainWindow : Window
+/// <summary>
+/// One editor window: a set of open documents (the sidebar's OPEN DOCUMENTS list is the tab strip, as on macOS),
+/// the workspace tree, and the editor showing the active document. Files, conflicts and search live in partials.
+/// </summary>
+public sealed partial class MainWindow : Microsoft.UI.Xaml.Window
 {
-    private string? _root;
-    private string? _path;
-    private bool _bom;
-    private LineEnding _ending;
-    private DiskRevision? _revision;
-    private bool _loading;
-    private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly List<DocumentTab> _tabs = [];
+    private readonly Dialogs _dialogs;
+    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private DocumentTab? _active;
+    private bool _applying;
+    private bool _closing;
+
+    public IReadOnlyList<DocumentTab> Tabs => _tabs;
 
     public MainWindow()
     {
         EditorTheme.Start();
         InitializeComponent();
+        _dialogs = new Dialogs(() => Root.XamlRoot);
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
+
         Editor.TextChanged += OnEditorTextChanged;
-        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
-        Closed += (_, _) => { _saveTimer.Stop(); Save(); };
+        _statusTimer.Tick += (_, _) => RefreshStatus();
+        _statusTimer.Start();
+        Closed += OnClosed;
+
+        var services = AppServices.Instance;
+        services.WorkspacesChanged += RebuildTree;
+        services.WorkspaceEventsObserved += OnWorkspaceEvents;
+
         InitPalette();
+        InitShortcuts();
+        InitSearch();
+        RebuildTree();
+        RefreshSidebarTabs();
+        RefreshAll();
     }
 
-    private async void OnOpenFolder(object sender, RoutedEventArgs e)
-    {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
-        picker.FileTypeFilter.Add("*");
-        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-        var folder = await picker.PickSingleFolderAsync();
-        if (folder is null) return;
+    private Dialogs Dialog => _dialogs;
 
-        _root = folder.Path;
-        Tree.Items.Clear();
-        foreach (var entry in WorkspaceScanner.Scan(_root))
+    // ---- tabs -----------------------------------------------------------------------------------
+
+    /// <summary>Opens <paramref name="path"/> in this window, or activates the window that already has it open.</summary>
+    public DocumentTab? OpenPath(string path)
+    {
+        path = System.IO.Path.GetFullPath(path);
+        if (FindTab(path) is { } existing) { Activate(existing); return existing; }
+        if (App.WindowHolding(path) is { } other && other != this)
         {
-            var depth = entry.Relative.Count(c => c == '/');
-            Tree.Items.Add(new ListViewItem
-            {
-                Content = System.IO.Path.GetFileName(entry.Path),
-                Tag = entry,
-                Padding = new Thickness(12 + 12 * depth, 4, 8, 4),
-                IsEnabled = !entry.IsDirectory,
-            });
+            var tab = other.FindTab(path)!;
+            other.Activate(tab);
+            other.Activate();
+            return tab;
         }
-    }
-
-    private void OnTreeSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (Tree.SelectedItem is ListViewItem { Tag: WorkspaceEntry { IsDirectory: false } entry }) Open(entry.Path);
-    }
-
-    private void Open(string path)
-    {
-        Save();
         try
         {
-            var doc = DocumentIO.Load(path);
-            _loading = true;
-            Editor.SetText(doc.Text);
-            Editor.Focus(FocusState.Programmatic);
-            _loading = false;
-            (_path, _bom, _ending, _revision) = (path, doc.Bom, doc.LineEnding, doc.Revision);
-            SaveState.Text = "Saved";
-            UpdateWordCount();
+            var tab = DocumentTab.Open(path);
+            AddTab(tab);
+            return tab;
         }
-        catch (ClioException ex)
+        catch (Exception e) when (e is ClioException or IOException or UnauthorizedAccessException)
         {
-            _path = null;
-            SaveState.Text = ex.Message;
+            SaveState.Text = e.Message;
+            return null;
         }
     }
+
+    public DocumentTab? FindTab(string path) =>
+        _tabs.FirstOrDefault(t => t.Session.Path is { } p && string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+
+    private void AddTab(DocumentTab tab)
+    {
+        _tabs.Add(tab);
+        tab.Changed += () => OnTabChanged(tab);
+        RefreshSidebarTabs();
+        Activate(tab);
+    }
+
+    public void Activate(DocumentTab tab)
+    {
+        if (!ReferenceEquals(_active, tab) && _active is not null) _ = _active.Autosaver.FlushAsync(_active.Session);
+        _active = tab;
+        _applying = true;
+        try { Editor.SetText(tab.Session.Text); }
+        finally { _applying = false; }
+        Editor.Focus(FocusState.Programmatic);
+        RefreshSidebarTabs();
+        RefreshAll();
+    }
+
+    private async Task CloseTabAsync(DocumentTab tab)
+    {
+        if (!await ConfirmCloseAsync(tab)) return;
+        var index = _tabs.IndexOf(tab);
+        _tabs.Remove(tab);
+        tab.Dispose();
+        if (ReferenceEquals(_active, tab))
+        {
+            _active = null;
+            if (_tabs.Count > 0) Activate(_tabs[Math.Clamp(index, 0, _tabs.Count - 1)]);
+            else { _applying = true; Editor.SetText(""); _applying = false; }
+        }
+        RefreshSidebarTabs();
+        RefreshAll();
+    }
+
+    /// <summary>Saves before closing. A document that cannot be saved asks first; its text stays in the crash journal either way.</summary>
+    private async Task<bool> ConfirmCloseAsync(DocumentTab tab)
+    {
+        try { await tab.Autosaver.FlushAsync(tab.Session); }
+        catch (Exception e) when (e is ClioException or IOException or UnauthorizedAccessException) { }
+
+        var session = tab.Session;
+        if (!session.IsDirty) return true;
+        if (session.Conflict is not null || !session.IsBackedByFile)
+        {
+            var why = session.Conflict is not null
+                ? "This document changed outside Clio and you have not chosen a version."
+                : "This document has no file to save to.";
+            var result = await Dialog.ShowAsync($"Close {tab.Title}?", $"{why} Your text stays in recovery for 7 days.", "Close anyway", close: "Keep open", destructive: true);
+            return result == ContentDialogResult.Primary;
+        }
+        // Dirty and backed, but the save failed (locked file, disk full): do not drop it silently.
+        var message = tab.Autosaver.LastError?.Message ?? "The document could not be saved.";
+        var answer = await Dialog.ShowAsync($"Close {tab.Title}?", $"{message} Your text stays in recovery for 7 days.", "Close anyway", close: "Keep open", destructive: true);
+        return answer == ContentDialogResult.Primary;
+    }
+
+    private void OnOpenDocSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingTabs) return;
+        if (OpenDocs.SelectedItem is ListViewItem { Tag: DocumentTab tab } && !ReferenceEquals(tab, _active)) Activate(tab);
+    }
+
+    private bool _syncingTabs;
+
+    private void RefreshSidebarTabs()
+    {
+        _syncingTabs = true;
+        try
+        {
+            OpenDocs.Items.Clear();
+            foreach (var tab in _tabs)
+            {
+                var row = new Grid();
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var title = new TextBlock
+                {
+                    Text = tab.Session.IsDirty ? tab.Title + " •" : tab.Title,
+                    VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
+                };
+                var close = new Button
+                {
+                    Content = new FontIcon { Glyph = "", FontSize = 9 }, Padding = new Thickness(4),
+                    Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                    BorderThickness = new Thickness(0), Tag = tab,
+                };
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(close, $"Close {tab.Title}");
+                close.Click += async (_, _) => await CloseTabAsync(tab);
+                Grid.SetColumn(close, 1);
+                row.Children.Add(title);
+                row.Children.Add(close);
+                var item = new ListViewItem { Content = row, Tag = tab, Padding = new Thickness(8, 0, 4, 0), MinHeight = 32 };
+                OpenDocs.Items.Add(item);
+                if (ReferenceEquals(tab, _active)) OpenDocs.SelectedItem = item;
+            }
+            OpenDocumentsSection.Visibility = _tabs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
+        finally { _syncingTabs = false; }
+    }
+
+    // ---- editor <-> session ---------------------------------------------------------------------
 
     private void OnEditorTextChanged()
     {
         UpdateWordCount();
-        if (_loading || _path is null) return;
-        SaveState.Text = "Editing…";
-        _saveTimer.Stop();
-        _saveTimer.Start();
+        if (_applying || _active is null) return;
+        _active.Session.SetText(Editor.Text);
+        _active.Autosaver.DocumentDidChange(_active.Session);
+        RefreshStatus();
     }
 
-    private void Save()
+    private void OnTabChanged(DocumentTab tab)
     {
-        if (_path is null || _revision is null) return;
-        try
+        if (ReferenceEquals(tab, _active))
         {
-            _revision = DocumentIO.Save(_path, Editor.Text, _bom, _ending, _revision);
-            SaveState.Text = "Saved";
+            // The session changed under the editor (an outside edit reloaded, or a conflict was resolved).
+            if (!string.Equals(tab.Session.Text, Editor.Text, StringComparison.Ordinal))
+            {
+                var caret = Editor.Model.Caret;
+                _applying = true;
+                try { Editor.SetText(tab.Session.Text); Editor.Model.SetSelection(caret, caret); }
+                finally { _applying = false; }
+            }
+            RefreshAll();
         }
-        catch (ClioException ex)
-        {
-            // A conflict never overwrites the on-disk file.
-            SaveState.Text = ex.Message;
-            _path = null;
-        }
+        RefreshSidebarTabs();
+    }
+
+    private void RefreshAll()
+    {
+        UpdateWordCount();
+        RefreshStatus();
+        RefreshBanner();
+        TitleText.Text = _active is null ? "Clio" : $"{_active.Title} — Clio";
+        Title = TitleText.Text;
+    }
+
+    private void RefreshStatus()
+    {
+        if (_active is null) return;
+        SaveState.Text = _active.StatusText;
     }
 
     private void UpdateWordCount()
     {
         var words = Editor.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
-        WordCount.Text = $"{words} words · {Math.Max(1, (int)Math.Round(words / 238.0))} min read";
+        WordCount.Text = _active is null ? "" : $"{words} words · {Math.Max(1, (int)Math.Round(words / 238.0))} min read";
+    }
+
+    // ---- shortcuts ------------------------------------------------------------------------------
+
+    private void InitShortcuts()
+    {
+        void Bind(VirtualKey key, VirtualKeyModifiers modifiers, Action action)
+        {
+            var accelerator = new KeyboardAccelerator { Key = key, Modifiers = modifiers };
+            accelerator.Invoked += (_, e) => { action(); e.Handled = true; };
+            ((UIElement)Content).KeyboardAccelerators.Add(accelerator);
+        }
+        Bind(VirtualKey.S, VirtualKeyModifiers.Control, () => _ = SaveAsync());
+        Bind(VirtualKey.O, VirtualKeyModifiers.Control, () => _ = OpenFileAsync());
+        Bind(VirtualKey.N, VirtualKeyModifiers.Control, () => _ = NewDocumentAsync());
+        Bind(VirtualKey.N, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => App.OpenWindow());
+        Bind(VirtualKey.W, VirtualKeyModifiers.Control, () => { if (_active is not null) _ = CloseTabAsync(_active); });
+        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control, () => CycleTab(1));
+        Bind(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => CycleTab(-1));
+        Bind(VirtualKey.P, VirtualKeyModifiers.Control, () => ShowSearch(SearchMode.QuickOpen));
+        Bind(VirtualKey.F, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => ShowSearch(SearchMode.Content));
+        Bind((VirtualKey)188, VirtualKeyModifiers.Control, () => OpenSettings()); // Ctrl+,
+    }
+
+    private void CycleTab(int delta)
+    {
+        if (_tabs.Count < 2 || _active is null) return;
+        var index = (_tabs.IndexOf(_active) + delta + _tabs.Count) % _tabs.Count;
+        Activate(_tabs[index]);
+    }
+
+    // ---- save -----------------------------------------------------------------------------------
+
+    private async Task SaveAsync()
+    {
+        if (_active is not { } tab) return;
+        if (!tab.Session.IsBackedByFile) { await SaveAsAsync(tab); return; }
+        try { await tab.Autosaver.FlushAsync(tab.Session); }
+        catch (Exception e) when (e is ClioException or IOException or UnauthorizedAccessException) { SaveState.Text = e.Message; }
+        RefreshStatus();
+    }
+
+    // ---- lifetime -------------------------------------------------------------------------------
+
+    private void OnClosed(object sender, WindowEventArgs args)
+    {
+        if (_closing) return;
+        _closing = true;
+        _statusTimer.Stop();
+        var services = AppServices.Instance;
+        services.WorkspacesChanged -= RebuildTree;
+        services.WorkspaceEventsObserved -= OnWorkspaceEvents;
+        // Last chance to write: synchronous, so the process cannot exit mid-save. Failures stay in the crash journal.
+        foreach (var tab in _tabs)
+        {
+            try { tab.Autosaver.Flush(tab.Session); }
+            catch (Exception e) when (e is ClioException or IOException or UnauthorizedAccessException) { }
+            tab.Dispose();
+        }
+        _tabs.Clear();
+        App.WindowClosed(this);
     }
 }
