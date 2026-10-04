@@ -18,12 +18,15 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        EditorTheme.Start();
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 760));
-        Editor.TextChanged += OnEditorTextChanged;        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
+        Editor.TextChanged += OnEditorTextChanged;
+        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Save(); };
         Closed += (_, _) => { _saveTimer.Stop(); Save(); };
+        InitPalette();
     }
 
     private async void OnOpenFolder(object sender, RoutedEventArgs e)

@@ -16,7 +16,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="240" />
+            <ColumnDefinition x:Name="SidebarColumn" Width="240" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
@@ -26,7 +26,7 @@
                        Style="{StaticResource CaptionTextBlockStyle}" />
         </Grid>
 
-        <Grid Grid.Row="1" Padding="8,0,8,8">
+        <Grid x:Name="Sidebar" Grid.Row="1" Padding="8,0,8,8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -43,5 +43,7 @@
             <TextBlock x:Name="SaveState" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.6"
                        HorizontalAlignment="Right" />
         </Grid>
+
+        <app:CommandPaletteControl x:Name="Palette" Grid.RowSpan="3" Grid.ColumnSpan="2" />
     </Grid>
 </Window>

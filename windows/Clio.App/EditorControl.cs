@@ -30,12 +30,12 @@ public sealed partial class EditorControl : UserControl
     private const double MinimapWidth = 28;
     private const double DoubleClickMs = 500;
 
-    private static readonly Color TextColor = EditorStyler.Foreground;
-    private static readonly Color DimColor = EditorStyler.Dimmed;
-    private static readonly Color SelectionColor = Color.FromArgb(255, 0x1F, 0x29, 0x37);
-    private static readonly Color CaretColor = Color.FromArgb(255, 0x39, 0x8A, 0xB0);
+    private static Color TextColor => EditorStyler.Foreground;
+    private static Color DimColor => EditorStyler.Dimmed;
+    private static Color SelectionColor => EditorTheme.ToColor(EditorTheme.Current.Selection);
+    private static Color CaretColor => EditorTheme.ToColor(EditorTheme.Current.Caret);
 
-    private readonly CanvasControl _canvas = new() { ClearColor = Color.FromArgb(255, 0, 0, 0) };
+    private readonly CanvasControl _canvas = new() { ClearColor = EditorTheme.ToColor(EditorTheme.Current.Background) };
     private readonly DispatcherTimer _blink = new() { Interval = TimeSpan.FromMilliseconds(530) };
     private readonly DispatcherTimer _ease = new() { Interval = TimeSpan.FromMilliseconds(16) };
 
@@ -74,7 +74,8 @@ public sealed partial class EditorControl : UserControl
         Content = BuildContent();
         _canvas.Draw += OnDraw;
         _canvas.SizeChanged += (_, _) => { _layout = null; _canvas.Invalidate(); };
-        Unloaded += (_, _) => _canvas.RemoveFromVisualTree();
+        EditorTheme.Changed += OnThemeChanged;
+        Unloaded += (_, _) => { EditorTheme.Changed -= OnThemeChanged; _canvas.RemoveFromVisualTree(); };
         _canvas.PointerPressed += OnPointerPressed;
         _canvas.PointerMoved += OnPointerMoved;
         _canvas.PointerReleased += (_, e) => { _dragging = false; _canvas.ReleasePointerCapture(e.Pointer); };
@@ -165,6 +166,13 @@ public sealed partial class EditorControl : UserControl
         });
     }
 
+    private void OnThemeChanged()
+    {
+        _canvas.ClearColor = EditorTheme.ToColor(EditorTheme.Current.Background);
+        _layout = null;
+        _canvas.Invalidate();
+    }
+
     private void Set(ref bool field, bool value)
     {
         if (field == value) return;
@@ -230,15 +238,27 @@ public sealed partial class EditorControl : UserControl
         _layout.SetColor(0, length, TextColor);
         EditorStyler.Apply(_layout, DisplaySpans(_spans), length, TextSize);
         if (_composition.Length > 0) _layout.SetUnderline(Model.Caret, _composition.Length, true);
-        if (!FocusMode) return;
+        if (FocusMode) ApplyFocusDimming(length);
+        // High contrast: selected text takes the system highlight-text colour so it stays readable on the highlight.
+        if (EditorTheme.Current.SelectionText is { } selectedText && Model.HasSelection)
+        {
+            var sel = DisplayRange(Model.Selection);
+            var start = Math.Clamp(sel.Start, 0, length);
+            var end = Math.Clamp(sel.End, start, length);
+            if (end > start) _layout.SetColor(start, end - start, EditorTheme.ToColor(selectedText));
+        }
+    }
+
+    private void ApplyFocusDimming(int length)
+    {
         // A null range (blank line) dims nothing: see commit 1a08c6b.
         if (FocusUnit.FocusRange(Model.Buffer.Text, Model.Selection) is not { } source) return;
         var focus = DisplayRange(source);
         // Dim only outside the focus unit so highlighting inside it stays intact.
         var focusStart = Math.Clamp(focus.Start, 0, length);
         var focusEnd = Math.Clamp(focus.End, focusStart, length);
-        if (focusStart > 0) _layout.SetColor(0, focusStart, DimColor);
-        if (focusEnd < length) _layout.SetColor(focusEnd, length - focusEnd, DimColor);
+        if (focusStart > 0) _layout!.SetColor(0, focusStart, DimColor);
+        if (focusEnd < length) _layout!.SetColor(focusEnd, length - focusEnd, DimColor);
     }
 
     private double DocumentHeight => EnsureLayout().LayoutBounds.Height + 2 * DocPadding;
@@ -303,7 +323,10 @@ public sealed partial class EditorControl : UserControl
             var w = (float)(4 + strokes[i].Width * (MinimapWidth - 8));
             var isActive = strokes[i].Offset == activeStroke.Offset ||
                            (i + 1 < strokes.Count ? strokes[i].Offset <= Model.Caret && Model.Caret < strokes[i + 1].Offset : strokes[i].Offset <= Model.Caret);
-            var color = isActive ? Color.FromArgb(255, 0xEB, 0xEB, 0xEB) : Color.FromArgb(110, 0xA0, 0xA0, 0xA0);
+            var theme = EditorTheme.Current;
+            var color = isActive ? EditorTheme.ToColor(theme.Emphasis)
+                : theme.IsHighContrast ? EditorTheme.ToColor(theme.Dimmed)
+                : Color.FromArgb(110, 0xA0, 0xA0, 0xA0);
             ds.FillRoundedRectangle((float)(right - w), (float)(top + i * pitch), w, 2.5f, 1.25f, 1.25f, color);
         }
     }
@@ -314,7 +337,7 @@ public sealed partial class EditorControl : UserControl
 
     private void OnSelectionChanged()
     {
-        if (FocusMode) RestyleLayout();
+        if (FocusMode || EditorTheme.Current.SelectionText is not null) RestyleLayout();
         ResetCaret();
         RevealCaret(snap: !_manualScroll);
     }
@@ -446,6 +469,7 @@ public sealed partial class EditorControl : UserControl
             case VirtualKey.Delete: Model.DeleteForward(); break;
             case VirtualKey.Enter: Model.Insert("\n"); break;
             case VirtualKey.Tab: Model.Insert("    "); break;
+            case VirtualKey.K when ctrl: RaisePaletteRequested(); break;
             case VirtualKey.A when ctrl: Model.SelectAll(); break;
             case VirtualKey.Z when ctrl && shift: Model.Redo(); break;
             case VirtualKey.Z when ctrl: Model.Undo(); break;

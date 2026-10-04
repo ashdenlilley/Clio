@@ -77,7 +77,7 @@ public sealed partial class EditorControl
         {
             _composing = false;
             SetComposition("");
-            FlushProxy();
+            FlushProxy(fromComposition: true);
         };
     }
 
@@ -98,13 +98,15 @@ public sealed partial class EditorControl
     }
 
     /// <summary>Move committed proxy text into the model. No-op while a composition is open.</summary>
-    private void FlushProxy()
+    private void FlushProxy(bool fromComposition = false)
     {
         if (_composing) return;
         var text = _proxy.Text;
         if (text.Length == 0) return;
         _proxy.Text = "";
         text = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        // A typed "/" opens the command palette instead (never for text an IME just committed).
+        if (TryRaiseSlash(text, fromComposition)) return;
         // A single character (or surrogate pair) coalesces into one undo step; committed strings do not.
         Model.Insert(text, typing: text.Length <= 2, nowMs: Environment.TickCount64);
         _desiredX = -1;
