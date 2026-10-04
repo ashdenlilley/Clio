@@ -38,9 +38,13 @@ Phase 3 is the largest single item and is gated by its own acceptance list.
 A phase is done only when its acceptance checks pass and `spec/PARITY.md` is updated.
 
 0. **Scaffold.** Done.
-1. **Files and workspace core.** Done for atomic save, BOM/CRLF, SHA-256 revisions,
-   conflict detection, scanner with nested `.gitignore`. Remaining: recovery
-   journal and recovery copies (7 days), document identity, move transactions.
+1. **Files and workspace core.** Done for atomic save with transaction manifest and
+   recovery, BOM/CRLF, SHA-256 revisions, conflict detection, scanner with nested
+   `.gitignore`, crash recovery journal, 7-day recovery copies, document identity
+   store, move transaction manifests and recovery, safe file names. Remaining:
+   wiring them into app flows (autosave journal checkpoints, startup recovery,
+   conflict resolver, `DocumentMover`, scanner using the identity store), which
+   belongs with phase 2.
 2. **Workspace UX.** `ReadDirectoryChangesW` watcher with file-ID snapshot diff
    (keeps move semantics), tabs and multiple windows, new/rename/move, external-edit
    conflict UI, SQLite FTS5 search with the 500-match cap, `.md` association (opt-in).
