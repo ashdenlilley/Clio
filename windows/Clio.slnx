@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Clio.App/Clio.App.csproj" />
+  <Project Path="Clio.Core.Tests/Clio.Core.Tests.csproj" />
+  <Project Path="Clio.Core/Clio.Core.csproj" />
+</Solution>

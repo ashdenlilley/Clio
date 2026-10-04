@@ -1,0 +1,14 @@
+{
+  "description": "Load normalises to LF in memory and records BOM and dominant ending; save restores both. Dominant = CRLF only when CRLF count is strictly greater than bare-LF count.",
+  "vectors": [
+    { "name": "lf", "fileHex": "610a620a", "text": "a\nb\n", "bom": false, "ending": "lf" },
+    { "name": "crlf", "fileHex": "610d0a620d0a", "text": "a\nb\n", "bom": false, "ending": "crlf" },
+    { "name": "bom-crlf", "fileHex": "efbbbf610d0a620d0a", "text": "a\nb\n", "bom": true, "ending": "crlf" },
+    { "name": "mixed-lf-wins-tie", "fileHex": "610d0a620a", "text": "a\nb\n", "bom": false, "ending": "lf" },
+    { "name": "mixed-crlf-majority", "fileHex": "610d0a620d0a630a", "text": "a\nb\nc\n", "bom": false, "ending": "crlf" },
+    { "name": "empty", "fileHex": "", "text": "", "bom": false, "ending": "lf" }
+  ],
+  "invalid": [
+    { "name": "invalid-utf8", "fileHex": "fffe00", "error": "notUtf8" }
+  ]
+}

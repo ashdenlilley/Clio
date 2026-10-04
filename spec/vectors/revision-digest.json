@@ -1,0 +1,8 @@
+{
+  "description": "contentDigest is lowercase hex SHA-256 over the exact file bytes, BOM included. See DocumentRevisionReader.digest.",
+  "vectors": [
+    { "name": "empty", "bytesHex": "", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "name": "abc", "bytesHex": "616263", "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
+    { "name": "crlf", "bytesHex": "610d0a620d0a", "sha256": "58055bdcc73787eb88c78d36f0b4939e9c5dc1c3ad17e25cc85a6833cf1a0cab" }
+  ]
+}

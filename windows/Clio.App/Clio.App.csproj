@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <RootNamespace>Clio.App</RootNamespace>
+    <AssemblyName>Clio</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Clio.Core\Clio.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\Clio\Resources\Fonts\Hack-Regular.ttf" Link="Assets\Fonts\Hack-Regular.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Clio\Resources\Fonts\Hack-Bold.ttf" Link="Assets\Fonts\Hack-Bold.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Clio\Resources\Fonts\Hack-Italic.ttf" Link="Assets\Fonts\Hack-Italic.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Clio\Resources\Fonts\Hack-BoldItalic.ttf" Link="Assets\Fonts\Hack-BoldItalic.ttf" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
