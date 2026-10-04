@@ -18,6 +18,10 @@
     { "name": "create: destination appeared elsewhere", "expectedBase": false, "destination": "other", "temporary": "absent", "checkpoints": [], "cleanup": false },
     { "name": "create: candidate in both places", "expectedBase": false, "destination": "candidate", "temporary": "candidate", "checkpoints": ["atomicCandidate:candidate"], "cleanup": false }
   ],
+  "windowsOnly": [
+    "If the temp file and the displaced file both exist (ReplaceFileW failed after moving the old file aside) and the displaced file equals the expected base, it is also checkpointed as atomicDisplaced. The table above is unchanged.",
+    "A failed save puts the displaced file back at the destination when the destination is missing, and keeps the manifest if it cannot."
+  ],
   "untouched": [
     "A manifest whose temporary path is not '.clio-save-<id>' for its own id is ignored.",
     "A manifest whose destination or temporary lies outside the recovery root, or in a different directory from the manifest, is ignored.",
