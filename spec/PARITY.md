@@ -24,7 +24,7 @@ Legend: done, partial, planned, n/a (platform does not need it).
 | Editor: UI Automation | done | partial | Windows: Document element with a Text pattern (units, move, endpoints, find, select, point and rectangles) served by the IME proxy peer; checked against a live UIA client. No text attributes beyond font name and read-only, no ITextEditProvider, not tried with Narrator |
 | Editor: high contrast | done | partial | Windows: system colours, hue-coded roles collapse to text colour, links underlined, selection uses highlight text. Polled every 1.5 s because the high-contrast change event cannot be subscribed to unpackaged. Not seen under a real high-contrast theme |
 | Export PDF/HTML/DOCX/TXT | done | planned | |
-| Local MCP | done | planned | Windows: Credential Manager, `clio-mcp-bridge.exe`, tray toggle, default off |
+| Local MCP | done | partial | Windows: `Clio.Mcp` (policy, HTTP listener, router, tools, Credential Manager, client config) and `clio-mcp-bridge.exe` are done and tested against `mcp-access.json` and `mcp-protocol.json`; the app still has to implement `IMcpHost`, the tray toggle, settings page and login autostart. macOS tests do not read the vectors yet. Windows ids are upper-case dashed GUIDs like macOS; the Windows listener also sets exclusive address use and drops non-loopback peers |
 | Assisted commands / paste formatting | done | planned | |
 | Security-scoped bookmarks | done | n/a | |
 | Liquid Glass | done | n/a | Windows: black canvas, Mica chrome |
